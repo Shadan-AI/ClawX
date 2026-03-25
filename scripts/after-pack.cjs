@@ -519,6 +519,25 @@ exports.default = async function afterPack(context) {
     }
   }
 
+  // 1.2 Bundle local plugins from build/openclaw-plugins/ (e.g. box-im)
+  const LOCAL_PLUGINS = ['box-im'];
+  const preBuildPluginsDir = join(__dirname, '..', 'build', 'openclaw-plugins');
+  for (const pluginId of LOCAL_PLUGINS) {
+    const localSrc = join(preBuildPluginsDir, pluginId);
+    if (!existsSync(localSrc)) {
+      console.log(`[after-pack] ⚠️  Local plugin ${pluginId} not found at ${localSrc}, skipping`);
+      continue;
+    }
+    const pluginDestDir = join(pluginsDestRoot, pluginId);
+    if (existsSync(pluginDestDir)) {
+      console.log(`[after-pack] Plugin ${pluginId} already bundled, skipping local copy`);
+      continue;
+    }
+    console.log(`[after-pack] Copying local plugin ${pluginId} -> ${pluginDestDir}`);
+    cpSync(localSrc, pluginDestDir, { recursive: true });
+    cleanupUnnecessaryFiles(pluginDestDir);
+  }
+
   // 2. General cleanup on the full openclaw directory (not just node_modules)
   console.log('[after-pack] 🧹 Cleaning up unnecessary files ...');
   const removedRoot = cleanupUnnecessaryFiles(openclawRoot);

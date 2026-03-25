@@ -21,7 +21,8 @@ export type ChannelType =
   | 'msteams'
   | 'googlechat'
   | 'mattermost'
-  | 'qqbot';
+  | 'qqbot'
+  | 'box-im';
 
 /**
  * Channel connection status
@@ -96,6 +97,7 @@ export const CHANNEL_ICONS: Record<ChannelType, string> = {
   googlechat: '💭',
   mattermost: '💠',
   qqbot: '🐧',
+  'box-im': '🤖',
 };
 
 /**
@@ -117,6 +119,7 @@ export const CHANNEL_NAMES: Record<ChannelType, string> = {
   googlechat: 'Google Chat',
   mattermost: 'Mattermost',
   qqbot: 'QQ Bot',
+  'box-im': 'Box-IM',
 };
 
 /**
@@ -574,13 +577,28 @@ export const CHANNEL_META: Record<ChannelType, ChannelMeta> = {
     ],
     isPlugin: true,
   },
+  'box-im': {
+    id: 'box-im',
+    name: 'Box-IM',
+    icon: '🤖',
+    description: 'Box-IM 数字员工平台',
+    connectionType: 'qr',
+    docsUrl: '',
+    configFields: [],
+    instructions: [
+      '通过微信扫码登录后自动配置',
+      '支持多 Bot 账号管理',
+      '支持 OpenMe 广场问答',
+    ],
+    isPlugin: true,
+  },
 };
 
 /**
  * Get primary supported channels (non-plugin, commonly used)
  */
 export function getPrimaryChannels(): ChannelType[] {
-  return ['telegram', 'discord', 'whatsapp', 'wechat', 'dingtalk', 'feishu', 'wecom', 'qqbot'];
+  return ['telegram', 'discord', 'whatsapp', 'wechat', 'dingtalk', 'feishu', 'wecom', 'qqbot', 'box-im'];
 }
 
 /**
