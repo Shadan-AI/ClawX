@@ -27,7 +27,7 @@ import {
     loginMiniMaxPortalOAuth,
     type MiniMaxOAuthToken,
     type MiniMaxRegion,
-} from '../../node_modules/openclaw/extensions/minimax-portal-auth/oauth';
+} from '../../node_modules/openclaw/extensions/minimax/oauth';
 import {
     loginQwenPortalOAuth,
     type QwenOAuthToken,

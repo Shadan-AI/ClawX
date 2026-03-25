@@ -68,7 +68,7 @@ import {
   listWhatsAppDirectoryGroupsFromConfig,
   listWhatsAppDirectoryPeersFromConfig,
   normalizeWhatsAppMessagingTarget,
-} from 'openclaw/plugin-sdk/whatsapp';
+} from 'openclaw/plugin-sdk/whatsapp-shared';
 import type { HostApiContext } from '../context';
 import { parseJsonBody, sendJson } from '../route-utils';
 
@@ -1168,6 +1168,44 @@ export async function handleChannelRoutes(
       if (sessionKey) {
         await cancelWeChatLoginSession(sessionKey);
       }
+      sendJson(res, 200, { success: true });
+    } catch (error) {
+      sendJson(res, 500, { success: false, error: String(error) });
+    }
+    return true;
+  }
+
+  if (url.pathname === '/api/channels/box-im/start' && req.method === 'POST') {
+    try {
+      const body = await parseJsonBody<{ accountId?: string }>(req);
+      const accountId = body.accountId?.trim() || undefined;
+      const result = await ctx.gatewayManager.rpc<{ qrDataUrl?: string; message?: string }>(
+        'web.login.start',
+        { accountId },
+      );
+      console.warn(`[box-im] web.login.start result:`, JSON.stringify(result));
+      if (!result.qrDataUrl) {
+        throw new Error(result.message || 'Failed to generate box-im QR code');
+      }
+      emitChannelEvent(ctx, 'box-im', 'qr', { qr: result.qrDataUrl, raw: result.qrDataUrl });
+
+      void (async () => {
+        try {
+          const waitResult = await ctx.gatewayManager.rpc<{ connected: boolean; message?: string }>(
+            'web.login.wait',
+            { accountId, timeoutMs: 120000 },
+            130000,
+          );
+          if (waitResult.connected) {
+            emitChannelEvent(ctx, 'box-im', 'success', { accountId, message: waitResult.message });
+          } else {
+            emitChannelEvent(ctx, 'box-im', 'error', { message: waitResult.message || 'QR code expired' });
+          }
+        } catch (err) {
+          emitChannelEvent(ctx, 'box-im', 'error', { message: String(err) });
+        }
+      })();
+
       sendJson(res, 200, { success: true });
     } catch (error) {
       sendJson(res, 500, { success: false, error: String(error) });
