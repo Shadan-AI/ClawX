@@ -78,10 +78,10 @@ importers:
         version: 1.2.8(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@sliverp/qqbot':
         specifier: ^1.6.1
-        version: 1.6.1(clawdbot@2026.1.24-3(@modelcontextprotocol/sdk@1.27.1(zod@4.3.6))(@types/express@5.0.6)(devtools-protocol@0.0.1604597)(encoding@0.1.13)(typescript@5.9.3))(moltbot@0.1.0)(openclaw@file:vendor/openclaw(@napi-rs/canvas@0.1.97)(encoding@0.1.13))
+        version: 1.6.1(@shadanai/openclaw@2026.3.24-beta.1(@napi-rs/canvas@0.1.97)(encoding@0.1.13))(clawdbot@2026.1.24-3(@modelcontextprotocol/sdk@1.27.1(zod@4.3.6))(@types/express@5.0.6)(devtools-protocol@0.0.1604597)(encoding@0.1.13)(typescript@5.9.3))(moltbot@0.1.0)
       '@soimy/dingtalk':
         specifier: ^3.3.0
-        version: 3.4.2(openclaw@file:vendor/openclaw(@napi-rs/canvas@0.1.97)(encoding@0.1.13))
+        version: 3.4.2(@shadanai/openclaw@2026.3.24-beta.1(@napi-rs/canvas@0.1.97)(encoding@0.1.13))
       '@tencent-weixin/openclaw-weixin':
         specifier: ^1.0.2
         version: 1.0.3
@@ -155,8 +155,8 @@ importers:
         specifier: ^0.563.0
         version: 0.563.0(react@19.2.4)
       openclaw:
-        specifier: file:vendor/openclaw
-        version: file:vendor/openclaw(@napi-rs/canvas@0.1.97)(encoding@0.1.13)
+        specifier: npm:@shadanai/openclaw@2026.3.24-beta.1
+        version: '@shadanai/openclaw@2026.3.24-beta.1(@napi-rs/canvas@0.1.97)(encoding@0.1.13)'
       png2icons:
         specifier: ^2.0.1
         version: 2.0.1
@@ -2356,6 +2356,17 @@ packages:
     cpu: [x64]
     os: [win32]
 
+  '@shadanai/openclaw@2026.3.24-beta.1':
+    resolution: {integrity: sha512-+5013uFlD3JY2wOo7t4byqiBdLQzEi9D5p/HQB2v3MsyMSNsSBqZuuCIA8gkPjGWfmsNCJrqrcmArltZLEHRmg==}
+    engines: {node: '>=22.16.0'}
+    hasBin: true
+    peerDependencies:
+      '@napi-rs/canvas': ^0.1.89
+      node-llama-cpp: 3.18.1
+    peerDependenciesMeta:
+      node-llama-cpp:
+        optional: true
+
   '@silvia-odwyer/photon-node@0.3.4':
     resolution: {integrity: sha512-bnly4BKB3KDTFxrUIcgCLbaeVVS8lrAkri1pEzskpmxu9MdfGQTy8b8EgcD83ywD3RPMsIulY8xJH5Awa+t9fA==}
 
@@ -2397,7 +2408,6 @@ packages:
 
   '@sliverp/qqbot@1.6.1':
     resolution: {integrity: sha512-8cPcFiWSTWV10wb84waoiNKrxtp0pk6gZ3xZhtI/HsB9tmH/tyIsadkhJYq7w4xyeTzfQDDJHOBCM1JaIUCEmQ==}
-    version: 1.6.1
     hasBin: true
     peerDependencies:
       clawdbot: '*'
@@ -2602,7 +2612,6 @@ packages:
 
   '@soimy/dingtalk@3.4.2':
     resolution: {integrity: sha512-zUHxtRKp8Od3LG3o9sX9/xMOcqep24wZ836zhUwmFsJzS/dlkq356Ci1pn1Mvf8K1OdGSmFbmwCJTkTSLgRkfw==}
-    version: 3.4.2
     peerDependencies:
       openclaw: '>=2026.3.14'
 
@@ -5227,17 +5236,6 @@ packages:
       ws:
         optional: true
       zod:
-        optional: true
-
-  openclaw@file:vendor/openclaw:
-    resolution: {directory: vendor/openclaw, type: directory}
-    engines: {node: '>=22.16.0'}
-    hasBin: true
-    peerDependencies:
-      '@napi-rs/canvas': ^0.1.89
-      node-llama-cpp: 3.18.1
-    peerDependenciesMeta:
-      node-llama-cpp:
         optional: true
 
   openshell@0.1.0:
@@ -9203,6 +9201,67 @@ snapshots:
   '@rollup/rollup-win32-x64-msvc@4.60.0':
     optional: true
 
+  '@shadanai/openclaw@2026.3.24-beta.1(@napi-rs/canvas@0.1.97)(encoding@0.1.13)':
+    dependencies:
+      '@agentclientprotocol/sdk': 0.16.1(zod@4.3.6)
+      '@anthropic-ai/vertex-sdk': 0.14.4(encoding@0.1.13)(zod@4.3.6)
+      '@aws-sdk/client-bedrock': 3.1017.0
+      '@clack/prompts': 1.1.0
+      '@homebridge/ciao': 1.3.5
+      '@line/bot-sdk': 10.6.0
+      '@lydell/node-pty': 1.2.0-beta.3
+      '@mariozechner/pi-agent-core': 0.61.1(@modelcontextprotocol/sdk@1.27.1(zod@4.3.6))(ws@8.20.0)(zod@4.3.6)
+      '@mariozechner/pi-ai': 0.61.1(@modelcontextprotocol/sdk@1.27.1(zod@4.3.6))(ws@8.20.0)(zod@4.3.6)
+      '@mariozechner/pi-coding-agent': 0.61.1(@modelcontextprotocol/sdk@1.27.1(zod@4.3.6))(ws@8.20.0)(zod@4.3.6)
+      '@mariozechner/pi-tui': 0.61.1
+      '@modelcontextprotocol/sdk': 1.27.1(zod@4.3.6)
+      '@mozilla/readability': 0.6.0
+      '@napi-rs/canvas': 0.1.97
+      '@sinclair/typebox': 0.34.48
+      ajv: 8.18.0
+      chalk: 5.6.2
+      chokidar: 5.0.0
+      cli-highlight: 2.1.11
+      commander: 14.0.3
+      croner: 10.0.1
+      dotenv: 17.3.1
+      express: 5.2.1
+      file-type: 21.3.4
+      gaxios: 7.1.4
+      hono: 4.12.8
+      ipaddr.js: 2.3.0
+      jiti: 2.6.1
+      json5: 2.2.3
+      jszip: 3.10.1
+      linkedom: 0.18.12
+      long: 5.3.2
+      markdown-it: 14.1.1
+      node-edge-tts: 1.2.10
+      osc-progress: 0.3.0
+      pdfjs-dist: 5.5.207
+      playwright-core: 1.58.2
+      qrcode-terminal: 0.12.0
+      sharp: 0.34.5
+      sqlite-vec: 0.1.7
+      tar: 7.5.12
+      tslog: 4.10.2
+      undici: 7.24.6
+      uuid: 13.0.0
+      ws: 8.20.0
+      yaml: 2.8.3
+      zod: 4.3.6
+    optionalDependencies:
+      openshell: 0.1.0(encoding@0.1.13)
+    transitivePeerDependencies:
+      - '@cfworker/json-schema'
+      - aws-crt
+      - bufferutil
+      - canvas
+      - debug
+      - encoding
+      - supports-color
+      - utf-8-validate
+
   '@silvia-odwyer/photon-node@0.3.4': {}
 
   '@sinclair/typebox@0.34.47': {}
@@ -9276,11 +9335,11 @@ snapshots:
     transitivePeerDependencies:
       - debug
 
-  '@sliverp/qqbot@1.6.1(clawdbot@2026.1.24-3(@modelcontextprotocol/sdk@1.27.1(zod@4.3.6))(@types/express@5.0.6)(devtools-protocol@0.0.1604597)(encoding@0.1.13)(typescript@5.9.3))(moltbot@0.1.0)(openclaw@file:vendor/openclaw(@napi-rs/canvas@0.1.97)(encoding@0.1.13))':
+  '@sliverp/qqbot@1.6.1(@shadanai/openclaw@2026.3.24-beta.1(@napi-rs/canvas@0.1.97)(encoding@0.1.13))(clawdbot@2026.1.24-3(@modelcontextprotocol/sdk@1.27.1(zod@4.3.6))(@types/express@5.0.6)(devtools-protocol@0.0.1604597)(encoding@0.1.13)(typescript@5.9.3))(moltbot@0.1.0)':
     dependencies:
       clawdbot: 2026.1.24-3(@modelcontextprotocol/sdk@1.27.1(zod@4.3.6))(@types/express@5.0.6)(devtools-protocol@0.0.1604597)(encoding@0.1.13)(typescript@5.9.3)
       moltbot: 0.1.0
-      openclaw: file:vendor/openclaw(@napi-rs/canvas@0.1.97)(encoding@0.1.13)
+      openclaw: '@shadanai/openclaw@2026.3.24-beta.1(@napi-rs/canvas@0.1.97)(encoding@0.1.13)'
 
   '@smithy/abort-controller@4.2.12':
     dependencies:
@@ -9587,13 +9646,13 @@ snapshots:
     dependencies:
       tslib: 2.8.1
 
-  '@soimy/dingtalk@3.4.2(openclaw@file:vendor/openclaw(@napi-rs/canvas@0.1.97)(encoding@0.1.13))':
+  '@soimy/dingtalk@3.4.2(@shadanai/openclaw@2026.3.24-beta.1(@napi-rs/canvas@0.1.97)(encoding@0.1.13))':
     dependencies:
       axios: 1.13.6(debug@4.4.3)
       dingtalk-stream: 2.1.5
       form-data: 4.0.5
       mammoth: 1.12.0
-      openclaw: file:vendor/openclaw(@napi-rs/canvas@0.1.97)(encoding@0.1.13)
+      openclaw: '@shadanai/openclaw@2026.3.24-beta.1(@napi-rs/canvas@0.1.97)(encoding@0.1.13)'
       pdf-parse: 2.4.5
       zod: 4.3.6
     transitivePeerDependencies:
@@ -12922,67 +12981,6 @@ snapshots:
     optionalDependencies:
       ws: 8.20.0
       zod: 4.3.6
-
-  openclaw@file:vendor/openclaw(@napi-rs/canvas@0.1.97)(encoding@0.1.13):
-    dependencies:
-      '@agentclientprotocol/sdk': 0.16.1(zod@4.3.6)
-      '@anthropic-ai/vertex-sdk': 0.14.4(encoding@0.1.13)(zod@4.3.6)
-      '@aws-sdk/client-bedrock': 3.1017.0
-      '@clack/prompts': 1.1.0
-      '@homebridge/ciao': 1.3.5
-      '@line/bot-sdk': 10.6.0
-      '@lydell/node-pty': 1.2.0-beta.3
-      '@mariozechner/pi-agent-core': 0.61.1(@modelcontextprotocol/sdk@1.27.1(zod@4.3.6))(ws@8.20.0)(zod@4.3.6)
-      '@mariozechner/pi-ai': 0.61.1(@modelcontextprotocol/sdk@1.27.1(zod@4.3.6))(ws@8.20.0)(zod@4.3.6)
-      '@mariozechner/pi-coding-agent': 0.61.1(@modelcontextprotocol/sdk@1.27.1(zod@4.3.6))(ws@8.20.0)(zod@4.3.6)
-      '@mariozechner/pi-tui': 0.61.1
-      '@modelcontextprotocol/sdk': 1.27.1(zod@4.3.6)
-      '@mozilla/readability': 0.6.0
-      '@napi-rs/canvas': 0.1.97
-      '@sinclair/typebox': 0.34.48
-      ajv: 8.18.0
-      chalk: 5.6.2
-      chokidar: 5.0.0
-      cli-highlight: 2.1.11
-      commander: 14.0.3
-      croner: 10.0.1
-      dotenv: 17.3.1
-      express: 5.2.1
-      file-type: 21.3.4
-      gaxios: 7.1.4
-      hono: 4.12.8
-      ipaddr.js: 2.3.0
-      jiti: 2.6.1
-      json5: 2.2.3
-      jszip: 3.10.1
-      linkedom: 0.18.12
-      long: 5.3.2
-      markdown-it: 14.1.1
-      node-edge-tts: 1.2.10
-      osc-progress: 0.3.0
-      pdfjs-dist: 5.5.207
-      playwright-core: 1.58.2
-      qrcode-terminal: 0.12.0
-      sharp: 0.34.5
-      sqlite-vec: 0.1.7
-      tar: 7.5.12
-      tslog: 4.10.2
-      undici: 7.24.6
-      uuid: 13.0.0
-      ws: 8.20.0
-      yaml: 2.8.3
-      zod: 4.3.6
-    optionalDependencies:
-      openshell: 0.1.0(encoding@0.1.13)
-    transitivePeerDependencies:
-      - '@cfworker/json-schema'
-      - aws-crt
-      - bufferutil
-      - canvas
-      - debug
-      - encoding
-      - supports-color
-      - utf-8-validate
 
   openshell@0.1.0(encoding@0.1.13):
     dependencies:

@@ -45,13 +45,6 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Extract vendored openclaw
-        run: |
-          cd vendor
-          tar -xzf openclaw-2026.3.24-beta.1.tgz
-          mv package openclaw
-        shell: bash
-
       - name: Install dependencies
         run: pnpm install
 
