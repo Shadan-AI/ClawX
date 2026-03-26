@@ -65,3 +65,5 @@ docs/pr-session-notes-*.md
 
 .cursor/
 .pnpm-store/
+# Vendored openclaw (extracted from tgz at build time)
+vendor/openclaw/
