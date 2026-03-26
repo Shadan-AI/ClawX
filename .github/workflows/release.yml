@@ -30,6 +30,7 @@ jobs:
             platform: linux
 
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     
     steps:
       - name: Checkout code
@@ -80,6 +81,8 @@ jobs:
       # Windows specific steps
       - name: Build Windows
         if: matrix.platform == 'win'
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
         run: pnpm run package:win
 
       # # Detect release channel from tag to skip code signing for alpha/beta builds
