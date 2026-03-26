@@ -15,13 +15,15 @@ import 'zx/globals';
 const ROOT = path.resolve(__dirname, '..');
 const OUTPUT = path.join(ROOT, 'build', 'openclaw-plugins', 'box-im');
 
-// Resolve box-im source from sibling openclaw repo
-const OPENCLAW_REPO = path.resolve(ROOT, '..', 'openclaw');
-const BOX_IM_SRC = path.join(OPENCLAW_REPO, 'extensions', 'box-im');
+// Resolve box-im source: prefer installed openclaw package, fallback to sibling repo
+const INSTALLED_BOX_IM = path.join(ROOT, 'node_modules', 'openclaw', 'extensions', 'box-im');
+const SIBLING_BOX_IM = path.join(ROOT, '..', 'openclaw', 'extensions', 'box-im');
+const BOX_IM_SRC = fs.existsSync(INSTALLED_BOX_IM) ? INSTALLED_BOX_IM : SIBLING_BOX_IM;
 
 if (!fs.existsSync(BOX_IM_SRC)) {
-  echo`❌ box-im source not found at ${BOX_IM_SRC}`;
-  echo`   Expected sibling openclaw repo at ${OPENCLAW_REPO}`;
+  echo`❌ box-im source not found`;
+  echo`   Checked: ${INSTALLED_BOX_IM}`;
+  echo`   Checked: ${SIBLING_BOX_IM}`;
   process.exit(1);
 }
 
