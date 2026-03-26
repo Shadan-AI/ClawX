@@ -78,10 +78,10 @@ importers:
         version: 1.2.8(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@sliverp/qqbot':
         specifier: ^1.6.1
-        version: 1.6.1(clawdbot@2026.1.24-3(@discordjs/opus@0.10.0(encoding@0.1.13))(@modelcontextprotocol/sdk@1.27.1(zod@4.3.6))(@types/express@5.0.6)(devtools-protocol@0.0.1596832)(encoding@0.1.13)(typescript@5.9.3))(moltbot@0.1.0)(openclaw@file:../openclaw/openclaw-2026.3.24-beta.1.tgz(@napi-rs/canvas@0.1.95)(encoding@0.1.13))
+        version: 1.6.1(clawdbot@2026.1.24-3(@discordjs/opus@0.10.0(encoding@0.1.13))(@modelcontextprotocol/sdk@1.27.1(zod@4.3.6))(@types/express@5.0.6)(devtools-protocol@0.0.1596832)(encoding@0.1.13)(typescript@5.9.3))(moltbot@0.1.0)(openclaw@file:vendor/openclaw-2026.3.24-beta.1.tgz(@napi-rs/canvas@0.1.95)(encoding@0.1.13))
       '@soimy/dingtalk':
         specifier: ^3.3.0
-        version: 3.4.0(openclaw@file:../openclaw/openclaw-2026.3.24-beta.1.tgz(@napi-rs/canvas@0.1.95)(encoding@0.1.13))
+        version: 3.4.0(openclaw@file:vendor/openclaw-2026.3.24-beta.1.tgz(@napi-rs/canvas@0.1.95)(encoding@0.1.13))
       '@tencent-weixin/openclaw-weixin':
         specifier: ^1.0.2
         version: 1.0.2
@@ -155,8 +155,8 @@ importers:
         specifier: ^0.563.0
         version: 0.563.0(react@19.2.4)
       openclaw:
-        specifier: file:../openclaw/openclaw-2026.3.24-beta.1.tgz
-        version: file:../openclaw/openclaw-2026.3.24-beta.1.tgz(@napi-rs/canvas@0.1.95)(encoding@0.1.13)
+        specifier: file:vendor/openclaw-2026.3.24-beta.1.tgz
+        version: file:vendor/openclaw-2026.3.24-beta.1.tgz(@napi-rs/canvas@0.1.95)(encoding@0.1.13)
       png2icons:
         specifier: ^2.0.1
         version: 2.0.1
@@ -5260,7 +5260,7 @@ packages:
       zod:
         optional: true
 
-  openclaw@file:../openclaw/openclaw-2026.3.24-beta.1.tgz:
+  openclaw@file:vendor/openclaw-2026.3.24-beta.1.tgz:
     resolution: {integrity: sha512-61E7zugBlp/CV36/Nu+Knh782l8zpZAXWf40QbAgQaG2c6shmNf11PbDm8ktIEpYoEgrkA8sC2vI/YtEy7w06g==}
     version: 2026.3.24-beta.1
     engines: {node: '>=22.16.0'}
@@ -6868,7 +6868,7 @@ snapshots:
 
   '@anthropic-ai/vertex-sdk@0.14.4(encoding@0.1.13)(zod@4.3.6)':
     dependencies:
-      '@anthropic-ai/sdk': 0.71.2(zod@4.3.6)
+      '@anthropic-ai/sdk': 0.73.0(zod@4.3.6)
       google-auth-library: 9.15.1(encoding@0.1.13)
     transitivePeerDependencies:
       - encoding
@@ -9400,11 +9400,11 @@ snapshots:
     transitivePeerDependencies:
       - debug
 
-  '@sliverp/qqbot@1.6.1(clawdbot@2026.1.24-3(@discordjs/opus@0.10.0(encoding@0.1.13))(@modelcontextprotocol/sdk@1.27.1(zod@4.3.6))(@types/express@5.0.6)(devtools-protocol@0.0.1596832)(encoding@0.1.13)(typescript@5.9.3))(moltbot@0.1.0)(openclaw@file:../openclaw/openclaw-2026.3.24-beta.1.tgz(@napi-rs/canvas@0.1.95)(encoding@0.1.13))':
+  '@sliverp/qqbot@1.6.1(clawdbot@2026.1.24-3(@discordjs/opus@0.10.0(encoding@0.1.13))(@modelcontextprotocol/sdk@1.27.1(zod@4.3.6))(@types/express@5.0.6)(devtools-protocol@0.0.1596832)(encoding@0.1.13)(typescript@5.9.3))(moltbot@0.1.0)(openclaw@file:vendor/openclaw-2026.3.24-beta.1.tgz(@napi-rs/canvas@0.1.95)(encoding@0.1.13))':
     dependencies:
       clawdbot: 2026.1.24-3(@discordjs/opus@0.10.0(encoding@0.1.13))(@modelcontextprotocol/sdk@1.27.1(zod@4.3.6))(@types/express@5.0.6)(devtools-protocol@0.0.1596832)(encoding@0.1.13)(typescript@5.9.3)
       moltbot: 0.1.0
-      openclaw: file:../openclaw/openclaw-2026.3.24-beta.1.tgz(@napi-rs/canvas@0.1.95)(encoding@0.1.13)
+      openclaw: file:vendor/openclaw-2026.3.24-beta.1.tgz(@napi-rs/canvas@0.1.95)(encoding@0.1.13)
 
   '@smithy/abort-controller@4.2.12':
     dependencies:
@@ -9711,13 +9711,13 @@ snapshots:
     dependencies:
       tslib: 2.8.1
 
-  '@soimy/dingtalk@3.4.0(openclaw@file:../openclaw/openclaw-2026.3.24-beta.1.tgz(@napi-rs/canvas@0.1.95)(encoding@0.1.13))':
+  '@soimy/dingtalk@3.4.0(openclaw@file:vendor/openclaw-2026.3.24-beta.1.tgz(@napi-rs/canvas@0.1.95)(encoding@0.1.13))':
     dependencies:
       axios: 1.13.5(debug@4.4.3)
       dingtalk-stream: 2.1.4
       form-data: 4.0.5
       mammoth: 1.12.0
-      openclaw: file:../openclaw/openclaw-2026.3.24-beta.1.tgz(@napi-rs/canvas@0.1.95)(encoding@0.1.13)
+      openclaw: file:vendor/openclaw-2026.3.24-beta.1.tgz(@napi-rs/canvas@0.1.95)(encoding@0.1.13)
       pdf-parse: 2.4.5
       zod: 4.3.6
     transitivePeerDependencies:
@@ -13102,7 +13102,7 @@ snapshots:
       ws: 8.20.0
       zod: 4.3.6
 
-  openclaw@file:../openclaw/openclaw-2026.3.24-beta.1.tgz(@napi-rs/canvas@0.1.95)(encoding@0.1.13):
+  openclaw@file:vendor/openclaw-2026.3.24-beta.1.tgz(@napi-rs/canvas@0.1.95)(encoding@0.1.13):
     dependencies:
       '@agentclientprotocol/sdk': 0.16.1(zod@4.3.6)
       '@anthropic-ai/vertex-sdk': 0.14.4(encoding@0.1.13)(zod@4.3.6)
