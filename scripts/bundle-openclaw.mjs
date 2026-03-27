@@ -694,7 +694,67 @@ function patchBundledRuntime(outputDir) {
 }
 
 patchBrokenModules(outputNodeModules);
+
+// Fix lru-cache version: BFS may collect v7 (no named exports) but many packages need v11+.
+// Replace top-level lru-cache with v11 which supports both default and named {LRUCache} exports.
+{
+  const lruSrc = path.join(NODE_MODULES, '.pnpm', 'lru-cache@11.2.7', 'node_modules', 'lru-cache');
+  const lruDest = path.join(outputNodeModules, 'lru-cache');
+  if (fs.existsSync(lruSrc) && fs.existsSync(lruDest)) {
+    fs.rmSync(lruDest, { recursive: true });
+    fs.cpSync(lruSrc, lruDest, { recursive: true, dereference: true });
+    echo`   🩹 Replaced lru-cache with v11 (supports both named and default exports)`;
+  }
+  // Remove nested copy if exists
+  const hgiNested = path.join(outputNodeModules, 'hosted-git-info', 'node_modules', 'lru-cache');
+  if (fs.existsSync(hgiNested)) fs.rmSync(hgiNested, { recursive: true });
+}
+
 patchBundledRuntime(OUTPUT);
+
+// 8a. Copy extra packages required by ClawX electron main but not in openclaw's dep tree
+// These packages get their own nested node_modules to avoid version conflicts with openclaw's deps
+const EXTRA_PACKAGES = ['@whiskeysockets/baileys'];
+for (const pkg of EXTRA_PACKAGES) {
+  const link = path.join(NODE_MODULES, pkg);
+  if (!fs.existsSync(link)) {
+    echo`   ⚠️  Extra package ${pkg} not found, skipping`;
+    continue;
+  }
+  const realPath = fs.realpathSync(link);
+  const dest = path.join(outputNodeModules, pkg);
+  if (!fs.existsSync(dest)) {
+    fs.mkdirSync(normWin(path.dirname(dest)), { recursive: true });
+    fs.cpSync(normWin(realPath), normWin(dest), { recursive: true, dereference: true });
+  }
+  // Copy deps into the package's own node_modules to avoid conflicts
+  const pkgNodeModules = path.join(dest, 'node_modules');
+  const extraVirtualNM = getVirtualStoreNodeModules(realPath);
+  if (extraVirtualNM) {
+    const extraQueue = [{ nodeModulesDir: extraVirtualNM, skipPkg: pkg }];
+    while (extraQueue.length > 0) {
+      const { nodeModulesDir: nmDir, skipPkg: skip } = extraQueue.shift();
+      for (const { name, fullPath: fp } of listPackages(nmDir)) {
+        if (name === skip) continue;
+        if (SKIP_PACKAGES.has(name) || SKIP_SCOPES.some(s => name.startsWith(s))) continue;
+        // If already in top-level node_modules, skip (openclaw's version wins)
+        if (fs.existsSync(path.join(outputNodeModules, name))) continue;
+        // Otherwise put in package's nested node_modules
+        const depDest = path.join(pkgNodeModules, name);
+        if (fs.existsSync(depDest)) continue;
+        let depReal;
+        try { depReal = fs.realpathSync(fp); } catch { continue; }
+        fs.mkdirSync(normWin(path.dirname(depDest)), { recursive: true });
+        fs.cpSync(normWin(depReal), normWin(depDest), { recursive: true, dereference: true });
+        const depNM = getVirtualStoreNodeModules(depReal);
+        if (depNM && depNM !== nmDir) {
+          extraQueue.push({ nodeModulesDir: depNM, skipPkg: name });
+        }
+      }
+    }
+  }
+  echo`   📦 Added extra package: ${pkg}`;
+}
 
 // 8. Verify the bundle
 const entryExists = fs.existsSync(path.join(OUTPUT, 'openclaw.mjs'));

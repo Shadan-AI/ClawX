@@ -20,15 +20,25 @@ if (typeof process !== 'undefined' && process.resourcesPath) {
   try {
     var _Module = require('module');
     var _path = require('path');
+    var _fs = require('fs');
     var _openclawDir = _path.join(process.resourcesPath, 'openclaw');
-    if (require('fs').existsSync(_openclawDir)) {
+    if (_fs.existsSync(_openclawDir)) {
       var _prevPaths = _Module.globalPaths || [];
       var _nmPath = _path.join(_openclawDir, 'node_modules');
       if (_prevPaths.indexOf(_openclawDir) === -1) _Module.globalPaths.unshift(_openclawDir);
       if (_prevPaths.indexOf(_nmPath) === -1) _Module.globalPaths.unshift(_nmPath);
-      // Also register openclaw itself so require('openclaw/...') resolves
       var _parentNM = _path.dirname(_openclawDir);
       if (_prevPaths.indexOf(_parentNM) === -1) _Module.globalPaths.unshift(_parentNM);
+      // Create a node_modules/openclaw symlink so subpath exports resolve correctly
+      var _symlinkNM = _path.join(process.resourcesPath, 'node_modules');
+      var _symlinkTarget = _path.join(_symlinkNM, 'openclaw');
+      try {
+        if (!_fs.existsSync(_symlinkTarget)) {
+          _fs.mkdirSync(_symlinkNM, { recursive: true });
+          _fs.symlinkSync(_openclawDir, _symlinkTarget);
+        }
+        if (_prevPaths.indexOf(_symlinkNM) === -1) _Module.globalPaths.unshift(_symlinkNM);
+      } catch(e) {}
     }
   } catch(e) {}
 }
