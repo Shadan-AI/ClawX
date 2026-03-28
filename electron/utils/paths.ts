@@ -101,6 +101,28 @@ export function getResourcesDir(): string {
   return join(__dirname, '../../resources');
 }
 
+function isUsableOpenClawDir(dir: string): boolean {
+  return existsSync(join(dir, 'package.json')) && existsSync(join(dir, 'openclaw.mjs'));
+}
+
+function getDevOpenClawDir(): string {
+  const envDir = process.env.CLAWX_OPENCLAW_DIR?.trim();
+  const appPath = getElectronApp().getAppPath();
+  const candidates = [
+    envDir,
+    join(appPath, '..', 'openclaw'),
+    join(appPath, 'node_modules', 'openclaw'),
+  ].filter((value): value is string => Boolean(value));
+
+  for (const candidate of candidates) {
+    if (isUsableOpenClawDir(candidate)) {
+      return candidate;
+    }
+  }
+
+  return join(appPath, 'node_modules', 'openclaw');
+}
+
 /**
  * Get preload script path
  */
@@ -117,8 +139,8 @@ export function getOpenClawDir(): string {
   if (getElectronApp().isPackaged) {
     return join(process.resourcesPath, 'openclaw');
   }
-  // Development: use node_modules/openclaw
-  return join(__dirname, '../../node_modules/openclaw');
+  // Development: allow overriding with a sibling/local OpenClaw checkout.
+  return getDevOpenClawDir();
 }
 
 /**

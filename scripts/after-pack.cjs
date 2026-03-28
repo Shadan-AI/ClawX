@@ -554,4 +554,15 @@ exports.default = async function afterPack(context) {
   if (nativeRemoved > 0) {
     console.log(`[after-pack] ✅ Removed ${nativeRemoved} non-target native platform packages.`);
   }
+
+  // 5. Create node_modules/openclaw symlink in Resources/ so require('openclaw/plugin-sdk/...') resolves
+  const resNmDir = join(resourcesDir, 'node_modules');
+  const symlinkTarget = join(resNmDir, 'openclaw');
+  if (!existsSync(symlinkTarget) && existsSync(openclawRoot)) {
+    mkdirSync(resNmDir, { recursive: true });
+    const { relative } = require('path');
+    const { symlinkSync } = require('fs');
+    symlinkSync(relative(resNmDir, openclawRoot), symlinkTarget);
+    console.log(`[after-pack] ✅ Created node_modules/openclaw symlink for subpath exports.`);
+  }
 };
