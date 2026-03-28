@@ -4,30 +4,17 @@ import { createRequire } from 'module';
 import { EventEmitter } from 'events';
 import { existsSync, mkdirSync, rmSync, readdirSync } from 'fs';
 import { deflateSync } from 'zlib';
-import { getOpenClawDir, getOpenClawResolvedDir } from './paths';
+import { getOpenClawResolvedDir } from './paths';
+import { createOpenClawPackageRequire, resolveOpenClawPackageJson } from './openclaw-package-resolution';
 
 const require = createRequire(import.meta.url);
 
-// Resolve dependencies from OpenClaw package context (pnpm-safe)
-const openclawPath = getOpenClawDir();
 const openclawResolvedPath = getOpenClawResolvedDir();
-const openclawRequire = createRequire(join(openclawResolvedPath, 'package.json'));
+const openclawRequire = createOpenClawPackageRequire(join(openclawResolvedPath, 'package.json'));
 
-function resolveOpenClawPackageJson(packageName: string): string {
-    const specifier = `${packageName}/package.json`;
-    try {
-        return openclawRequire.resolve(specifier);
-    } catch (err) {
-        const reason = err instanceof Error ? err.message : String(err);
-        throw new Error(
-            `Failed to resolve "${packageName}" from OpenClaw context. ` +
-            `openclawPath=${openclawPath}, resolvedPath=${openclawResolvedPath}. ${reason}`,
-            { cause: err }
-        );
-    }
-}
-
-const baileysPath = dirname(resolveOpenClawPackageJson('@whiskeysockets/baileys'));
+const baileysPackageJsonPath = resolveOpenClawPackageJson('@whiskeysockets/baileys');
+const baileysPath = dirname(baileysPackageJsonPath);
+const baileysRequire = createOpenClawPackageRequire(baileysPackageJsonPath);
 const qrCodeModulePath = openclawRequire.resolve('qrcode-terminal/vendor/QRCode/index.js');
 const qrErrorCorrectLevelPath = openclawRequire.resolve('qrcode-terminal/vendor/QRCode/QRErrorCorrectLevel.js');
 
@@ -37,7 +24,7 @@ const {
     useMultiFileAuthState: initAuth, // Rename to avoid React hook linter error
     DisconnectReason,
     fetchLatestBaileysVersion
-} = require(baileysPath);
+} = baileysRequire(baileysPath);
 
 // Load QRCode dependencies dynamically
 const QRCodeModule = require(qrCodeModulePath);
@@ -249,7 +236,6 @@ export class WhatsAppLoginManager extends EventEmitter {
             let pino: (...args: unknown[]) => Record<string, unknown>;
             try {
                 // Try to resolve pino from baileys context since it's a dependency of baileys
-                const baileysRequire = createRequire(join(baileysPath, 'package.json'));
                 pino = baileysRequire('pino');
             } catch (e) {
                 console.warn('[WhatsAppLogin] Could not load pino from baileys, trying root', e);
