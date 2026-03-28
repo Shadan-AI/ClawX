@@ -66,8 +66,18 @@ fs.cpSync(openclawReal, OUTPUT, { recursive: true, dereference: true });
 // We BFS from openclaw's virtual store node_modules, following each symlink
 // to discover the target's own virtual store node_modules and its deps.
 
-const collected = new Map(); // realPath -> packageName (for deduplication)
+const collected = new Map(); // realPath -> metadata (for deduplication)
+const packageVersions = new Map(); // packageName -> Set<version>
 const queue = []; // BFS queue of virtual-store node_modules dirs to visit
+
+function readPackageVersion(realPkgPath) {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(realPkgPath, 'package.json'), 'utf8'));
+    return typeof pkg.version === 'string' ? pkg.version : '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+}
 
 /**
  * Given a real path of a package, find the containing virtual-store node_modules.
@@ -117,6 +127,7 @@ function listPackages(nodeModulesDir) {
       result.push({ name: entry, fullPath: entryPath });
     }
   }
+  result.sort((a, b) => a.name.localeCompare(b.name));
   return result;
 }
 
@@ -164,10 +175,21 @@ while (queue.length > 0) {
     }
 
     if (collected.has(realPath)) continue; // already visited
-    collected.set(realPath, name);
+    const version = readPackageVersion(realPath);
+    const metadata = {
+      name,
+      version,
+      realPath,
+      virtualStoreDir: getVirtualStoreNodeModules(realPath),
+    };
+    collected.set(realPath, metadata);
+    if (!packageVersions.has(name)) {
+      packageVersions.set(name, new Set());
+    }
+    packageVersions.get(name).add(version);
 
     // Find this package's own virtual store node_modules to discover ITS deps
-    const depVirtualNM = getVirtualStoreNodeModules(realPath);
+    const depVirtualNM = metadata.virtualStoreDir;
     if (depVirtualNM && depVirtualNM !== nodeModulesDir) {
       // Determine the package's "self name" in its own virtual store
       // For scoped: @clack/core -> skip "@clack/core" when scanning
@@ -190,10 +212,17 @@ const outputNodeModules = path.join(OUTPUT, 'node_modules');
 fs.mkdirSync(outputNodeModules, { recursive: true });
 
 const copiedNames = new Set(); // Track package names already copied
+const copiedPackages = new Map(); // packageName -> { realPath, dest, virtualStoreDir }
+const conflictPackageNames = new Set(
+  [...packageVersions.entries()]
+    .filter(([, versions]) => versions.size > 1)
+    .map(([name]) => name)
+);
 let copiedCount = 0;
 let skippedDupes = 0;
 
-for (const [realPath, pkgName] of collected) {
+for (const [realPath, metadata] of collected) {
+  const pkgName = metadata.name;
   if (copiedNames.has(pkgName)) {
     skippedDupes++;
     continue; // Keep the first version (closer to openclaw in dep tree)
@@ -205,10 +234,51 @@ for (const [realPath, pkgName] of collected) {
   try {
     fs.mkdirSync(normWin(path.dirname(dest)), { recursive: true });
     fs.cpSync(normWin(realPath), normWin(dest), { recursive: true, dereference: true });
+    copiedPackages.set(pkgName, {
+      name: pkgName,
+      realPath,
+      dest,
+      virtualStoreDir: metadata.virtualStoreDir,
+    });
     copiedCount++;
   } catch (err) {
     echo`   ⚠️  Skipped ${pkgName}: ${err.message}`;
   }
+}
+
+// 5.1 When multiple versions of the same package exist in the dependency tree,
+// keep the flattened "winner" for the common case, but restore exact per-package
+// nested deps for conflict names so runtime resolution remains correct on all OSes.
+let restoredConflictDeps = 0;
+for (const { name, dest, virtualStoreDir } of copiedPackages.values()) {
+  if (!virtualStoreDir) continue;
+
+  for (const dep of listPackages(virtualStoreDir)) {
+    if (dep.name === name) continue;
+    if (!conflictPackageNames.has(dep.name)) continue;
+
+    let depRealPath;
+    try {
+      depRealPath = fs.realpathSync(dep.fullPath);
+    } catch {
+      continue;
+    }
+
+    const nestedDest = path.join(dest, 'node_modules', dep.name);
+    if (fs.existsSync(nestedDest)) continue;
+
+    try {
+      fs.mkdirSync(normWin(path.dirname(nestedDest)), { recursive: true });
+      fs.cpSync(normWin(depRealPath), normWin(nestedDest), { recursive: true, dereference: true });
+      restoredConflictDeps++;
+    } catch (err) {
+      echo`   ⚠️  Failed to restore nested dep ${dep.name} for ${path.basename(dest)}: ${err.message}`;
+    }
+  }
+}
+
+if (restoredConflictDeps > 0) {
+  echo`   Restored ${restoredConflictDeps} nested dependency copies for version conflicts`;
 }
 
 // 6. Clean up the bundle to reduce package size
