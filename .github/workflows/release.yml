@@ -20,13 +20,18 @@ permissions:
 jobs:
   release:
     strategy:
+      fail-fast: false
       matrix:
         include:
+          - os: macos-15
+            platform: mac
           - os: windows-latest
             platform: win
+          - os: ubuntu-latest
+            platform: linux
 
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 90
     
     steps:
       - name: Checkout code
@@ -41,9 +46,10 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: '24'
+          cache: 'pnpm'
 
       - name: Install dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       - name: Download uv binaries for macOS
         if: matrix.platform == 'mac'
