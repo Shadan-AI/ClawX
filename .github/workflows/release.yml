@@ -73,10 +73,18 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          HAS_MAC_CERTS: ${{ secrets.MAC_CERTS != '' && secrets.MAC_CERTS_PASSWORD != '' }}
+          HAS_APPLE_NOTARY: ${{ secrets.APPLE_ID != '' && secrets.APPLE_APP_SPECIFIC_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' }}
         run: |
           ulimit -n 65536
           echo "File descriptor limit: $(ulimit -n)"
-          pnpm run package:mac
+          if [[ "$HAS_MAC_CERTS" == "true" && "$HAS_APPLE_NOTARY" == "true" ]]; then
+            echo "Using signed + notarized macOS release build"
+            pnpm run package:mac
+          else
+            echo "Mac signing/notarization secrets are incomplete; building unsigned macOS release instead"
+            node scripts/package-mac.mjs --config.mac.identity=null --config.mac.notarize=false
+          fi
 
       # Windows specific steps
       - name: Build Windows

@@ -12,10 +12,11 @@ const darwinMajor = Number.parseInt(os.release().split('.')[0] ?? '', 10);
 const needsLegacyDmgFallback = process.platform === 'darwin' && Number.isFinite(darwinMajor) && darwinMajor < 22;
 const forceDmg = isTruthy(process.env.CLAWX_FORCE_DMG);
 const dryRun = process.argv.includes('--dry-run');
+const extraElectronBuilderArgs = process.argv.slice(2).filter((arg) => arg !== '--dry-run');
 
 const packageTargets = needsLegacyDmgFallback && !forceDmg ? ['zip'] : ['dmg', 'zip'];
 const pnpmArgs = ['run', 'package'];
-const electronBuilderArgs = ['--mac', ...packageTargets, '--publish', 'never'];
+const electronBuilderArgs = ['--mac', ...packageTargets, '--publish', 'never', ...extraElectronBuilderArgs];
 
 function run(command, args) {
   const result = spawnSync(command, args, {
