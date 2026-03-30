@@ -37,16 +37,17 @@ jobs:
         with:
           fetch-depth: 0
 
+      # setup-node with cache: pnpm runs `pnpm` internally — install pnpm first.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.31.0
+
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
           node-version: '24'
           cache: 'pnpm'
-
-      # Install pnpm with Node 24's npm (avoids pnpm/action-setup@v4's Node 20
-      # runtime warning). Corepack alone often leaves `pnpm` off PATH on GHA.
-      - name: Install pnpm
-        run: npm install -g pnpm@10.31.0
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
