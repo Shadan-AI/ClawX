@@ -43,12 +43,10 @@ jobs:
           node-version: '24'
           cache: 'pnpm'
 
-      # Use Corepack so pnpm runs on the same Node as setup-node (avoids
-      # pnpm/action-setup@v4 running on deprecated Node 20 action runtime).
-      - name: Enable corepack (pnpm)
-        run: |
-          corepack enable
-          corepack prepare pnpm@10.31.0 --activate
+      # Install pnpm with Node 24's npm (avoids pnpm/action-setup@v4's Node 20
+      # runtime warning). Corepack alone often leaves `pnpm` off PATH on GHA.
+      - name: Install pnpm
+        run: npm install -g pnpm@10.31.0
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
