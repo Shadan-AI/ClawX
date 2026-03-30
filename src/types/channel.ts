@@ -584,7 +584,8 @@ export const CHANNEL_META: Record<ChannelType, ChannelMeta> = {
     name: 'Box-IM',
     icon: '🤖',
     description: 'Box-IM 数字员工平台',
-    connectionType: 'qr',
+    connectionType: 'embeddedPlugin',
+    embeddedPluginPath: '/plugins/box-im/login',
     docsUrl: '',
     configFields: [],
     instructions: [
