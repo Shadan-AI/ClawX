@@ -923,9 +923,43 @@ patchBrokenModules(outputNodeModules);
 patchBundledRuntime(OUTPUT);
 
 
-// 8. Verify the bundle
-const entryExists = fs.existsSync(path.join(OUTPUT, 'openclaw.mjs'));
-const distExists = fs.existsSync(path.join(OUTPUT, 'dist', 'entry.js'));
+// 8. Verify the bundle (paths follow bundled package.json — upstream may use
+// dist/index.js and/or dist/entry.js; bin may stay openclaw.mjs)
+let bundledPkg;
+try {
+  bundledPkg = JSON.parse(fs.readFileSync(path.join(OUTPUT, 'package.json'), 'utf8'));
+} catch {
+  echo`❌ Bundle verification failed: missing ${path.join(OUTPUT, 'package.json')}`;
+  process.exit(1);
+}
+
+function resolveBundledBinRel(pkg) {
+  if (typeof pkg.bin === 'string' && pkg.bin) return pkg.bin;
+  if (typeof pkg.bin === 'object' && pkg.bin) {
+    const b = pkg.bin;
+    if (typeof b.openclaw === 'string') return b.openclaw;
+    if (typeof b.openme === 'string') return b.openme;
+    const first = Object.values(b).find((v) => typeof v === 'string');
+    if (first) return first;
+  }
+  return 'openclaw.mjs';
+}
+
+function bundledGatewayCandidates(pkg) {
+  const out = [];
+  if (typeof pkg.main === 'string' && pkg.main) {
+    out.push(path.join(OUTPUT, pkg.main));
+  }
+  out.push(path.join(OUTPUT, 'dist', 'index.js'));
+  out.push(path.join(OUTPUT, 'dist', 'entry.js'));
+  return [...new Set(out)];
+}
+
+const binRel = resolveBundledBinRel(bundledPkg);
+const cliPath = path.join(OUTPUT, binRel);
+const cliExists = fs.existsSync(normWin(cliPath));
+const gatewayPaths = bundledGatewayCandidates(bundledPkg);
+const gatewayExists = gatewayPaths.some((p) => fs.existsSync(normWin(p)));
 
 echo``;
 echo`✅ Bundle complete: ${OUTPUT}`;
@@ -933,10 +967,20 @@ echo`   Unique packages copied: ${copiedCount}`;
 echo`   Dev-only packages skipped: ${skippedDevCount}`;
 echo`   Duplicate versions skipped: ${skippedDupes}`;
 echo`   Total discovered: ${collected.size}`;
-echo`   openclaw.mjs: ${entryExists ? '✓' : '✗'}`;
-echo`   dist/entry.js: ${distExists ? '✓' : '✗'}`;
+echo`   CLI (${binRel}): ${cliExists ? '✓' : '✗'}`;
+echo`   Gateway (package.json main or dist/index.js or dist/entry.js): ${gatewayExists ? '✓' : '✗'}`;
 
-if (!entryExists || !distExists) {
+if (!cliExists || !gatewayExists) {
   echo`❌ Bundle verification failed!`;
+  if (!cliExists) {
+    echo`   Missing CLI at: ${cliPath}`;
+  }
+  if (!gatewayExists) {
+    echo`   Tried gateway paths:`;
+    for (const p of gatewayPaths) {
+      echo`     - ${p} ${fs.existsSync(normWin(p)) ? '✓' : '✗'}`;
+    }
+  }
+  echo`   Hint: run openme "pnpm run build" before ClawX pack (CI: .github/scripts/build-openme-ci.sh)`;
   process.exit(1);
 }

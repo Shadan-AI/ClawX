@@ -54,6 +54,13 @@ jobs:
         shell: bash
         run: npm install -g pnpm@10.31.0
 
+      # openme keeps dist/ out of git; file:../openme must include a full build.
+      - name: Build openme (path dependency)
+        shell: bash
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+        run: bash .github/scripts/build-openme-ci.sh
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
