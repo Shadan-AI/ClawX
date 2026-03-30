@@ -26,6 +26,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
+      - name: Clone openme (path dependency)
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash .github/scripts/clone-openme-path-dep.sh
+
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
