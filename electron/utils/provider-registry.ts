@@ -7,6 +7,7 @@ export {
   type BuiltinProviderType,
   type ProviderType,
 } from '../shared/providers/types';
+export { getProviderDefinition } from '../shared/providers/registry';
 import {
   type ProviderBackendConfig,
   type ProviderModelEntry,

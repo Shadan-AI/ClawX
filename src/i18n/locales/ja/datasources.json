@@ -1,0 +1,34 @@
+{
+    "title": "データソース",
+    "subtitle": "コネクタの認証情報を設定します（~/.openclaw/openclaw.json に保存）。",
+    "gatewayWarning": "ゲートウェイ起動後に保存できます。",
+    "save": "保存",
+    "status": {
+        "configured": "設定済み",
+        "notConfigured": "未設定"
+    },
+    "connectors": {
+        "wechat": {
+            "name": "WeChat",
+            "description": "WeChat 連携用の認証情報。"
+        },
+        "zhipu": {
+            "name": "Zhipu",
+            "description": "Zhipu API キー。"
+        }
+    },
+    "fields": {
+        "appId": "App ID",
+        "appSecret": "App Secret",
+        "apiKey": "API Key"
+    },
+    "placeholders": {
+        "appId": "",
+        "appSecret": "",
+        "apiKey": ""
+    },
+    "toast": {
+        "fillAll": "すべて入力してください。",
+        "saved": "保存しました：{{name}}"
+    }
+}

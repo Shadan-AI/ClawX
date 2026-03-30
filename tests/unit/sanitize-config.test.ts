@@ -86,7 +86,11 @@ async function sanitizeConfig(filePath: string): Promise<boolean> {
       const validLoad: unknown[] = [];
       for (const p of pluginsObj.load) {
         if (typeof p === 'string' && p.startsWith('/')) {
-          if (p.includes('node_modules/openclaw/extensions') || !(await fileExists(p))) {
+          if (
+            (p.includes('node_modules/openclaw/extensions') ||
+              p.includes('node_modules/@shadanai/openclaw/extensions')) ||
+            !(await fileExists(p))
+          ) {
             modified = true;
           } else {
             validLoad.push(p);
@@ -103,7 +107,11 @@ async function sanitizeConfig(filePath: string): Promise<boolean> {
         const countBefore = loadObj.paths.length;
         for (const p of loadObj.paths) {
           if (typeof p === 'string' && p.startsWith('/')) {
-            if (p.includes('node_modules/openclaw/extensions') || !(await fileExists(p))) {
+            if (
+              (p.includes('node_modules/openclaw/extensions') ||
+                p.includes('node_modules/@shadanai/openclaw/extensions')) ||
+              !(await fileExists(p))
+            ) {
               modified = true;
             } else {
               validPaths.push(p);

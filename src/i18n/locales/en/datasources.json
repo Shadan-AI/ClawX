@@ -1,0 +1,34 @@
+{
+    "title": "Data sources",
+    "subtitle": "Configure connector credentials; values are written to ~/.openclaw/openclaw.json.",
+    "gatewayWarning": "Start the gateway to save changes to the config file.",
+    "save": "Save",
+    "status": {
+        "configured": "Configured",
+        "notConfigured": "Not configured"
+    },
+    "connectors": {
+        "wechat": {
+            "name": "WeChat",
+            "description": "App credentials for WeChat-related features."
+        },
+        "zhipu": {
+            "name": "Zhipu",
+            "description": "Zhipu API key."
+        }
+    },
+    "fields": {
+        "appId": "App ID",
+        "appSecret": "App Secret",
+        "apiKey": "API Key"
+    },
+    "placeholders": {
+        "appId": "",
+        "appSecret": "",
+        "apiKey": ""
+    },
+    "toast": {
+        "fillAll": "Fill in all fields.",
+        "saved": "Saved: {{name}}"
+    }
+}

@@ -21,12 +21,20 @@ import { getProviderEnvVar, getKeyableProviderTypes } from '../utils/provider-re
 import { getOpenClawDir, getOpenClawEntryPath, isOpenClawPresent } from '../utils/paths';
 import { getUvMirrorEnv } from '../utils/uv-env';
 import { cleanupDanglingWeChatPluginState, listConfiguredChannels } from '../utils/channel-config';
-import { syncGatewayTokenToConfig, syncBrowserConfigToOpenClaw, syncSessionIdleMinutesToOpenClaw, sanitizeOpenClawConfig } from '../utils/openclaw-auth';
+import {
+  syncGatewayTokenToConfig,
+  syncBrowserConfigToOpenClaw,
+  syncSessionIdleMinutesToOpenClaw,
+  sanitizeOpenClawConfig,
+  seedOpenClawJsonFromTemplateIfMissing,
+  mergeOpenClawJsonFromTemplateForMissingSections,
+} from '../utils/openclaw-auth';
 import { buildProxyEnv, resolveProxySettings } from '../utils/proxy';
 import { syncProxyConfigToOpenClaw } from '../utils/openclaw-proxy';
 import { logger } from '../utils/logger';
 import { prependPathEntry } from '../utils/env-path';
 import { copyPluginFromNodeModules, fixupPluginManifest } from '../utils/plugin-install';
+import { SKILL_MARKET_BASE_URL } from '../utils/skill-market';
 
 export interface GatewayLaunchContext {
   appSettings: Awaited<ReturnType<typeof getAllSettings>>;
@@ -43,12 +51,21 @@ export interface GatewayLaunchContext {
 
 // ── Auto-upgrade bundled plugins on startup ──────────────────────
 
-const CHANNEL_PLUGIN_MAP: Record<string, { dirName: string; npmName: string }> = {
+const CHANNEL_PLUGIN_MAP: Record<
+  string,
+  { dirName: string; npmName: string; devOpenclawExtensionRel?: string }
+> = {
   dingtalk: { dirName: 'dingtalk', npmName: '@soimy/dingtalk' },
   wecom: { dirName: 'wecom', npmName: '@wecom/wecom-openclaw-plugin' },
   feishu: { dirName: 'feishu-openclaw-plugin', npmName: '@larksuite/openclaw-lark' },
   qqbot: { dirName: 'qqbot', npmName: '@tencent-connect/openclaw-qqbot' },
   'openclaw-weixin': { dirName: 'openclaw-weixin', npmName: '@tencent-weixin/openclaw-weixin' },
+  /** Lives under `node_modules/@shadanai/openclaw/extensions/box-im`, not `@openclaw/box-im` at repo root. */
+  'box-im': {
+    dirName: 'box-im',
+    npmName: '@openclaw/box-im',
+    devOpenclawExtensionRel: 'extensions/box-im',
+  },
 };
 
 /**
@@ -135,7 +152,22 @@ function ensureConfiguredPluginsUpgraded(configuredChannels: string[]): void {
 
     // Dev mode fallback: copy from node_modules/ with pnpm dep resolution
     if (!app.isPackaged) {
-      const npmPkgPath = join(process.cwd(), 'node_modules', ...npmName.split('/'));
+      let npmPkgPath = join(process.cwd(), 'node_modules', ...npmName.split('/'));
+      if (
+        pluginInfo.devOpenclawExtensionRel &&
+        !existsSync(fsPath(join(npmPkgPath, 'openclaw.plugin.json')))
+      ) {
+        const alt = join(
+          process.cwd(),
+          'node_modules',
+          '@shadanai',
+          'openclaw',
+          pluginInfo.devOpenclawExtensionRel,
+        );
+        if (existsSync(fsPath(join(alt, 'openclaw.plugin.json')))) {
+          npmPkgPath = alt;
+        }
+      }
       if (!existsSync(fsPath(join(npmPkgPath, 'openclaw.plugin.json')))) continue;
       const sourceVersion = readPluginVersion(join(npmPkgPath, 'package.json'));
       if (!sourceVersion) continue;
@@ -159,6 +191,18 @@ function ensureConfiguredPluginsUpgraded(configuredChannels: string[]): void {
 export async function syncGatewayConfigBeforeLaunch(
   appSettings: Awaited<ReturnType<typeof getAllSettings>>,
 ): Promise<void> {
+  try {
+    await seedOpenClawJsonFromTemplateIfMissing();
+  } catch (err) {
+    logger.warn('Failed to seed openclaw.json from bundled template:', err);
+  }
+
+  try {
+    await mergeOpenClawJsonFromTemplateForMissingSections();
+  } catch (err) {
+    logger.warn('Failed to merge gateway template into openclaw.json:', err);
+  }
+
   await syncProxyConfigToOpenClaw(appSettings, { preserveExistingWhenDisabled: true });
 
   try {
@@ -325,6 +369,7 @@ export async function prepareGatewayLaunchContext(port: number): Promise<Gateway
     OPENCLAW_SKIP_CHANNELS: skipChannels ? '1' : '',
     CLAWDBOT_SKIP_CHANNELS: skipChannels ? '1' : '',
     OPENCLAW_NO_RESPAWN: '1',
+    OPENCLAW_SKILL_MARKET_URL: SKILL_MARKET_BASE_URL,
   };
 
   return {

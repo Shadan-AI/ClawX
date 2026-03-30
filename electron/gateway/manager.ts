@@ -30,6 +30,7 @@ import {
 import { dispatchJsonRpcNotification, dispatchProtocolEvent } from './event-dispatch';
 import { GatewayStateController } from './state';
 import { prepareGatewayLaunchContext } from './config-sync';
+import { getGatewayTlsEnabledFromOpenClawConfig } from '../utils/openclaw-gateway-tls';
 import { connectGatewaySocket, waitForGatewayReady } from './ws-client';
 import {
   findExistingGatewayProcess,
@@ -226,6 +227,8 @@ export class GatewayManager extends EventEmitter {
     try {
       await runGatewayStartupSequence({
         port: this.status.port,
+        // Note: ownedPid must be read when findExisting runs, not when this object is
+        // created — otherwise it stays undefined after spawn and retries kill our child.
         ownedPid: this.process?.pid,
         shouldWaitForPortFree: process.platform === 'win32',
         resetStartupStderrLines: () => {
@@ -235,8 +238,8 @@ export class GatewayManager extends EventEmitter {
         assertLifecycle: (phase) => {
           this.lifecycleController.assert(startEpoch, phase);
         },
-        findExistingGateway: async (port, ownedPid) => {
-          return await findExistingGatewayProcess({ port, ownedPid });
+        findExistingGateway: async (port, _ownedPid) => {
+          return await findExistingGatewayProcess({ port, ownedPid: this.process?.pid });
         },
         connect: async (port, externalToken) => {
           await this.connect(port, externalToken);
@@ -261,8 +264,10 @@ export class GatewayManager extends EventEmitter {
           await this.startProcess();
         },
         waitForReady: async (port) => {
+          const tls = await getGatewayTlsEnabledFromOpenClawConfig();
           await waitForGatewayReady({
             port,
+            tls,
             getProcessExitCode: () => this.processExitCode,
           });
         },
@@ -753,8 +758,10 @@ export class GatewayManager extends EventEmitter {
    * Connect WebSocket to Gateway
    */
   private async connect(port: number, _externalToken?: string): Promise<void> {
+    const tls = await getGatewayTlsEnabledFromOpenClawConfig();
     this.ws = await connectGatewaySocket({
       port,
+      tls,
       deviceIdentity: this.deviceIdentity,
       platform: process.platform,
       pendingRequests: this.pendingRequests,

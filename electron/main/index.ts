@@ -43,6 +43,7 @@ import { deviceOAuthManager } from '../utils/device-oauth';
 import { browserOAuthManager } from '../utils/browser-oauth';
 import { whatsAppLoginManager } from '../utils/whatsapp-login';
 import { syncAllProviderAuthToRuntime } from '../services/providers/provider-runtime-sync';
+import { ensureOpenClawMkcertCertsWindows } from '../utils/mkcert-certs';
 
 const WINDOWS_APP_USER_MODEL_ID = 'app.clawx.desktop';
 
@@ -150,6 +151,8 @@ function createWindow(): BrowserWindow {
   const isMac = process.platform === 'darwin';
   const isWindows = process.platform === 'win32';
   const useCustomTitleBar = isWindows;
+  /** Vite dev server URL is set by vite-plugin-electron — only then are we in `pnpm dev`. */
+  const isViteDev = Boolean(process.env.VITE_DEV_SERVER_URL);
 
   const win = new BrowserWindow({
     width: 1280,
@@ -167,7 +170,9 @@ function createWindow(): BrowserWindow {
     titleBarStyle: isMac ? 'hiddenInset' : useCustomTitleBar ? 'hidden' : 'default',
     trafficLightPosition: isMac ? { x: 16, y: 16 } : undefined,
     frame: isMac || !useCustomTitleBar,
-    show: false,
+    // Dev: show immediately so a missing/flaky ready-to-show does not leave no visible window (Windows).
+    // Prod: keep false until ready-to-show to avoid a blank flash before first paint.
+    show: isViteDev,
   });
 
   // Handle external links — only allow safe protocols to prevent arbitrary
@@ -190,6 +195,15 @@ function createWindow(): BrowserWindow {
   if (process.env.VITE_DEV_SERVER_URL) {
     win.loadURL(process.env.VITE_DEV_SERVER_URL);
     win.webContents.openDevTools();
+    // Bring dev window above the terminal on Windows (best-effort).
+    win.webContents.once('did-finish-load', () => {
+      if (win.isDestroyed()) return;
+      try {
+        win.focus();
+      } catch {
+        /* ignore */
+      }
+    });
   } else {
     win.loadFile(join(__dirname, '../../dist/index.html'));
   }
@@ -287,7 +301,14 @@ async function initialize(): Promise<void> {
   // The URL filter ensures this callback only fires for gateway requests,
   // avoiding unnecessary overhead on every other HTTP response.
   session.defaultSession.webRequest.onHeadersReceived(
-    { urls: ['http://127.0.0.1:18789/*', 'http://localhost:18789/*'] },
+    {
+      urls: [
+        'http://127.0.0.1:18789/*',
+        'http://localhost:18789/*',
+        'https://127.0.0.1:18789/*',
+        'https://localhost:18789/*',
+      ],
+    },
     (details, callback) => {
       const headers = { ...details.responseHeaders };
       delete headers['X-Frame-Options'];
@@ -422,6 +443,22 @@ async function initialize(): Promise<void> {
   whatsAppLoginManager.on('error', (error) => {
     hostEventBus.emit('channel:whatsapp-error', error);
   });
+
+  // Windows: trusted HTTPS certs for LAN (openme mkcert) → ~/.openclaw/certs before Gateway TLS
+  if (process.platform === 'win32') {
+    try {
+      const mk = ensureOpenClawMkcertCertsWindows();
+      if (mk.ok && !mk.skipped) {
+        logger.info(`[mkcert] Gateway TLS files ready under ${mk.certDir}`);
+      } else if (mk.skipped) {
+        logger.debug(`[mkcert] skipped: ${mk.reason ?? 'unknown'}`);
+      } else if (mk.error) {
+        logger.warn(`[mkcert] ${mk.error}`);
+      }
+    } catch (e) {
+      logger.warn('[mkcert] ensure certs failed:', e);
+    }
+  }
 
   // Start Gateway automatically (this seeds missing bootstrap files with full templates)
   const gatewayAutoStart = await getSetting('gatewayAutoStart');

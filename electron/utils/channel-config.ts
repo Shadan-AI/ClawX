@@ -12,6 +12,7 @@ import { getOpenClawResolvedDir } from './paths';
 import * as logger from './logger';
 import { proxyAwareFetch } from './proxy-fetch';
 import { withConfigLock } from './config-mutex';
+import { stampOpenClawConfigMeta } from './openclaw-config-meta';
 import {
     OPENCLAW_WECHAT_CHANNEL_TYPE,
     isWechatChannelType,
@@ -360,6 +361,7 @@ export async function writeOpenClawConfig(config: OpenClawConfig): Promise<void>
         commands.restart = true;
         config.commands = commands;
 
+        stampOpenClawConfigMeta(config as Record<string, unknown>);
         await writeFile(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf-8');
     } catch (error) {
         logger.error('Failed to write OpenClaw config', error);

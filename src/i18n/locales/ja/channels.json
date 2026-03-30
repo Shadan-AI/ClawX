@@ -96,7 +96,19 @@
         "generateQRCode": "QRコードを生成",
         "updateAndReconnect": "更新して再接続",
         "saveAndConnect": "保存して接続",
-        "envVar": "環境変数: {{var}}"
+        "envVar": "環境変数: {{var}}",
+        "embeddedPlugin": {
+            "badge": "スキャンで紐付け",
+            "gatewayRequired": "先にローカルゲートウェイを起動してください。プラグインのログインはゲートウェイが /plugins/box-im/login で提供します。",
+            "loadUrlFailed": "プラグイン URL を取得できませんでした。ゲートウェイが起動しているか確認してください。",
+            "hint": "下にゲートウェイのログインページを埋め込みます。WeChat でスキャンして紐付け、設定は openclaw.json に書き込まれます。表示できない場合はブラウザで開いてください。",
+            "iframeTitle": "Box IM プラグインログイン",
+            "refreshPage": "再読み込み",
+            "openInBrowser": "ブラウザで開く",
+            "finishBinding": "紐付け完了",
+            "saving": "保存中…",
+            "loadingPlugin": "プラグインページを読み込み中…"
+        }
     },
     "meta": {
         "telegram": {
@@ -157,6 +169,14 @@
                 "設定 > リンクされたデバイス > デバイスをリンク に移動します",
                 "以下に表示されるQRコードをスキャンします",
                 "システムが自動的に電話番号を識別します"
+            ]
+        },
+        "box-im": {
+            "description": "ゲートウェイのプラグインページで WeChat の QR をスキャンし、OpenClaw デジタル従業員（Box IM）を紐付けます",
+            "docsUrl": "https://icnnp7d0dymg.feishu.cn/wiki/GHYZwuPCriF0gWkXwkFcJ9zon3b",
+            "instructions": [
+                "ローカルの OpenClaw ゲートウェイが起動していることを確認します",
+                "埋め込みページで WeChat をスキャンします。設定は openclaw.json に保存されます"
             ]
         },
         "wechat": {

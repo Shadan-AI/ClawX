@@ -7,6 +7,7 @@
  * Supported channel types
  */
 export type ChannelType =
+  | 'box-im'
   | 'whatsapp'
   | 'wechat'
   | 'dingtalk'
@@ -31,7 +32,7 @@ export type ChannelStatus = 'connected' | 'disconnected' | 'connecting' | 'error
 /**
  * Channel connection type
  */
-export type ChannelConnectionType = 'token' | 'qr' | 'oauth' | 'webhook';
+export type ChannelConnectionType = 'token' | 'qr' | 'oauth' | 'webhook' | 'embeddedPlugin';
 
 /**
  * Channel data structure
@@ -71,6 +72,8 @@ export interface ChannelMeta {
   icon: string;
   description: string;
   connectionType: ChannelConnectionType;
+  /** Gateway path for embedded login UI (OpenClaw plugin HTTP), e.g. `/plugins/box-im/login`. */
+  embeddedPluginPath?: string;
   docsUrl: string;
   configFields: ChannelConfigField[];
   instructions: string[];
@@ -81,6 +84,7 @@ export interface ChannelMeta {
  * Channel icons mapping
  */
 export const CHANNEL_ICONS: Record<ChannelType, string> = {
+  'box-im': '🦞',
   whatsapp: '📱',
   wechat: '💬',
   dingtalk: '💬',
@@ -102,6 +106,7 @@ export const CHANNEL_ICONS: Record<ChannelType, string> = {
  * Channel display names
  */
 export const CHANNEL_NAMES: Record<ChannelType, string> = {
+  'box-im': 'Box IM',
   whatsapp: 'WhatsApp',
   wechat: 'WeChat',
   dingtalk: 'DingTalk',
@@ -123,6 +128,18 @@ export const CHANNEL_NAMES: Record<ChannelType, string> = {
  * Channel metadata with configuration information
  */
 export const CHANNEL_META: Record<ChannelType, ChannelMeta> = {
+  'box-im': {
+    id: 'box-im',
+    name: 'Box IM',
+    icon: '🦞',
+    description: 'channels:meta.box-im.description',
+    connectionType: 'embeddedPlugin',
+    embeddedPluginPath: '/plugins/box-im/login',
+    docsUrl: 'channels:meta.box-im.docsUrl',
+    configFields: [],
+    instructions: ['channels:meta.box-im.instructions.0', 'channels:meta.box-im.instructions.1'],
+    isPlugin: true,
+  },
   qqbot: {
     id: 'qqbot',
     name: 'QQ Bot',
@@ -580,7 +597,7 @@ export const CHANNEL_META: Record<ChannelType, ChannelMeta> = {
  * Get primary supported channels (non-plugin, commonly used)
  */
 export function getPrimaryChannels(): ChannelType[] {
-  return ['telegram', 'discord', 'whatsapp', 'wechat', 'dingtalk', 'feishu', 'wecom', 'qqbot'];
+  return ['box-im', 'telegram', 'discord', 'whatsapp', 'wechat', 'dingtalk', 'feishu', 'wecom', 'qqbot'];
 }
 
 /**

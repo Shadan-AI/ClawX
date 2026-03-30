@@ -58,6 +58,10 @@ resources/bin
 *.p12
 *.pem
 *.key
+# Copied from ../openme/gateway.json at build (may contain API keys)
+resources/openclaw-default.json
+# Copied from ../openme/mkcert.exe at build (see scripts/copy-mkcert.mjs)
+resources/tools/
 
 build/
 artifacts/

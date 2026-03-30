@@ -1,0 +1,13 @@
+{
+    "title": "Scan to sign in",
+    "subtitle": "Complete box-im login below to configure channels. You can continue to setup when done.",
+    "gatewayRequired": "Start the gateway to load the login page.",
+    "loadUrlFailed": "Could not resolve the login page URL.",
+    "startGatewayHint": "Gateway is not running; the login page cannot be embedded.",
+    "startGateway": "Start gateway",
+    "loadingPlugin": "Loading login page…",
+    "iframeTitle": "box-im login",
+    "refresh": "Refresh",
+    "openInBrowser": "Open in browser",
+    "continue": "Continue to setup"
+}

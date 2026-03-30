@@ -1,4 +1,5 @@
 import WebSocket from 'ws';
+import type { ClientOptions } from 'ws';
 import type { DeviceIdentity } from '../utils/device-identity';
 import type { PendingGatewayRequest } from './request-store';
 import {
@@ -8,12 +9,30 @@ import {
 } from '../utils/device-identity';
 import { logger } from '../utils/logger';
 
+function localGatewayWsUrl(port: number, tls: boolean): string {
+  const proto = tls ? 'wss' : 'ws';
+  return `${proto}://127.0.0.1:${port}/ws`;
+}
+
+/** Self-signed / auto-generated localhost certs need this for Node TLS client. */
+function wsClientOptionsForLocalGateway(tls: boolean): ClientOptions | undefined {
+  if (!tls) {
+    return undefined;
+  }
+  return { rejectUnauthorized: false };
+}
+
 export async function probeGatewayReady(
   port: number,
   timeoutMs = 1500,
+  options?: { tls?: boolean },
 ): Promise<boolean> {
+  const tls = options?.tls === true;
+  const url = localGatewayWsUrl(port, tls);
+  const wsOpts = wsClientOptionsForLocalGateway(tls);
+
   return await new Promise<boolean>((resolve) => {
-    const testWs = new WebSocket(`ws://localhost:${port}/ws`);
+    const testWs = wsOpts ? new WebSocket(url, wsOpts) : new WebSocket(url);
     let settled = false;
 
     const resolveOnce = (value: boolean) => {
@@ -61,12 +80,15 @@ export async function probeGatewayReady(
 
 export async function waitForGatewayReady(options: {
   port: number;
+  /** When true, probe with wss:// (TLS). Must match gateway.tls.enabled in openclaw.json. */
+  tls?: boolean;
   getProcessExitCode: () => number | null;
   retries?: number;
   intervalMs?: number;
 }): Promise<void> {
   const retries = options.retries ?? 2400;
   const intervalMs = options.intervalMs ?? 200;
+  const tls = options.tls === true;
 
   for (let i = 0; i < retries; i++) {
     const exitCode = options.getProcessExitCode();
@@ -76,7 +98,7 @@ export async function waitForGatewayReady(options: {
     }
 
     try {
-      const ready = await probeGatewayReady(options.port, 1500);
+      const ready = await probeGatewayReady(options.port, 1500, { tls });
       if (ready) {
         logger.debug(`Gateway ready after ${i + 1} attempt(s)`);
         return;
@@ -92,7 +114,9 @@ export async function waitForGatewayReady(options: {
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
 
-  logger.error(`Gateway failed to become ready after ${retries} attempts on port ${options.port}`);
+  logger.error(
+    `Gateway failed to become ready after ${retries} attempts on port ${options.port} (tls=${tls})`,
+  );
   throw new Error(`Gateway failed to start after ${retries} retries (port ${options.port})`);
 }
 
@@ -162,6 +186,8 @@ export function buildGatewayConnectFrame(options: {
 
 export async function connectGatewaySocket(options: {
   port: number;
+  /** When true, use wss:// with relaxed local cert verification. */
+  tls?: boolean;
   deviceIdentity: DeviceIdentity | null;
   platform: string;
   pendingRequests: Map<string, PendingGatewayRequest>;
@@ -170,11 +196,13 @@ export async function connectGatewaySocket(options: {
   onMessage: (message: unknown) => void;
   onCloseAfterHandshake: () => void;
 }): Promise<WebSocket> {
-  logger.debug(`Connecting Gateway WebSocket (ws://localhost:${options.port}/ws)`);
+  const tls = options.tls === true;
+  const wsUrl = localGatewayWsUrl(options.port, tls);
+  const wsOpts = wsClientOptionsForLocalGateway(tls);
+  logger.debug(`Connecting Gateway WebSocket (${wsUrl})`);
 
   return await new Promise<WebSocket>((resolve, reject) => {
-    const wsUrl = `ws://localhost:${options.port}/ws`;
-    const ws = new WebSocket(wsUrl);
+    const ws = wsOpts ? new WebSocket(wsUrl, wsOpts) : new WebSocket(wsUrl);
     let handshakeComplete = false;
     let connectId: string | null = null;
     let handshakeTimeout: NodeJS.Timeout | null = null;

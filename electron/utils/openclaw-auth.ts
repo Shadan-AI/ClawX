@@ -8,7 +8,7 @@
  * equivalents could stall for 500 ms – 2 s+ per call, causing "Not
  * Responding" hangs.
  */
-import { access, mkdir, readFile, writeFile } from 'fs/promises';
+import { access, mkdir, readFile, unlink, writeFile } from 'fs/promises';
 import { constants } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -17,6 +17,7 @@ import {
   getProviderEnvVar,
   getProviderDefaultModel,
   getProviderConfig,
+  getProviderDefinition,
 } from './provider-registry';
 import {
   OPENCLAW_PROVIDER_KEY_MOONSHOT,
@@ -24,6 +25,8 @@ import {
   isOpenClawOAuthPluginProviderKey,
 } from './provider-keys';
 import { withConfigLock } from './config-mutex';
+import { stampOpenClawConfigMeta } from './openclaw-config-meta';
+import { getOpenClawDefaultConfigTemplatePath } from './paths';
 
 const AUTH_STORE_VERSION = 1;
 const AUTH_PROFILE_FILENAME = 'auth-profiles.json';
@@ -185,8 +188,218 @@ function normalizeAgentsDefaultsCompactionMode(config: Record<string, unknown>):
   }
 }
 
+/** Stable key order aligned with `openme/gateway.json` for readable diffs. */
+const OPENCLAW_JSON_KEY_ORDER = [
+  'meta',
+  'env',
+  'models',
+  'agents',
+  'commands',
+  'channels',
+  'gateway',
+  'plugins',
+  'tools',
+  'browser',
+  'session',
+  'skills',
+  'update',
+] as const;
+
+function reorderOpenClawConfigForWrite(config: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const key of OPENCLAW_JSON_KEY_ORDER) {
+    if (Object.prototype.hasOwnProperty.call(config, key)) {
+      out[key] = config[key];
+    }
+  }
+  for (const key of Object.keys(config)) {
+    if (!(key in out)) {
+      out[key] = config[key];
+    }
+  }
+  return out;
+}
+
+function mergeMissingKeysDeep(target: Record<string, unknown>, source: Record<string, unknown>): boolean {
+  let changed = false;
+  for (const [k, v] of Object.entries(source)) {
+    if (!(k in target)) {
+      target[k] = structuredClone(v);
+      changed = true;
+    } else if (
+      v !== null &&
+      typeof v === 'object' &&
+      !Array.isArray(v) &&
+      target[k] !== null &&
+      typeof target[k] === 'object' &&
+      !Array.isArray(target[k])
+    ) {
+      if (mergeMissingKeysDeep(target[k] as Record<string, unknown>, v as Record<string, unknown>)) {
+        changed = true;
+      }
+    }
+  }
+  return changed;
+}
+
+function needsModelsFromTemplate(config: Record<string, unknown>): boolean {
+  const models = config.models;
+  if (!models || typeof models !== 'object') {
+    return true;
+  }
+  const providers = (models as Record<string, unknown>).providers;
+  if (!providers || typeof providers !== 'object' || Object.keys(providers).length === 0) {
+    return true;
+  }
+  return false;
+}
+
+function mergeAllowedOriginsFromTemplate(config: Record<string, unknown>, template: Record<string, unknown>): boolean {
+  const cg = config.gateway;
+  const tg = template.gateway;
+  if (!cg || typeof cg !== 'object' || !tg || typeof tg !== 'object') {
+    return false;
+  }
+  const cuiRaw = (cg as Record<string, unknown>).controlUi;
+  const tuiRaw = (tg as Record<string, unknown>).controlUi;
+  if (!cuiRaw || typeof cuiRaw !== 'object' || !tuiRaw || typeof tuiRaw !== 'object') {
+    return false;
+  }
+  const cui = cuiRaw as Record<string, unknown>;
+  const tui = tuiRaw as Record<string, unknown>;
+  const cur = Array.isArray(cui.allowedOrigins)
+    ? (cui.allowedOrigins as unknown[]).filter((x): x is string => typeof x === 'string')
+    : [];
+  const fromT = Array.isArray(tui.allowedOrigins)
+    ? (tui.allowedOrigins as unknown[]).filter((x): x is string => typeof x === 'string')
+    : [];
+  const merged = [...new Set([...fromT, ...cur])];
+  if (merged.length === cur.length && fromT.every((o) => cur.includes(o))) {
+    return false;
+  }
+  cui.allowedOrigins = merged;
+  return true;
+}
+
+function mergeBoxImChannelFromTemplate(config: Record<string, unknown>, template: Record<string, unknown>): boolean {
+  const tch = template.channels as Record<string, unknown> | undefined;
+  const tbox = tch?.['box-im'] as Record<string, unknown> | undefined;
+  if (!tbox) {
+    return false;
+  }
+  if (!config.channels || typeof config.channels !== 'object') {
+    config.channels = { 'box-im': structuredClone(tbox) };
+    return true;
+  }
+  const ch = config.channels as Record<string, unknown>;
+  const cbox = ch['box-im'] as Record<string, unknown> | undefined;
+  if (!cbox) {
+    ch['box-im'] = structuredClone(tbox);
+    return true;
+  }
+  return mergeMissingKeysDeep(cbox, tbox);
+}
+
+async function resetOpenClawConfigHealthBaselineBestEffort(): Promise<void> {
+  const healthPath = join(homedir(), '.openclaw', 'logs', 'config-health.json');
+  try {
+    await unlink(healthPath);
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * If `openclaw.json` already exists but was created by an older/minimal path (missing
+ * `models`, `env`, etc.), merge missing sections from the bundled `gateway.json` template
+ * so the on-disk file matches `openme/gateway.json` / `resources/openclaw-default.json`.
+ * Also unions `gateway.controlUi.allowedOrigins` with the template so VNC URLs are kept.
+ */
+export async function mergeOpenClawJsonFromTemplateForMissingSections(): Promise<void> {
+  return withConfigLock(async () => {
+    const templatePath = getOpenClawDefaultConfigTemplatePath();
+    if (!templatePath || !(await fileExists(OPENCLAW_CONFIG_PATH))) {
+      return;
+    }
+    let template: Record<string, unknown>;
+    try {
+      template = JSON.parse(await readFile(templatePath, 'utf-8')) as Record<string, unknown>;
+    } catch {
+      return;
+    }
+    const config = await readOpenClawJson();
+    let modified = false;
+
+    if (!config.env && template.env) {
+      config.env = structuredClone(template.env);
+      modified = true;
+    } else if (config.env && typeof config.env === 'object' && !('vars' in (config.env as object))) {
+      const te = template.env;
+      if (te && typeof te === 'object' && 'vars' in (te as object)) {
+        (config.env as Record<string, unknown>).vars = (te as Record<string, unknown>).vars ?? {};
+        modified = true;
+      }
+    }
+
+    if (needsModelsFromTemplate(config) && template.models) {
+      config.models = structuredClone(template.models);
+      modified = true;
+    }
+
+    if (mergeAllowedOriginsFromTemplate(config, template)) {
+      modified = true;
+    }
+
+    if (mergeBoxImChannelFromTemplate(config, template)) {
+      modified = true;
+    }
+
+    if (modified) {
+      await writeOpenClawJson(config);
+      await resetOpenClawConfigHealthBaselineBestEffort();
+      console.log('[openclaw] Merged missing sections from gateway template into openclaw.json');
+    }
+  });
+}
+
+/**
+ * On first run, copy the bundled template (from `openme/gateway.json` at pack time) to
+ * `~/.openclaw/openclaw.json` so packaged ClawX matches the fork's gateway defaults
+ * (models, agents, channels, plugins, TLS, etc.). Does nothing if the file already exists.
+ */
+export async function seedOpenClawJsonFromTemplateIfMissing(): Promise<void> {
+  if (await fileExists(OPENCLAW_CONFIG_PATH)) {
+    return;
+  }
+  const templatePath = getOpenClawDefaultConfigTemplatePath();
+  if (!templatePath) {
+    console.warn(
+      '[openclaw] No default config template found (resources/openclaw-default.json or ../openme/gateway.json); skipping seed',
+    );
+    return;
+  }
+  let raw: string;
+  try {
+    raw = await readFile(templatePath, 'utf-8');
+  } catch (err) {
+    console.warn('[openclaw] Failed to read config template:', templatePath, err);
+    return;
+  }
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(raw) as Record<string, unknown>;
+  } catch (err) {
+    console.warn('[openclaw] Invalid JSON in config template:', err);
+    return;
+  }
+  await ensureDir(join(OPENCLAW_CONFIG_PATH, '..'));
+  await writeOpenClawJson(parsed);
+  console.log(`[openclaw] Seeded ${OPENCLAW_CONFIG_PATH} from ${templatePath}`);
+}
+
 async function writeOpenClawJson(config: Record<string, unknown>): Promise<void> {
   normalizeAgentsDefaultsCompactionMode(config);
+  stampOpenClawConfigMeta(config);
 
   // Ensure SIGUSR1 graceful reload is authorized by OpenClaw config.
   const commands = (
@@ -197,7 +410,8 @@ async function writeOpenClawJson(config: Record<string, unknown>): Promise<void>
   commands.restart = true;
   config.commands = commands;
 
-  await writeJsonFile(OPENCLAW_CONFIG_PATH, config);
+  const ordered = reorderOpenClawConfigForWrite(config);
+  await writeJsonFile(OPENCLAW_CONFIG_PATH, ordered);
 }
 
 // ── Exported Functions (all async) ───────────────────────────────
@@ -494,8 +708,10 @@ export async function setOpenClawDefaultModel(
         mergeExistingModels: true,
       });
       console.log(`Configured models.providers.${provider} with baseUrl=${providerCfg.baseUrl}, model=${modelId}`);
-    } else {
-      // Built-in provider: remove any stale models.providers entry
+    } else if (getProviderDefinition(provider)) {
+      // Known ClawX UI provider without providerConfig (or switching away): drop stale
+      // models.providers.* only for registered built-in IDs — never delete custom keys
+      // like "shadan" from gateway.json (not in PROVIDER_DEFINITIONS).
       const models = (config.models || {}) as Record<string, unknown>;
       const providers = (models.providers || {}) as Record<string, unknown>;
       if (providers[provider]) {
@@ -1104,7 +1320,11 @@ export async function sanitizeOpenClawConfig(): Promise<void> {
         const validPlugins: unknown[] = [];
         for (const p of plugins) {
           if (typeof p === 'string' && p.startsWith('/')) {
-            if (p.includes('node_modules/openclaw/extensions') || !(await fileExists(p))) {
+            if (
+              (p.includes('node_modules/openclaw/extensions') ||
+                p.includes('node_modules/@shadanai/openclaw/extensions')) ||
+              !(await fileExists(p))
+            ) {
               console.log(`[sanitize] Removing stale/bundled plugin path "${p}" from openclaw.json`);
               modified = true;
             } else {
@@ -1121,7 +1341,11 @@ export async function sanitizeOpenClawConfig(): Promise<void> {
           const validLoad: unknown[] = [];
           for (const p of pluginsObj.load) {
             if (typeof p === 'string' && p.startsWith('/')) {
-              if (p.includes('node_modules/openclaw/extensions') || !(await fileExists(p))) {
+              if (
+                (p.includes('node_modules/openclaw/extensions') ||
+                  p.includes('node_modules/@shadanai/openclaw/extensions')) ||
+                !(await fileExists(p))
+              ) {
                 console.log(`[sanitize] Removing stale/bundled plugin path "${p}" from openclaw.json`);
                 modified = true;
               } else {
@@ -1140,7 +1364,11 @@ export async function sanitizeOpenClawConfig(): Promise<void> {
             const countBefore = loadObj.paths.length;
             for (const p of loadObj.paths) {
               if (typeof p === 'string' && p.startsWith('/')) {
-                if (p.includes('node_modules/openclaw/extensions') || !(await fileExists(p))) {
+                if (
+                  (p.includes('node_modules/openclaw/extensions') ||
+                    p.includes('node_modules/@shadanai/openclaw/extensions')) ||
+                  !(await fileExists(p))
+                ) {
                   console.log(`[sanitize] Removing stale/bundled plugin path "${p}" from plugins.load.paths`);
                   modified = true;
                 } else {

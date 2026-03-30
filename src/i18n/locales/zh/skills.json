@@ -5,9 +5,14 @@
     "openFolder": "打开技能文件夹",
     "gatewayWarning": "网关未运行。没有活跃的网关，无法加载技能。",
     "tabs": {
-        "installed": "已安装",
-        "marketplace": "市场"
+        "installed": "已安装技能",
+        "official": "官方技能库",
+        "market": "技能市场"
     },
+    "officialMinChars": "请输入至少 2 个字符以搜索官方技能库。",
+    "searchOfficial": "搜索官方技能库…",
+    "searchMarketTab": "搜索技能市场…",
+    "loadMoreMarket": "加载更多（{{shown}} / {{total}}）",
     "filter": {
         "all": "全部 ({{count}})",
         "builtIn": "内置 ({{count}})",
@@ -96,6 +101,7 @@
         "batchPartial": "已更新 {{success}} / {{total}} 个技能，部分操作失败。"
     },
     "marketplace": {
+        "installedBadge": "已安装",
         "title": "市场",
         "installDialogTitle": "安装技能",
         "installDialogSubtitle": "默认展示 Explore，输入关键词后执行搜索。",
@@ -105,6 +111,7 @@
         "manualInstallHint": "遇到网络问题？您可以随时从 ClawHub.ai 下载技能压缩包，并将其解压至 \"{{path}}\" 目录来完成手动安装。",
         "searching": "正在搜索 ClawHub...",
         "noResults": "未找到匹配的技能。",
+        "marketEmpty": "技能市场暂无技能，或服务未启动。",
         "emptyPrompt": "搜索新技能以扩展您的能力。",
         "searchError": "ClawHub 搜索失败。请检查您的连接或安装。"
     }
