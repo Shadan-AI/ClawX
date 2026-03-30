@@ -237,7 +237,12 @@ for (const pkgName of EXTRA_BUNDLED_PACKAGES) {
   try { pkgReal = fs.realpathSync(pkgLink); } catch { continue; }
 
   if (!collected.has(pkgReal)) {
-    collected.set(pkgReal, pkgName);
+    collected.set(pkgReal, {
+      name: pkgName,
+      version: readPackageVersion(pkgReal),
+      realPath: pkgReal,
+      virtualStoreDir: getVirtualStoreNodeModules(pkgReal),
+    });
     extraCount++;
 
     // BFS this package's own transitive deps
@@ -253,7 +258,12 @@ for (const pkgName of EXTRA_BUNDLED_PACKAGES) {
           let realPath;
           try { realPath = fs.realpathSync(fullPath); } catch { continue; }
           if (collected.has(realPath)) continue;
-          collected.set(realPath, name);
+          collected.set(realPath, {
+            name,
+            version: readPackageVersion(realPath),
+            realPath,
+            virtualStoreDir: getVirtualStoreNodeModules(realPath),
+          });
           extraCount++;
           const innerVirtualNM = getVirtualStoreNodeModules(realPath);
           if (innerVirtualNM && innerVirtualNM !== nodeModulesDir) {
