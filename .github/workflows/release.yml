@@ -19,10 +19,6 @@ permissions:
 
 jobs:
   release:
-    # Run JS-based actions (e.g. pnpm/action-setup) on Node 24 per GitHub
-    # deprecation notice for Node 20 action runtimes.
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     strategy:
       fail-fast: false
       matrix:
@@ -41,17 +37,16 @@ jobs:
         with:
           fetch-depth: 0
 
-      # setup-node with cache: pnpm runs `pnpm` internally — install pnpm first.
-      # Omit `version` here so only package.json `packageManager` applies (avoids
-      # pnpm/action-setup "multiple versions" error vs the full pnpm@...sha512 string).
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-
+      # Node first, then install pnpm with that Node's npm (no pnpm/action-setup:
+      # avoids Node 20 action runtime + "forced to Node 24" warnings).
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
           node-version: '24'
-          cache: 'pnpm'
+
+      - name: Install pnpm
+        shell: bash
+        run: npm install -g pnpm@10.31.0
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
