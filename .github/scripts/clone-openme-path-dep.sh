@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# ClawX depends on @shadanai/openclaw via file:../openme. CI only checks out this
-# repo, so we clone openme next to GITHUB_WORKSPACE (…/work/<repo>/openme).
+# ClawX depends on @shadanai/openclaw via file:../openme. CI clones GitLab repo
+# thinkgs/openme, branch dabao, into …/openme (folder name matches file:../openme).
 #
-# Configure clone URL (pick one):
-#   - Repository secret OPENME_GIT_URL = full HTTPS clone URL of your openme repo
-#     Example (self-hosted GitLab): https://hub.thinkgs.cn/thinkgs/openme.git
-#     Private repo: use deploy token or PAT in URL per GitLab docs, e.g.
-#     https://oauth2:<token>@hub.thinkgs.cn/thinkgs/openme.git
-#   - If OPENME_GIT_URL is unset, falls back to cloning from GitHub using GITHUB_TOKEN
-#     (legacy default; only works when openme is on github.com).
+# Private repo: do NOT put passwords in this file. Add GitHub Actions secret
+# OPENME_GIT_URL = https://oauth2:<gitlab_token>@hub.thinkgs.cn/thinkgs/openme.git
+# (create a Personal Access Token or Deploy Token on GitLab with read_repository).
+# Optional: secret OPENME_GIT_REF to override branch (default: dabao).
 set -euo pipefail
 : "${GITHUB_WORKSPACE:?GITHUB_WORKSPACE must be set}"
+
+DEFAULT_OPENME_GIT_URL="https://hub.thinkgs.cn/thinkgs/openme.git"
+OPENME_GIT_REF="${OPENME_GIT_REF:-dabao}"
 
 PARENT="$(dirname "$GITHUB_WORKSPACE")"
 OPENME_DIR="$PARENT/openme"
@@ -20,17 +20,6 @@ if [[ -f "$OPENME_DIR/package.json" ]]; then
   exit 0
 fi
 
-if [[ -n "${OPENME_GIT_URL:-}" ]]; then
-  echo "Cloning openme from OPENME_GIT_URL → $OPENME_DIR"
-  git clone --depth 1 "$OPENME_GIT_URL" "$OPENME_DIR"
-elif [[ -n "${GITHUB_TOKEN:-}" ]]; then
-  echo "Cloning openme from GitHub (legacy default; set OPENME_GIT_URL if openme is not on GitHub)"
-  git clone --depth 1 \
-    "https://x-access-token:${GITHUB_TOKEN}@github.com/Shadan-Ai/openme.git" \
-    "$OPENME_DIR"
-else
-  echo "ERROR: Cannot clone openme."
-  echo "  Set repository secret OPENME_GIT_URL to the HTTPS git clone URL of your openme repo"
-  echo "  (e.g. https://gitee.com/your-org/openme.git or a token URL for private hosts)."
-  exit 1
-fi
+CLONE_URL="${OPENME_GIT_URL:-$DEFAULT_OPENME_GIT_URL}"
+echo "Cloning thinkgs/openme (branch ${OPENME_GIT_REF}) → $OPENME_DIR"
+git clone -b "$OPENME_GIT_REF" --depth 1 "$CLONE_URL" "$OPENME_DIR"
