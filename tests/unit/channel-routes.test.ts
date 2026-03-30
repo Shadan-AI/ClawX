@@ -63,10 +63,27 @@ vi.mock('@electron/api/route-utils', () => ({
 
 vi.mock('@electron/utils/paths', () => ({
   getOpenClawConfigDir: () => testOpenClawConfigDir,
+  getOpenClawDir: () => testOpenClawConfigDir,
+  getOpenClawResolvedDir: () => testOpenClawConfigDir,
 }));
 
 vi.mock('@electron/utils/proxy-fetch', () => ({
   proxyAwareFetch: (...args: unknown[]) => proxyAwareFetchMock(...args),
+}));
+
+// Stub openclaw SDK functions that are dynamically loaded via createRequire
+// in the real code — the extracted utility module is easy to mock.
+vi.mock('@electron/utils/openclaw-sdk', () => ({
+  listDiscordDirectoryGroupsFromConfig: vi.fn().mockResolvedValue([]),
+  listDiscordDirectoryPeersFromConfig: vi.fn().mockResolvedValue([]),
+  normalizeDiscordMessagingTarget: vi.fn().mockReturnValue(undefined),
+  listTelegramDirectoryGroupsFromConfig: vi.fn().mockResolvedValue([]),
+  listTelegramDirectoryPeersFromConfig: vi.fn().mockResolvedValue([]),
+  normalizeTelegramMessagingTarget: vi.fn().mockReturnValue(undefined),
+  listSlackDirectoryGroupsFromConfig: vi.fn().mockResolvedValue([]),
+  listSlackDirectoryPeersFromConfig: vi.fn().mockResolvedValue([]),
+  normalizeSlackMessagingTarget: vi.fn().mockReturnValue(undefined),
+  normalizeWhatsAppMessagingTarget: vi.fn().mockReturnValue(undefined),
 }));
 
 describe('handleChannelRoutes', () => {

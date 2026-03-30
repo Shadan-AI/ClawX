@@ -11,6 +11,7 @@ import {
   AlertCircle,
   CheckCircle,
   ShieldCheck,
+  RefreshCw,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -19,6 +20,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Separator } from '@/components/ui/separator';
 import { Badge } from '@/components/ui/badge';
 import { useChannelsStore } from '@/stores/channels';
+import { useGatewayStore } from '@/stores/gateway';
 
 import { hostApiFetch } from '@/lib/host-api';
 import { subscribeHostEvent } from '@/lib/host-events';
@@ -94,11 +96,18 @@ export function ChannelConfigModal({
     errors: string[];
     warnings: string[];
   } | null>(null);
+  const [pluginUrl, setPluginUrl] = useState<string | null>(null);
+  const [pluginUrlError, setPluginUrlError] = useState<string | null>(null);
+  const [iframeKey, setIframeKey] = useState(0);
 
+  const gatewayStatus = useGatewayStore((s) => s.status);
   const meta: ChannelMeta | null = selectedType ? CHANNEL_META[selectedType] : null;
   const shouldUseCredentialValidation = selectedType !== 'feishu';
   const usesManagedQrAccounts = usesPluginManagedQrAccounts(selectedType);
   const showAccountIdEditor = allowEditAccountId && !usesManagedQrAccounts;
+  const duplicateAccountIdError =
+    !!showAccountIdEditor &&
+    existingAccountIds.some((id) => id === accountIdInput.trim() && id !== (accountId || '').trim());
   const resolvedAccountId = usesManagedQrAccounts
     ? (accountId ?? undefined)
     : showAccountIdEditor
@@ -180,6 +189,49 @@ export function ChannelConfigModal({
       firstInputRef.current.focus();
     }
   }, [selectedType, loadingConfig, showChannelName]);
+
+  useEffect(() => {
+    if (!selectedType || meta?.connectionType !== 'embeddedPlugin' || !meta.embeddedPluginPath) {
+      setPluginUrl(null);
+      setPluginUrlError(null);
+      return;
+    }
+    if (gatewayStatus.state === 'starting') {
+      setPluginUrl(null);
+      setPluginUrlError(null);
+      return;
+    }
+    if (gatewayStatus.state !== 'running') {
+      setPluginUrl(null);
+      setPluginUrlError(t('dialog.embeddedPlugin.gatewayRequired'));
+      return;
+    }
+    let cancelled = false;
+    setPluginUrlError(null);
+    (async () => {
+      try {
+        const res = await hostApiFetch<{ success: boolean; url?: string; error?: string }>(
+          `/api/gateway/plugin-url?path=${encodeURIComponent(meta.embeddedPluginPath!)}`,
+        );
+        if (cancelled) return;
+        if (res.success && res.url) {
+          setPluginUrl(res.url);
+          setPluginUrlError(null);
+        } else {
+          setPluginUrl(null);
+          setPluginUrlError(res.error || t('dialog.embeddedPlugin.loadUrlFailed'));
+        }
+      } catch {
+        if (!cancelled) {
+          setPluginUrl(null);
+          setPluginUrlError(t('dialog.embeddedPlugin.loadUrlFailed'));
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [gatewayStatus.state, meta?.connectionType, meta?.embeddedPluginPath, selectedType, t]);
 
   const finishSave = useCallback(async (channelType: ChannelType) => {
     const displayName = showChannelName && channelName.trim()
@@ -453,8 +505,68 @@ export function ChannelConfigModal({
     }
   };
 
+  const openPluginPageExternal = () => {
+    if (!pluginUrl) return;
+    try {
+      if (window.electron?.openExternal) {
+        window.electron.openExternal(pluginUrl);
+      } else {
+        window.open(pluginUrl, '_blank');
+      }
+    } catch {
+      window.open(pluginUrl, '_blank');
+    }
+  };
+
+  const handleEmbeddedFinish = async () => {
+    if (!selectedType || !meta || meta.connectionType !== 'embeddedPlugin') return;
+
+    if (showAccountIdEditor) {
+      const nextAccountId = accountIdInput.trim();
+      if (!nextAccountId) {
+        toast.error(t('account.invalidId'));
+        return;
+      }
+      const duplicateExists = existingAccountIds.some(
+        (id) => id === nextAccountId && id !== (accountId || '').trim(),
+      );
+      if (duplicateExists) {
+        toast.error(t('account.accountIdExists', { accountId: nextAccountId }));
+        return;
+      }
+    }
+
+    setConnecting(true);
+    try {
+      const saveResult = await hostApiFetch<{ success?: boolean; error?: string }>('/api/channels/config', {
+        method: 'POST',
+        body: JSON.stringify({ channelType: selectedType, config: {}, accountId: resolvedAccountId }),
+      });
+      if (!saveResult?.success) {
+        throw new Error(saveResult?.error || 'Failed to save channel config');
+      }
+      try {
+        await finishSave(selectedType);
+      } catch (postSaveError) {
+        toast.warning(t('toast.savedButRefreshFailed'));
+        console.warn('Channel saved but post-save refresh failed:', postSaveError);
+      }
+      toast.success(t('toast.channelSaved', { name: meta.name }));
+      onClose();
+    } catch (error) {
+      toast.error(t('toast.configFailed', { error: String(error) }));
+    } finally {
+      setConnecting(false);
+    }
+  };
+
   const isFormValid = () => {
     if (!meta) return false;
+    if (meta.connectionType === 'embeddedPlugin') {
+      if (duplicateAccountIdError) return false;
+      if (showAccountIdEditor && !accountIdInput.trim()) return false;
+      return true;
+    }
     return meta.configFields
       .filter((field) => field.required)
       .every((field) => configValues[field.key]?.trim());
@@ -542,7 +654,11 @@ export function ChannelConfigModal({
                         {t(channelMeta.description.replace('channels:', ''))}
                       </p>
                       <p className="text-[12px] font-medium text-muted-foreground/80 mt-2">
-                        {channelMeta.connectionType === 'qr' ? t('dialog.qrCode') : t('dialog.token')}
+                        {channelMeta.connectionType === 'qr'
+                          ? t('dialog.qrCode')
+                          : channelMeta.connectionType === 'embeddedPlugin'
+                            ? t('dialog.embeddedPlugin.badge')
+                            : t('dialog.token')}
                       </p>
                     </div>
                     {isConfigured && (
@@ -554,7 +670,7 @@ export function ChannelConfigModal({
                 );
               })}
             </div>
-          ) : qrCode ? (
+          ) : qrCode && meta?.connectionType === 'qr' ? (
             <div className="text-center space-y-6">
               <div className="bg-[#eeece3] dark:bg-muted p-4 rounded-3xl inline-block shadow-sm border border-black/10 dark:border-white/10">
                 {qrCode.startsWith('data:image') || qrCode.startsWith('http://') || qrCode.startsWith('https://') ? (
@@ -585,6 +701,136 @@ export function ChannelConfigModal({
             <div className="flex items-center justify-center py-10 rounded-2xl bg-[#eeece3] dark:bg-muted border border-black/10 dark:border-white/10">
               <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
               <span className="ml-2 text-[14px] text-muted-foreground">{t('dialog.loadingConfig')}</span>
+            </div>
+          ) : meta?.connectionType === 'embeddedPlugin' ? (
+            <div className="space-y-6">
+              {isExistingConfig && (
+                <div className="bg-blue-500/10 text-blue-600 dark:text-blue-400 p-4 rounded-2xl text-[13.5px] flex items-center gap-2 border border-blue-500/20">
+                  <CheckCircle className="h-4 w-4 shrink-0" />
+                  <span>{t('dialog.existingHint')}</span>
+                </div>
+              )}
+
+              <div className="bg-[#eeece3] dark:bg-muted p-4 rounded-2xl space-y-4 shadow-sm border border-black/10 dark:border-white/10">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className={labelClasses}>{t('dialog.howToConnect')}</p>
+                    <p className="text-[13px] text-muted-foreground mt-1">
+                      {meta ? t(meta.description.replace('channels:', '')) : ''}
+                    </p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    className={cn(outlineButtonClasses, 'h-8 px-3 shrink-0')}
+                    onClick={openDocs}
+                  >
+                    <BookOpen className="h-3 w-3 mr-1" />
+                    {t('dialog.viewDocs')}
+                    <ExternalLink className="h-3 w-3 ml-1" />
+                  </Button>
+                </div>
+                <ol className="list-decimal pl-5 text-[13px] text-muted-foreground leading-relaxed space-y-1.5">
+                  {meta?.instructions.map((instruction, index) => (
+                    <li key={index}>{t(instruction)}</li>
+                  ))}
+                </ol>
+              </div>
+
+              {showChannelName && (
+                <div className="space-y-2.5">
+                  <Label htmlFor="name-embedded" className={labelClasses}>{t('dialog.channelName')}</Label>
+                  <Input
+                    ref={firstInputRef}
+                    id="name-embedded"
+                    placeholder={t('dialog.channelNamePlaceholder', { name: meta?.name })}
+                    value={channelName}
+                    onChange={(event) => setChannelName(event.target.value)}
+                    className={inputClasses}
+                  />
+                </div>
+              )}
+
+              {showAccountIdEditor && (
+                <div className="space-y-2.5">
+                  <Label htmlFor="account-id-embedded" className={labelClasses}>{t('account.customIdLabel')}</Label>
+                  <Input
+                    id="account-id-embedded"
+                    value={accountIdInput}
+                    onChange={(event) => setAccountIdInput(event.target.value)}
+                    placeholder={t('account.customIdPlaceholder')}
+                    className={inputClasses}
+                  />
+                  <p className="text-[12px] text-muted-foreground">{t('account.customIdHint')}</p>
+                </div>
+              )}
+
+              <p className="text-[13px] text-muted-foreground leading-relaxed">{t('dialog.embeddedPlugin.hint')}</p>
+
+              {pluginUrlError && (
+                <div className="p-4 rounded-2xl text-sm border bg-destructive/10 text-destructive border-destructive/20">
+                  {pluginUrlError}
+                </div>
+              )}
+
+              {pluginUrl && !pluginUrlError && (
+                <>
+                  <div className="rounded-2xl border border-black/10 dark:border-white/10 overflow-hidden bg-background shadow-sm">
+                    <iframe
+                      key={iframeKey}
+                      title={t('dialog.embeddedPlugin.iframeTitle')}
+                      src={pluginUrl}
+                      className="w-full min-h-[440px] border-0 bg-background"
+                    />
+                  </div>
+                  <div className="flex flex-col sm:flex-row sm:flex-wrap sm:justify-end gap-2 pt-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className={outlineButtonClasses}
+                      onClick={() => setIframeKey((k) => k + 1)}
+                    >
+                      <RefreshCw className="h-4 w-4 mr-2" />
+                      {t('dialog.embeddedPlugin.refreshPage')}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className={outlineButtonClasses}
+                      onClick={openPluginPageExternal}
+                    >
+                      <ExternalLink className="h-4 w-4 mr-2" />
+                      {t('dialog.embeddedPlugin.openInBrowser')}
+                    </Button>
+                    <Button
+                      type="button"
+                      onClick={() => void handleEmbeddedFinish()}
+                      disabled={connecting || !isFormValid()}
+                      className={primaryButtonClasses}
+                    >
+                      {connecting ? (
+                        <>
+                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                          {t('dialog.embeddedPlugin.saving')}
+                        </>
+                      ) : (
+                        <>
+                          <Check className="h-4 w-4 mr-2" />
+                          {t('dialog.embeddedPlugin.finishBinding')}
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                </>
+              )}
+
+              {(gatewayStatus.state === 'running' || gatewayStatus.state === 'starting') &&
+                !pluginUrl &&
+                !pluginUrlError && (
+                <div className="flex items-center justify-center py-10 rounded-2xl bg-[#eeece3] dark:bg-muted border border-black/10 dark:border-white/10">
+                  <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                  <span className="ml-2 text-[14px] text-muted-foreground">{t('dialog.embeddedPlugin.loadingPlugin')}</span>
+                </div>
+              )}
             </div>
           ) : (
             <div className="space-y-6">

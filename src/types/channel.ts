@@ -7,6 +7,7 @@
  * Supported channel types
  */
 export type ChannelType =
+  | 'box-im'
   | 'whatsapp'
   | 'wechat'
   | 'dingtalk'
@@ -21,8 +22,7 @@ export type ChannelType =
   | 'msteams'
   | 'googlechat'
   | 'mattermost'
-  | 'qqbot'
-  | 'box-im';
+  | 'qqbot';
 
 /**
  * Channel connection status
@@ -32,7 +32,7 @@ export type ChannelStatus = 'connected' | 'disconnected' | 'connecting' | 'error
 /**
  * Channel connection type
  */
-export type ChannelConnectionType = 'token' | 'qr' | 'oauth' | 'webhook';
+export type ChannelConnectionType = 'token' | 'qr' | 'oauth' | 'webhook' | 'embeddedPlugin';
 
 /**
  * Channel data structure
@@ -72,6 +72,8 @@ export interface ChannelMeta {
   icon: string;
   description: string;
   connectionType: ChannelConnectionType;
+  /** Gateway path for embedded login UI (OpenClaw plugin HTTP), e.g. `/plugins/box-im/login`. */
+  embeddedPluginPath?: string;
   docsUrl: string;
   configFields: ChannelConfigField[];
   instructions: string[];
@@ -82,6 +84,7 @@ export interface ChannelMeta {
  * Channel icons mapping
  */
 export const CHANNEL_ICONS: Record<ChannelType, string> = {
+  'box-im': '🤖',
   whatsapp: '📱',
   wechat: '💬',
   dingtalk: '💬',
@@ -97,13 +100,13 @@ export const CHANNEL_ICONS: Record<ChannelType, string> = {
   googlechat: '💭',
   mattermost: '💠',
   qqbot: '🐧',
-  'box-im': '🤖',
 };
 
 /**
  * Channel display names
  */
 export const CHANNEL_NAMES: Record<ChannelType, string> = {
+  'box-im': 'Box-IM',
   whatsapp: 'WhatsApp',
   wechat: 'WeChat',
   dingtalk: 'DingTalk',
@@ -119,7 +122,6 @@ export const CHANNEL_NAMES: Record<ChannelType, string> = {
   googlechat: 'Google Chat',
   mattermost: 'Mattermost',
   qqbot: 'QQ Bot',
-  'box-im': 'Box-IM',
 };
 
 /**
@@ -598,7 +600,7 @@ export const CHANNEL_META: Record<ChannelType, ChannelMeta> = {
  * Get primary supported channels (non-plugin, commonly used)
  */
 export function getPrimaryChannels(): ChannelType[] {
-  return ['telegram', 'discord', 'whatsapp', 'wechat', 'dingtalk', 'feishu', 'wecom', 'qqbot', 'box-im'];
+  return ['box-im', 'telegram', 'discord', 'whatsapp', 'wechat', 'dingtalk', 'feishu', 'wecom', 'qqbot'];
 }
 
 /**

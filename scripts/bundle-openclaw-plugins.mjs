@@ -38,9 +38,15 @@ function normWin(p) {
 const PLUGINS = [
   { npmName: '@soimy/dingtalk', pluginId: 'dingtalk' },
   { npmName: '@wecom/wecom-openclaw-plugin', pluginId: 'wecom' },
-  { npmName: '@sliverp/qqbot', pluginId: 'qqbot' },
+  { npmName: '@tencent-connect/openclaw-qqbot', pluginId: 'qqbot' },
   { npmName: '@larksuite/openclaw-lark', pluginId: 'feishu-openclaw-plugin' },
   { npmName: '@tencent-weixin/openclaw-weixin', pluginId: 'openclaw-weixin' },
+  /** Channel extension shipped inside the local OpenClaw fork (`@shadanai/openclaw`). */
+  {
+    npmName: '@openclaw/box-im',
+    pluginId: 'box-im',
+    sourcePath: path.join(NODE_MODULES, '@shadanai', 'openclaw', 'extensions', 'box-im'),
+  },
 ];
 
 function getVirtualStoreNodeModules(realPkgPath) {
@@ -83,10 +89,14 @@ function listPackages(nodeModulesDir) {
   return result;
 }
 
-function bundleOnePlugin({ npmName, pluginId }) {
-  const pkgPath = path.join(NODE_MODULES, ...npmName.split('/'));
+function bundleOnePlugin({ npmName, pluginId, sourcePath }) {
+  const pkgPath = sourcePath ?? path.join(NODE_MODULES, ...npmName.split('/'));
   if (!fs.existsSync(pkgPath)) {
-    throw new Error(`Missing dependency "${npmName}". Run pnpm install first.`);
+    throw new Error(
+      sourcePath
+        ? `Missing extension at "${pkgPath}". Ensure @shadanai/openclaw is linked and extensions exist.`
+        : `Missing dependency "${npmName}". Run pnpm install first.`,
+    );
   }
 
   const realPluginPath = fs.realpathSync(pkgPath);

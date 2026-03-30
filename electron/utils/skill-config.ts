@@ -11,6 +11,7 @@ import { constants } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { getOpenClawDir, getResourcesDir } from './paths';
+import { stampOpenClawConfigMeta } from './openclaw-config-meta';
 import { logger } from './logger';
 import { withConfigLock } from './config-mutex';
 
@@ -80,6 +81,7 @@ async function readConfig(): Promise<OpenClawConfig> {
  * Write the OpenClaw config
  */
 async function writeConfig(config: OpenClawConfig): Promise<void> {
+    stampOpenClawConfigMeta(config as Record<string, unknown>);
     const json = JSON.stringify(config, null, 2);
     await writeFile(OPENCLAW_CONFIG_PATH, json, 'utf-8');
 }

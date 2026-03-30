@@ -101,26 +101,35 @@ export function getResourcesDir(): string {
   return join(__dirname, '../../resources');
 }
 
-function isUsableOpenClawDir(dir: string): boolean {
-  return existsSync(join(dir, 'package.json')) && existsSync(join(dir, 'openclaw.mjs'));
-}
-
-function getDevOpenClawDir(): string {
-  const envDir = process.env.CLAWX_OPENCLAW_DIR?.trim();
-  const appPath = getElectronApp().getAppPath();
-  const candidates = [
-    envDir,
-    join(appPath, '..', 'openclaw'),
-    join(appPath, 'node_modules', 'openclaw'),
-  ].filter((value): value is string => Boolean(value));
-
-  for (const candidate of candidates) {
-    if (isUsableOpenClawDir(candidate)) {
-      return candidate;
+/**
+ * Path to the default `openclaw.json` template (copied from `openme/gateway.json` at build).
+ * Used to seed `~/.openclaw/openclaw.json` on first launch when the file does not exist.
+ */
+export function getOpenClawDefaultConfigTemplatePath(): string | null {
+  try {
+    if (getElectronApp().isPackaged) {
+      const packaged = join(process.resourcesPath, 'resources', 'openclaw-default.json');
+      if (existsSync(packaged)) {
+        return packaged;
+      }
     }
+  } catch {
+    // ignore
   }
-
-  return join(appPath, 'node_modules', 'openclaw');
+  const resCopy = join(__dirname, '../../resources/openclaw-default.json');
+  if (existsSync(resCopy)) {
+    return resCopy;
+  }
+  const clawxRoot = join(__dirname, '../..');
+  const openmeGateway = join(clawxRoot, '..', 'openme', 'gateway.json');
+  if (existsSync(openmeGateway)) {
+    return openmeGateway;
+  }
+  const cwdSibling = join(process.cwd(), '..', 'openme', 'gateway.json');
+  if (existsSync(cwdSibling)) {
+    return cwdSibling;
+  }
+  return null;
 }
 
 /**
@@ -131,16 +140,31 @@ export function getPreloadPath(): string {
 }
 
 /**
+ * Resolve OpenClaw package root under dev (pnpm may hoist `openclaw` or `@shadanai/openclaw`).
+ */
+function getDevOpenClawPackageDir(): string {
+  const nm = join(__dirname, '../../node_modules');
+  const scoped = join(nm, '@shadanai/openclaw');
+  const flat = join(nm, 'openclaw');
+  if (existsSync(join(scoped, 'package.json'))) {
+    return scoped;
+  }
+  if (existsSync(join(flat, 'package.json'))) {
+    return flat;
+  }
+  return scoped;
+}
+
+/**
  * Get OpenClaw package directory
  * - Production (packaged): from resources/openclaw (copied by electron-builder extraResources)
- * - Development: from node_modules/openclaw
+ * - Development: from node_modules (local fork `@shadanai/openclaw` or npm `openclaw`)
  */
 export function getOpenClawDir(): string {
   if (getElectronApp().isPackaged) {
     return join(process.resourcesPath, 'openclaw');
   }
-  // Development: allow overriding with a sibling/local OpenClaw checkout.
-  return getDevOpenClawDir();
+  return getDevOpenClawPackageDir();
 }
 
 /**
@@ -157,6 +181,25 @@ export function getOpenClawResolvedDir(): string {
   } catch {
     return dir;
   }
+}
+
+/**
+ * OpenClaw package version from `package.json` (matches `stampConfigVersion` in openme `config/io.ts`).
+ * Used when writing `~/.openclaw/openclaw.json` so config health observes `meta` consistently.
+ */
+export function getOpenClawPackageVersion(): string | undefined {
+  try {
+    const pkgPath = join(getOpenClawDir(), 'package.json');
+    if (existsSync(pkgPath)) {
+      const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8')) as { version?: string };
+      if (typeof pkg.version === 'string' && pkg.version.length > 0) {
+        return pkg.version;
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return undefined;
 }
 
 /**

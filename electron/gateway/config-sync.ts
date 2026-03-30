@@ -21,12 +21,20 @@ import { getProviderEnvVar, getKeyableProviderTypes } from '../utils/provider-re
 import { getOpenClawDir, getOpenClawEntryPath, isOpenClawPresent } from '../utils/paths';
 import { getUvMirrorEnv } from '../utils/uv-env';
 import { cleanupDanglingWeChatPluginState, listConfiguredChannels } from '../utils/channel-config';
-import { syncGatewayTokenToConfig, syncBrowserConfigToOpenClaw, syncSessionIdleMinutesToOpenClaw, sanitizeOpenClawConfig } from '../utils/openclaw-auth';
+import {
+  syncGatewayTokenToConfig,
+  syncBrowserConfigToOpenClaw,
+  syncSessionIdleMinutesToOpenClaw,
+  sanitizeOpenClawConfig,
+  seedOpenClawJsonFromTemplateIfMissing,
+  mergeOpenClawJsonFromTemplateForMissingSections,
+} from '../utils/openclaw-auth';
 import { buildProxyEnv, resolveProxySettings } from '../utils/proxy';
 import { syncProxyConfigToOpenClaw } from '../utils/openclaw-proxy';
 import { logger } from '../utils/logger';
 import { prependPathEntry } from '../utils/env-path';
 import { copyPluginFromNodeModules, fixupPluginManifest } from '../utils/plugin-install';
+import { SKILL_MARKET_BASE_URL } from '../utils/skill-market';
 
 export interface GatewayLaunchContext {
   appSettings: Awaited<ReturnType<typeof getAllSettings>>;
@@ -43,13 +51,44 @@ export interface GatewayLaunchContext {
 
 // ── Auto-upgrade bundled plugins on startup ──────────────────────
 
-const CHANNEL_PLUGIN_MAP: Record<string, { dirName: string; npmName: string }> = {
+const CHANNEL_PLUGIN_MAP: Record<
+  string,
+  { dirName: string; npmName: string; devOpenclawExtensionRel?: string }
+> = {
   dingtalk: { dirName: 'dingtalk', npmName: '@soimy/dingtalk' },
   wecom: { dirName: 'wecom', npmName: '@wecom/wecom-openclaw-plugin' },
   feishu: { dirName: 'feishu-openclaw-plugin', npmName: '@larksuite/openclaw-lark' },
-  qqbot: { dirName: 'qqbot', npmName: '@sliverp/qqbot' },
+  qqbot: { dirName: 'qqbot', npmName: '@tencent-connect/openclaw-qqbot' },
   'openclaw-weixin': { dirName: 'openclaw-weixin', npmName: '@tencent-weixin/openclaw-weixin' },
+  /** Lives under `node_modules/@shadanai/openclaw/extensions/box-im`, not `@openclaw/box-im` at repo root. */
+  'box-im': {
+    dirName: 'box-im',
+    npmName: '@openclaw/box-im',
+    devOpenclawExtensionRel: 'extensions/box-im',
+  },
 };
+
+/**
+ * OpenClaw 3.22+ ships Discord, Telegram, and other channels as built-in
+ * extensions.  If a previous ClawX version copied one of these into
+ * ~/.openclaw/extensions/, the broken copy overrides the working built-in
+ * plugin and must be removed.
+ */
+const BUILTIN_CHANNEL_EXTENSIONS = ['discord', 'telegram'];
+
+function cleanupStaleBuiltInExtensions(): void {
+  for (const ext of BUILTIN_CHANNEL_EXTENSIONS) {
+    const extDir = join(homedir(), '.openclaw', 'extensions', ext);
+    if (existsSync(fsPath(extDir))) {
+      logger.info(`[plugin] Removing stale built-in extension copy: ${ext}`);
+      try {
+        rmSync(fsPath(extDir), { recursive: true, force: true });
+      } catch (err) {
+        logger.warn(`[plugin] Failed to remove stale extension ${ext}:`, err);
+      }
+    }
+  }
+}
 
 function readPluginVersion(pkgJsonPath: string): string | null {
   try {
@@ -113,7 +152,22 @@ function ensureConfiguredPluginsUpgraded(configuredChannels: string[]): void {
 
     // Dev mode fallback: copy from node_modules/ with pnpm dep resolution
     if (!app.isPackaged) {
-      const npmPkgPath = join(process.cwd(), 'node_modules', ...npmName.split('/'));
+      let npmPkgPath = join(process.cwd(), 'node_modules', ...npmName.split('/'));
+      if (
+        pluginInfo.devOpenclawExtensionRel &&
+        !existsSync(fsPath(join(npmPkgPath, 'openclaw.plugin.json')))
+      ) {
+        const alt = join(
+          process.cwd(),
+          'node_modules',
+          '@shadanai',
+          'openclaw',
+          pluginInfo.devOpenclawExtensionRel,
+        );
+        if (existsSync(fsPath(join(alt, 'openclaw.plugin.json')))) {
+          npmPkgPath = alt;
+        }
+      }
       if (!existsSync(fsPath(join(npmPkgPath, 'openclaw.plugin.json')))) continue;
       const sourceVersion = readPluginVersion(join(npmPkgPath, 'package.json'));
       if (!sourceVersion) continue;
@@ -137,6 +191,18 @@ function ensureConfiguredPluginsUpgraded(configuredChannels: string[]): void {
 export async function syncGatewayConfigBeforeLaunch(
   appSettings: Awaited<ReturnType<typeof getAllSettings>>,
 ): Promise<void> {
+  try {
+    await seedOpenClawJsonFromTemplateIfMissing();
+  } catch (err) {
+    logger.warn('Failed to seed openclaw.json from bundled template:', err);
+  }
+
+  try {
+    await mergeOpenClawJsonFromTemplateForMissingSections();
+  } catch (err) {
+    logger.warn('Failed to merge gateway template into openclaw.json:', err);
+  }
+
   await syncProxyConfigToOpenClaw(appSettings, { preserveExistingWhenDisabled: true });
 
   try {
@@ -149,6 +215,14 @@ export async function syncGatewayConfigBeforeLaunch(
     await cleanupDanglingWeChatPluginState();
   } catch (err) {
     logger.warn('Failed to clean dangling WeChat plugin state before launch:', err);
+  }
+
+  // Remove stale copies of built-in extensions (Discord, Telegram) that
+  // override OpenClaw's working built-in plugins and break channel loading.
+  try {
+    cleanupStaleBuiltInExtensions();
+  } catch (err) {
+    logger.warn('Failed to clean stale built-in extensions:', err);
   }
 
   // Auto-upgrade installed plugins before Gateway starts so that
@@ -295,6 +369,7 @@ export async function prepareGatewayLaunchContext(port: number): Promise<Gateway
     OPENCLAW_SKIP_CHANNELS: skipChannels ? '1' : '',
     CLAWDBOT_SKIP_CHANNELS: skipChannels ? '1' : '',
     OPENCLAW_NO_RESPAWN: '1',
+    OPENCLAW_SKILL_MARKET_URL: SKILL_MARKET_BASE_URL,
   };
 
   return {

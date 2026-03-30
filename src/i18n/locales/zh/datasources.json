@@ -1,0 +1,34 @@
+{
+    "title": "数据源",
+    "subtitle": "配置外部连接器的环境变量，将写入 ~/.openclaw/openclaw.json。",
+    "gatewayWarning": "网关未运行时无法保存到配置文件。",
+    "save": "保存",
+    "status": {
+        "configured": "已配置",
+        "notConfigured": "未配置"
+    },
+    "connectors": {
+        "wechat": {
+            "name": "微信",
+            "description": "微信相关能力所需的应用凭证。"
+        },
+        "zhipu": {
+            "name": "智谱",
+            "description": "智谱 API 密钥。"
+        }
+    },
+    "fields": {
+        "appId": "App ID",
+        "appSecret": "App Secret",
+        "apiKey": "API Key"
+    },
+    "placeholders": {
+        "appId": "",
+        "appSecret": "",
+        "apiKey": ""
+    },
+    "toast": {
+        "fillAll": "请填写所有字段。",
+        "saved": "已保存：{{name}}"
+    }
+}

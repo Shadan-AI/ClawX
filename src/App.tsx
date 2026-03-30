@@ -17,6 +17,8 @@ import { Skills } from './pages/Skills';
 import { Cron } from './pages/Cron';
 import { Settings } from './pages/Settings';
 import { Setup } from './pages/Setup';
+import { BoxImGate } from './pages/BoxImGate';
+import { Datasources } from './pages/Datasources';
 import { useSettingsStore } from './stores/settings';
 import { useGatewayStore } from './stores/gateway';
 import { useProviderStore } from './stores/providers';
@@ -94,6 +96,7 @@ function App() {
   const theme = useSettingsStore((state) => state.theme);
   const language = useSettingsStore((state) => state.language);
   const setupComplete = useSettingsStore((state) => state.setupComplete);
+  const boxImGateComplete = useSettingsStore((state) => state.boxImGateComplete);
   const initGateway = useGatewayStore((state) => state.init);
   const initProviders = useProviderStore((state) => state.init);
 
@@ -118,12 +121,21 @@ function App() {
     initProviders();
   }, [initProviders]);
 
-  // Redirect to setup wizard if not complete
+  // First-run: box-im gate → setup wizard → main app
   useEffect(() => {
-    if (!setupComplete && !location.pathname.startsWith('/setup')) {
-      navigate('/setup');
+    const path = location.pathname;
+    if (path.startsWith('/setup') || path === '/box-im-gate') {
+      return;
     }
-  }, [setupComplete, location.pathname, navigate]);
+    if (setupComplete) {
+      return;
+    }
+    if (!boxImGateComplete) {
+      navigate('/box-im-gate', { replace: true });
+      return;
+    }
+    navigate('/setup', { replace: true });
+  }, [setupComplete, boxImGateComplete, location.pathname, navigate]);
 
   // Listen for navigation events from main process
   useEffect(() => {
@@ -166,6 +178,8 @@ function App() {
     <ErrorBoundary>
       <TooltipProvider delayDuration={300}>
         <Routes>
+          {/* First launch: box-im plugin login (before setup) */}
+          <Route path="/box-im-gate" element={<BoxImGate />} />
           {/* Setup wizard (shown on first launch) */}
           <Route path="/setup/*" element={<Setup />} />
 
@@ -176,6 +190,7 @@ function App() {
             <Route path="/agents" element={<Agents />} />
             <Route path="/channels" element={<Channels />} />
             <Route path="/skills" element={<Skills />} />
+            <Route path="/datasources" element={<Datasources />} />
             <Route path="/cron" element={<Cron />} />
             <Route path="/settings/*" element={<Settings />} />
           </Route>

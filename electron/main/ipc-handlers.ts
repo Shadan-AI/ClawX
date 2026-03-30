@@ -21,6 +21,7 @@ import {
 } from '../utils/openclaw-auth';
 import { syncProxyConfigToOpenClaw } from '../utils/openclaw-proxy';
 import { buildOpenClawControlUiUrl } from '../utils/openclaw-control-ui';
+import { getGatewayTlsEnabledFromOpenClawConfig } from '../utils/openclaw-gateway-tls';
 import { logger } from '../utils/logger';
 import {
   saveChannelConfig,
@@ -1319,7 +1320,8 @@ function registerGatewayHandlers(
       const status = gatewayManager.getStatus();
       const token = await getSetting('gatewayToken');
       const port = status.port || 18789;
-      const url = buildOpenClawControlUiUrl(port, token);
+      const tls = await getGatewayTlsEnabledFromOpenClawConfig();
+      const url = buildOpenClawControlUiUrl(port, token, { tls });
       return { success: true, url, port, token };
     } catch (error) {
       return { success: false, error: String(error) };

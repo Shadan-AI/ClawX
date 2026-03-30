@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import { PORTS } from '../../utils/config';
-import { buildOpenClawControlUiUrl } from '../../utils/openclaw-control-ui';
+import { buildGatewayPluginUrl, buildOpenClawControlUiUrl } from '../../utils/openclaw-control-ui';
+import { getGatewayTlsEnabledFromOpenClawConfig } from '../../utils/openclaw-gateway-tls';
 import { getSetting } from '../../utils/store';
 import type { HostApiContext } from '../context';
 import { parseJsonBody, sendJson } from '../route-utils';
@@ -69,8 +70,27 @@ export async function handleGatewayRoutes(
       const status = ctx.gatewayManager.getStatus();
       const token = await getSetting('gatewayToken');
       const port = status.port || PORTS.OPENCLAW_GATEWAY;
-      const urlValue = buildOpenClawControlUiUrl(port, token);
+      const tls = await getGatewayTlsEnabledFromOpenClawConfig();
+      const urlValue = buildOpenClawControlUiUrl(port, token, { tls });
       sendJson(res, 200, { success: true, url: urlValue, token, port });
+    } catch (error) {
+      sendJson(res, 500, { success: false, error: String(error) });
+    }
+    return true;
+  }
+
+  if (url.pathname === '/api/gateway/plugin-url' && req.method === 'GET') {
+    try {
+      const rawPath = url.searchParams.get('path')?.trim() || '';
+      if (!rawPath.startsWith('/plugins/') || rawPath.includes('..')) {
+        sendJson(res, 400, { success: false, error: 'path must start with /plugins/' });
+        return true;
+      }
+      const status = ctx.gatewayManager.getStatus();
+      const port = status.port || PORTS.OPENCLAW_GATEWAY;
+      const tls = await getGatewayTlsEnabledFromOpenClawConfig();
+      const absoluteUrl = buildGatewayPluginUrl(port, rawPath, { tls });
+      sendJson(res, 200, { success: true, url: absoluteUrl, port, tls });
     } catch (error) {
       sendJson(res, 500, { success: false, error: String(error) });
     }

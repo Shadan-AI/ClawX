@@ -158,6 +158,54 @@ describe('WeCom plugin configuration', () => {
     expect(plugins.allow).toContain('wecom');
     expect(plugins.entries['wecom'].enabled).toBe(true);
   });
+
+  it('saves whatsapp as a built-in channel instead of a plugin', async () => {
+    const { saveChannelConfig } = await import('@electron/utils/channel-config');
+
+    await saveChannelConfig('whatsapp', { enabled: true }, 'default');
+
+    const config = await readOpenClawJson();
+    const channels = config.channels as Record<string, { enabled?: boolean; defaultAccount?: string; accounts?: Record<string, { enabled?: boolean }> }>;
+
+    expect(channels.whatsapp.enabled).toBe(true);
+    expect(channels.whatsapp.defaultAccount).toBe('default');
+    expect(channels.whatsapp.accounts?.default?.enabled).toBe(true);
+    expect(config.plugins).toBeUndefined();
+  });
+
+  it('cleans up stale whatsapp plugin registration when saving built-in config', async () => {
+    const { saveChannelConfig, writeOpenClawConfig } = await import('@electron/utils/channel-config');
+
+    await writeOpenClawConfig({
+      plugins: {
+        enabled: true,
+        allow: ['whatsapp'],
+        entries: {
+          whatsapp: { enabled: true },
+        },
+      },
+    });
+
+    await saveChannelConfig('whatsapp', { enabled: true }, 'default');
+
+    const config = await readOpenClawJson();
+    expect(config.plugins).toBeUndefined();
+    const channels = config.channels as Record<string, { enabled?: boolean }>;
+    expect(channels.whatsapp.enabled).toBe(true);
+  });
+
+  it('keeps configured built-in channels in plugins.allow when a plugin-backed channel is enabled', async () => {
+    const { saveChannelConfig } = await import('@electron/utils/channel-config');
+
+    await saveChannelConfig('discord', { token: 'discord-token' }, 'default');
+    await saveChannelConfig('whatsapp', { enabled: true }, 'default');
+    await saveChannelConfig('qqbot', { appId: 'qq-app', token: 'qq-token', appSecret: 'qq-secret' }, 'default');
+
+    const config = await readOpenClawJson();
+    const plugins = config.plugins as { allow: string[] };
+
+    expect(plugins.allow).toEqual(expect.arrayContaining(['qqbot', 'discord', 'whatsapp']));
+  });
 });
 
 describe('WeChat dangling plugin cleanup', () => {

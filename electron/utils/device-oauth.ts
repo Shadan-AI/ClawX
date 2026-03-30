@@ -1,17 +1,17 @@
 /**
  * Device OAuth Manager
  *
- * Delegates MiniMax and Qwen OAuth to the OpenClaw extension oauth.ts functions
- * imported directly from the bundled openclaw package at build time.
+ * Manages Device Code OAuth flows for MiniMax and Qwen providers.
+ *
+ * The OAuth protocol implementations are fully self-contained in:
+ *   - ./minimax-oauth.ts  (MiniMax Device Code + PKCE)
+ *   - ./qwen-oauth.ts     (Qwen Device Code + PKCE)
  *
  * This approach:
- * - Avoids hardcoding client_id (lives in openclaw extension)
- * - Avoids duplicating HTTP OAuth logic
- * - Avoids spawning CLI process (which requires interactive TTY)
+ * - Hardcodes client_id and endpoints (same as openai-codex-oauth.ts)
+ * - Implements OAuth flows locally with zero openclaw dependency
+ * - Survives openclaw package upgrades without breakage
  * - Works identically on macOS, Windows, and Linux
- *
- * The extension oauth.ts files only use `node:crypto` and global `fetch` —
- * they are pure Node.js HTTP functions, no TTY, no prompter needed.
  *
  * We provide our own callbacks (openUrl/note/progress) that hook into
  * the Electron IPC system to display UI in the ClawX frontend.
@@ -21,21 +21,15 @@ import { BrowserWindow, shell } from 'electron';
 import { logger } from './logger';
 import { saveProvider, getProvider, ProviderConfig } from './secure-storage';
 import { getProviderDefaultModel } from './provider-registry';
-import { isOpenClawPresent } from './paths';
 import { proxyAwareFetch } from './proxy-fetch';
-import {
-    loginMiniMaxPortalOAuth,
-    type MiniMaxOAuthToken,
-    type MiniMaxRegion,
-} from '../../node_modules/openclaw/extensions/minimax/oauth';
-import {
-    loginQwenPortalOAuth,
-    type QwenOAuthToken,
-} from '../../node_modules/openclaw/extensions/qwen-portal-auth/oauth';
 import { saveOAuthTokenToOpenClaw, setOpenClawDefaultModelWithOverride } from './openclaw-auth';
+import { loginMiniMaxPortalOAuth, type MiniMaxOAuthToken, type MiniMaxRegion } from './minimax-oauth';
+import { loginQwenPortalOAuth, type QwenOAuthToken } from './qwen-oauth';
 
 export type OAuthProviderType = 'minimax-portal' | 'minimax-portal-cn' | 'qwen-portal';
-export type { MiniMaxRegion };
+
+// Re-export types for consumers
+export type { MiniMaxRegion, MiniMaxOAuthToken, QwenOAuthToken };
 
 // ─────────────────────────────────────────────────────────────
 // DeviceOAuthManager
@@ -116,21 +110,18 @@ class DeviceOAuthManager extends EventEmitter {
     // ─────────────────────────────────────────────────────────
 
     private async runMiniMaxFlow(region?: MiniMaxRegion, providerType: OAuthProviderType = 'minimax-portal'): Promise<void> {
-        if (!isOpenClawPresent()) {
-            throw new Error('OpenClaw package not found');
-        }
         const provider = this.activeProvider!;
 
         const token: MiniMaxOAuthToken = await this.runWithProxyAwareFetch(() => loginMiniMaxPortalOAuth({
             region,
-            openUrl: async (url) => {
+            openUrl: async (url: string) => {
                 logger.info(`[DeviceOAuth] MiniMax opening browser: ${url}`);
                 // Open the authorization URL in the system browser
-                shell.openExternal(url).catch((err) =>
+                shell.openExternal(url).catch((err: unknown) =>
                     logger.warn(`[DeviceOAuth] Failed to open browser:`, err)
                 );
             },
-            note: async (message, _title) => {
+            note: async (message: string, _title?: string) => {
                 if (!this.active) return;
                 // The extension calls note() with a message containing
                 // the user_code and verification_uri — parse them for the UI
@@ -142,8 +133,8 @@ class DeviceOAuthManager extends EventEmitter {
                 }
             },
             progress: {
-                update: (msg) => logger.info(`[DeviceOAuth] MiniMax progress: ${msg}`),
-                stop: (msg) => logger.info(`[DeviceOAuth] MiniMax progress done: ${msg ?? ''}`),
+                update: (msg: string) => logger.info(`[DeviceOAuth] MiniMax progress: ${msg}`),
+                stop: (msg?: string) => logger.info(`[DeviceOAuth] MiniMax progress done: ${msg ?? ''}`),
             },
         }));
 
@@ -166,19 +157,16 @@ class DeviceOAuthManager extends EventEmitter {
     // ─────────────────────────────────────────────────────────
 
     private async runQwenFlow(): Promise<void> {
-        if (!isOpenClawPresent()) {
-            throw new Error('OpenClaw package not found');
-        }
         const provider = this.activeProvider!;
 
         const token: QwenOAuthToken = await this.runWithProxyAwareFetch(() => loginQwenPortalOAuth({
-            openUrl: async (url) => {
+            openUrl: async (url: string) => {
                 logger.info(`[DeviceOAuth] Qwen opening browser: ${url}`);
-                shell.openExternal(url).catch((err) =>
+                shell.openExternal(url).catch((err: unknown) =>
                     logger.warn(`[DeviceOAuth] Failed to open browser:`, err)
                 );
             },
-            note: async (message, _title) => {
+            note: async (message: string, _title?: string) => {
                 if (!this.active) return;
                 const { verificationUri, userCode } = this.parseNote(message);
                 if (verificationUri && userCode) {
@@ -188,8 +176,8 @@ class DeviceOAuthManager extends EventEmitter {
                 }
             },
             progress: {
-                update: (msg) => logger.info(`[DeviceOAuth] Qwen progress: ${msg}`),
-                stop: (msg) => logger.info(`[DeviceOAuth] Qwen progress done: ${msg ?? ''}`),
+                update: (msg: string) => logger.info(`[DeviceOAuth] Qwen progress: ${msg}`),
+                stop: (msg?: string) => logger.info(`[DeviceOAuth] Qwen progress done: ${msg ?? ''}`),
             },
         }));
 

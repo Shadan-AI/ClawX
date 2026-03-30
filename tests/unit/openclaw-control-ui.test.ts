@@ -12,4 +12,10 @@ describe('buildOpenClawControlUiUrl', () => {
   it('omits the fragment when the token is blank', () => {
     expect(buildOpenClawControlUiUrl(18789, '   ')).toBe('http://127.0.0.1:18789/');
   });
+
+  it('uses https when gateway TLS is enabled', () => {
+    expect(buildOpenClawControlUiUrl(18789, 't', { tls: true })).toBe(
+      'https://127.0.0.1:18789/#token=t',
+    );
+  });
 });

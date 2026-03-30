@@ -1,0 +1,13 @@
+{
+    "title": "QRコードでログイン",
+    "subtitle": "box-im のログインを完了してからセットアップに進んでください。",
+    "gatewayRequired": "ログインページを読み込むにはゲートウェイを起動してください。",
+    "loadUrlFailed": "ログインURLを取得できませんでした。",
+    "startGatewayHint": "ゲートウェイが停止中のため埋め込み表示できません。",
+    "startGateway": "ゲートウェイを起動",
+    "loadingPlugin": "読み込み中…",
+    "iframeTitle": "box-im ログイン",
+    "refresh": "更新",
+    "openInBrowser": "ブラウザで開く",
+    "continue": "セットアップへ"
+}

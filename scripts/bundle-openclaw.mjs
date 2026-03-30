@@ -31,15 +31,28 @@ function normWin(p) {
 
 echo`📦 Bundling openclaw for electron-builder...`;
 
-// 1. Resolve the real path of node_modules/openclaw (follows pnpm symlink)
-const openclawLink = path.join(NODE_MODULES, 'openclaw');
-if (!fs.existsSync(openclawLink)) {
-  echo`❌ node_modules/openclaw not found. Run pnpm install first.`;
+// 1. Resolve the real path of the OpenClaw package (npm `openclaw` or local `@shadanai/openclaw`)
+const openclawLinkCandidates = [
+  path.join(NODE_MODULES, '@shadanai', 'openclaw'),
+  path.join(NODE_MODULES, 'openclaw'),
+];
+const openclawLink = openclawLinkCandidates.find((p) => fs.existsSync(p));
+if (!openclawLink) {
+  echo`❌ OpenClaw package not found under node_modules (@shadanai/openclaw or openclaw). Run pnpm install first.`;
   process.exit(1);
 }
 
 const openclawReal = fs.realpathSync(openclawLink);
-echo`   openclaw resolved: ${openclawReal}`;
+let openclawPkgName = 'openclaw';
+try {
+  const pkg = JSON.parse(fs.readFileSync(path.join(openclawReal, 'package.json'), 'utf8'));
+  if (typeof pkg.name === 'string' && pkg.name) {
+    openclawPkgName = pkg.name;
+  }
+} catch {
+  // keep default
+}
+echo`   openclaw resolved: ${openclawReal} (package name: ${openclawPkgName})`;
 
 // 2. Clean and create output directory
 if (fs.existsSync(OUTPUT)) {
@@ -139,7 +152,7 @@ if (!openclawVirtualNM) {
 }
 
 echo`   Virtual store root: ${openclawVirtualNM}`;
-queue.push({ nodeModulesDir: openclawVirtualNM, skipPkg: 'openclaw' });
+queue.push({ nodeModulesDir: openclawVirtualNM, skipPkg: openclawPkgName });
 
 const SKIP_PACKAGES = new Set([
   'typescript',
@@ -200,6 +213,61 @@ while (queue.length > 0) {
 
 echo`   Found ${collected.size} total packages (direct + transitive)`;
 echo`   Skipped ${skippedDevCount} dev-only package references`;
+
+// 4b. Collect extra packages required by ClawX's Electron main process that are
+//     NOT deps of openclaw.  These are resolved from openclaw's context at runtime
+//     (via createRequire from the openclaw directory) so they must live in the
+//     bundled openclaw/node_modules/.
+//
+//     For each package we resolve it from the workspace's own node_modules,
+//     then BFS its transitive deps exactly like we did for openclaw above.
+const EXTRA_BUNDLED_PACKAGES = [
+  '@whiskeysockets/baileys',   // WhatsApp channel (was a dep of old clawdbot, not openclaw)
+];
+
+let extraCount = 0;
+for (const pkgName of EXTRA_BUNDLED_PACKAGES) {
+  const pkgLink = path.join(NODE_MODULES, ...pkgName.split('/'));
+  if (!fs.existsSync(pkgLink)) {
+    echo`   ⚠️  Extra package ${pkgName} not found in workspace node_modules, skipping.`;
+    continue;
+  }
+
+  let pkgReal;
+  try { pkgReal = fs.realpathSync(pkgLink); } catch { continue; }
+
+  if (!collected.has(pkgReal)) {
+    collected.set(pkgReal, pkgName);
+    extraCount++;
+
+    // BFS this package's own transitive deps
+    const depVirtualNM = getVirtualStoreNodeModules(pkgReal);
+    if (depVirtualNM) {
+      const extraQueue = [{ nodeModulesDir: depVirtualNM, skipPkg: pkgName }];
+      while (extraQueue.length > 0) {
+        const { nodeModulesDir, skipPkg } = extraQueue.shift();
+        const packages = listPackages(nodeModulesDir);
+        for (const { name, fullPath } of packages) {
+          if (name === skipPkg) continue;
+          if (SKIP_PACKAGES.has(name) || SKIP_SCOPES.some(s => name.startsWith(s))) continue;
+          let realPath;
+          try { realPath = fs.realpathSync(fullPath); } catch { continue; }
+          if (collected.has(realPath)) continue;
+          collected.set(realPath, name);
+          extraCount++;
+          const innerVirtualNM = getVirtualStoreNodeModules(realPath);
+          if (innerVirtualNM && innerVirtualNM !== nodeModulesDir) {
+            extraQueue.push({ nodeModulesDir: innerVirtualNM, skipPkg: name });
+          }
+        }
+      }
+    }
+  }
+}
+
+if (extraCount > 0) {
+  echo`   Added ${extraCount} extra packages (+ transitive deps) for Electron main process`;
+}
 
 // 5. Copy all collected packages into OUTPUT/node_modules/ (flat structure)
 //
@@ -527,6 +595,84 @@ function patchBrokenModules(nodeModulesDir) {
       count++;
     }
   }
+  // lru-cache CJS/ESM interop fix (recursive):
+  // Multiple versions of lru-cache may exist in the output tree — not just
+  // at node_modules/lru-cache/ but also nested inside other packages.
+  // Older CJS versions (v5, v6) export the class via `module.exports = LRUCache`
+  // without a named `LRUCache` property, so `import { LRUCache } from 'lru-cache'`
+  // fails in Node.js 22+ ESM interop (used by Electron 40+).
+  // We recursively scan the entire output for ALL lru-cache installations and
+  // patch each CJS entry to ensure `exports.LRUCache` always exists.
+  function patchAllLruCacheInstances(rootDir) {
+    let lruCount = 0;
+    const stack = [rootDir];
+    while (stack.length > 0) {
+      const dir = stack.pop();
+      let entries;
+      try { entries = fs.readdirSync(normWin(dir), { withFileTypes: true }); } catch { continue; }
+      for (const entry of entries) {
+        const fullPath = path.join(dir, entry.name);
+        let isDirectory = entry.isDirectory();
+        if (!isDirectory) {
+          // pnpm layout may contain symlink/junction directories on Windows.
+          try { isDirectory = fs.statSync(normWin(fullPath)).isDirectory(); } catch { isDirectory = false; }
+        }
+        if (!isDirectory) continue;
+        if (entry.name === 'lru-cache') {
+          const pkgPath = path.join(fullPath, 'package.json');
+          if (!fs.existsSync(normWin(pkgPath))) { stack.push(fullPath); continue; }
+          try {
+            const pkg = JSON.parse(fs.readFileSync(normWin(pkgPath), 'utf8'));
+            if (pkg.type === 'module') continue; // ESM version — already has named exports
+            const mainFile = pkg.main || 'index.js';
+            const entryFile = path.join(fullPath, mainFile);
+            if (!fs.existsSync(normWin(entryFile))) continue;
+            const original = fs.readFileSync(normWin(entryFile), 'utf8');
+            if (!original.includes('exports.LRUCache')) {
+              const patched = [
+                original,
+                '',
+                '// ClawX patch: add LRUCache named export for Node.js 22+ ESM interop',
+                'if (typeof module.exports === "function" && !module.exports.LRUCache) {',
+                '  module.exports.LRUCache = module.exports;',
+                '}',
+                '',
+              ].join('\n');
+              fs.writeFileSync(normWin(entryFile), patched, 'utf8');
+              lruCount++;
+              echo`   🩹 Patched lru-cache CJS (v${pkg.version}) at ${path.relative(rootDir, fullPath)}`;
+            }
+
+            // lru-cache v7 ESM entry exports default only; add named export.
+            const moduleFile = typeof pkg.module === 'string' ? pkg.module : null;
+            if (moduleFile) {
+              const esmEntry = path.join(fullPath, moduleFile);
+              if (fs.existsSync(normWin(esmEntry))) {
+                const esmOriginal = fs.readFileSync(normWin(esmEntry), 'utf8');
+                if (
+                  esmOriginal.includes('export default LRUCache') &&
+                  !esmOriginal.includes('export { LRUCache')
+                ) {
+                  const esmPatched = [esmOriginal, '', 'export { LRUCache }', ''].join('\n');
+                  fs.writeFileSync(normWin(esmEntry), esmPatched, 'utf8');
+                  lruCount++;
+                  echo`   🩹 Patched lru-cache ESM (v${pkg.version}) at ${path.relative(rootDir, fullPath)}`;
+                }
+              }
+            }
+          } catch (err) {
+            echo`   ⚠️  Failed to patch lru-cache at ${fullPath}: ${err.message}`;
+          }
+        } else {
+          stack.push(fullPath);
+        }
+      }
+    }
+    return lruCount;
+  }
+  const lruPatched = patchAllLruCacheInstances(nodeModulesDir);
+  count += lruPatched;
+
   if (count > 0) {
     echo`   🩹 Patched ${count} broken module(s) in node_modules`;
   }

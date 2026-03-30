@@ -53,24 +53,23 @@ import {
   listDiscordDirectoryGroupsFromConfig,
   listDiscordDirectoryPeersFromConfig,
   normalizeDiscordMessagingTarget,
-} from 'openclaw/plugin-sdk/discord';
-import {
   listTelegramDirectoryGroupsFromConfig,
   listTelegramDirectoryPeersFromConfig,
   normalizeTelegramMessagingTarget,
-} from 'openclaw/plugin-sdk/telegram';
-import {
   listSlackDirectoryGroupsFromConfig,
   listSlackDirectoryPeersFromConfig,
   normalizeSlackMessagingTarget,
-} from 'openclaw/plugin-sdk/slack';
-import {
-  listWhatsAppDirectoryGroupsFromConfig,
-  listWhatsAppDirectoryPeersFromConfig,
   normalizeWhatsAppMessagingTarget,
-} from 'openclaw/plugin-sdk/whatsapp-shared';
+} from '../../utils/openclaw-sdk';
 import type { HostApiContext } from '../context';
 import { parseJsonBody, sendJson } from '../route-utils';
+
+// listWhatsAppDirectory*FromConfig were removed from openclaw's public exports
+// in 2026.3.23-1.  No-op stubs; WhatsApp target picker uses session discovery.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function listWhatsAppDirectoryGroupsFromConfig(_params: any): Promise<any[]> { return []; }
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function listWhatsAppDirectoryPeersFromConfig(_params: any): Promise<any[]> { return []; }
 
 const WECHAT_QR_TIMEOUT_MS = 8 * 60 * 1000;
 const activeQrLogins = new Map<string, string>();
@@ -196,7 +195,13 @@ function scheduleGatewayChannelRestart(ctx: HostApiContext, reason: string): voi
 // Plugin-based channels require a full Gateway process restart to properly
 // initialize / tear-down plugin connections.  SIGUSR1 in-process reload is
 // not sufficient for channel plugins (see restartGatewayForAgentDeletion).
-const FORCE_RESTART_CHANNELS = new Set(['dingtalk', 'wecom', 'whatsapp', 'feishu', 'qqbot', OPENCLAW_WECHAT_CHANNEL_TYPE]);
+// OpenClaw 3.23+ does not reliably support in-process channel reload for any
+// channel type.  All channel config saves must trigger a full Gateway process
+// restart to ensure the channel adapter properly initializes with the new config.
+const FORCE_RESTART_CHANNELS = new Set([
+  'dingtalk', 'wecom', 'whatsapp', 'feishu', 'qqbot', OPENCLAW_WECHAT_CHANNEL_TYPE,
+  'discord', 'telegram', 'signal', 'imessage', 'matrix', 'line', 'msteams', 'googlechat', 'mattermost',
+]);
 
 function scheduleGatewayChannelSaveRefresh(
   ctx: HostApiContext,
@@ -1168,44 +1173,6 @@ export async function handleChannelRoutes(
       if (sessionKey) {
         await cancelWeChatLoginSession(sessionKey);
       }
-      sendJson(res, 200, { success: true });
-    } catch (error) {
-      sendJson(res, 500, { success: false, error: String(error) });
-    }
-    return true;
-  }
-
-  if (url.pathname === '/api/channels/box-im/start' && req.method === 'POST') {
-    try {
-      const body = await parseJsonBody<{ accountId?: string }>(req);
-      const accountId = body.accountId?.trim() || undefined;
-      const result = await ctx.gatewayManager.rpc<{ qrDataUrl?: string; message?: string }>(
-        'web.login.start',
-        { accountId },
-      );
-      console.warn(`[box-im] web.login.start result:`, JSON.stringify(result));
-      if (!result.qrDataUrl) {
-        throw new Error(result.message || 'Failed to generate box-im QR code');
-      }
-      emitChannelEvent(ctx, 'box-im', 'qr', { qr: result.qrDataUrl, raw: result.qrDataUrl });
-
-      void (async () => {
-        try {
-          const waitResult = await ctx.gatewayManager.rpc<{ connected: boolean; message?: string }>(
-            'web.login.wait',
-            { accountId, timeoutMs: 120000 },
-            130000,
-          );
-          if (waitResult.connected) {
-            emitChannelEvent(ctx, 'box-im', 'success', { accountId, message: waitResult.message });
-          } else {
-            emitChannelEvent(ctx, 'box-im', 'error', { message: waitResult.message || 'QR code expired' });
-          }
-        } catch (err) {
-          emitChannelEvent(ctx, 'box-im', 'error', { message: String(err) });
-        }
-      })();
-
       sendJson(res, 200, { success: true });
     } catch (error) {
       sendJson(res, 500, { success: false, error: String(error) });

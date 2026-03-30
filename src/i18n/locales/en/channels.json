@@ -96,7 +96,19 @@
         "generateQRCode": "Generate QR Code",
         "updateAndReconnect": "Update & Reconnect",
         "saveAndConnect": "Save & Connect",
-        "envVar": "Environment Variable: {{var}}"
+        "envVar": "Environment Variable: {{var}}",
+        "embeddedPlugin": {
+            "badge": "Scan to bind",
+            "gatewayRequired": "Start the local gateway first. The plugin login page is served by the gateway at /plugins/box-im/login.",
+            "loadUrlFailed": "Could not resolve the plugin URL. Make sure the gateway is running and try again.",
+            "hint": "The gateway login page is embedded below. Scan with WeChat to bind; settings are written to openclaw.json. If the page does not load, open it in your browser.",
+            "iframeTitle": "Box IM plugin login",
+            "refreshPage": "Reload page",
+            "openInBrowser": "Open in browser",
+            "finishBinding": "Done",
+            "saving": "Saving…",
+            "loadingPlugin": "Loading plugin page…"
+        }
     },
     "meta": {
         "telegram": {
@@ -157,6 +169,14 @@
                 "Go to Settings > Linked Devices > Link a Device",
                 "Scan the QR code shown below",
                 "The system will automatically identify your phone number"
+            ]
+        },
+        "box-im": {
+            "description": "Bind the OpenClaw digital employee (Box IM) by scanning WeChat QR on the gateway plugin page",
+            "docsUrl": "https://icnnp7d0dymg.feishu.cn/wiki/GHYZwuPCriF0gWkXwkFcJ9zon3b",
+            "instructions": [
+                "Ensure the local OpenClaw gateway is running",
+                "Scan with WeChat in the embedded page; binding is saved to openclaw.json"
             ]
         },
         "wechat": {
@@ -368,7 +388,7 @@
             ]
         },
         "qqbot": {
-            "description": "Connect QQ Bot via @sliverp/qqbot plugin",
+            "description": "Connect QQ Bot via @tencent-connect/openclaw-qqbot plugin",
             "docsUrl": "https://icnnp7d0dymg.feishu.cn/wiki/KPIJwlyiGiupMrkiS9ice39Zn2c",
             "fields": {
                 "appId": {

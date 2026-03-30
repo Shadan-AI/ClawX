@@ -40,6 +40,8 @@ interface SettingsState {
 
   // Setup
   setupComplete: boolean;
+  /** After WeChat / box-im plugin login gate (before Setup wizard). */
+  boxImGateComplete: boolean;
 
   // Actions
   init: () => Promise<void>;
@@ -62,6 +64,7 @@ interface SettingsState {
   setSidebarCollapsed: (value: boolean) => void;
   setDevModeUnlocked: (value: boolean) => void;
   markSetupComplete: () => void;
+  markBoxImGateComplete: () => void;
   resetSettings: () => void;
 }
 
@@ -85,6 +88,7 @@ const defaultSettings = {
   sidebarCollapsed: false,
   devModeUnlocked: false,
   setupComplete: false,
+  boxImGateComplete: false,
 };
 
 export const useSettingsStore = create<SettingsState>()(
@@ -98,11 +102,18 @@ export const useSettingsStore = create<SettingsState>()(
           const resolvedLanguage = settings.language
             ? resolveSupportedLanguage(settings.language)
             : undefined;
-          set((state) => ({
-            ...state,
-            ...settings,
-            ...(resolvedLanguage ? { language: resolvedLanguage } : {}),
-          }));
+          set((state) => {
+            const next = {
+              ...state,
+              ...settings,
+              ...(resolvedLanguage ? { language: resolvedLanguage } : {}),
+            };
+            // Upgrades: already finished setup before box-im gate existed — skip gate.
+            if (next.setupComplete && !next.boxImGateComplete) {
+              return { ...next, boxImGateComplete: true };
+            }
+            return next;
+          });
           if (resolvedLanguage) {
             i18n.changeLanguage(resolvedLanguage);
           }
@@ -175,10 +186,18 @@ export const useSettingsStore = create<SettingsState>()(
         }).catch(() => { });
       },
       markSetupComplete: () => set({ setupComplete: true }),
+      markBoxImGateComplete: () => set({ boxImGateComplete: true }),
       resetSettings: () => set(defaultSettings),
     }),
     {
       name: 'clawx-settings',
+      merge: (persistedState, currentState) => {
+        const merged = { ...currentState, ...(persistedState as Partial<SettingsState>) };
+        if (merged.setupComplete && !merged.boxImGateComplete) {
+          merged.boxImGateComplete = true;
+        }
+        return merged;
+      },
     }
   )
 );

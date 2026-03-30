@@ -1,0 +1,13 @@
+{
+    "title": "微信扫码登录",
+    "subtitle": "请使用下方页面完成 box-im 登录，以便配置频道。完成后可继续进入设置向导。",
+    "gatewayRequired": "请先启动网关以加载登录页。",
+    "loadUrlFailed": "无法获取登录页地址。",
+    "startGatewayHint": "网关未运行，无法嵌入登录页。",
+    "startGateway": "启动网关",
+    "loadingPlugin": "正在加载登录页…",
+    "iframeTitle": "box-im 登录",
+    "refresh": "刷新",
+    "openInBrowser": "在浏览器中打开",
+    "continue": "继续设置"
+}
