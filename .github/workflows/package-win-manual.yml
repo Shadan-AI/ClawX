@@ -25,6 +25,7 @@ jobs:
       - name: Clone openme (path dependency)
         shell: bash
         env:
+          OPENME_GIT_URL: ${{ secrets.OPENME_GIT_URL }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash .github/scripts/clone-openme-path-dep.sh
 

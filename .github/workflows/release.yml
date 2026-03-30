@@ -40,6 +40,8 @@ jobs:
       - name: Clone openme (path dependency)
         shell: bash
         env:
+          # Non-GitHub hosts: set secret OPENME_GIT_URL to full HTTPS clone URL (see script header).
+          OPENME_GIT_URL: ${{ secrets.OPENME_GIT_URL }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash .github/scripts/clone-openme-path-dep.sh
 
