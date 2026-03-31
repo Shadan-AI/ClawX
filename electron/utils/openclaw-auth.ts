@@ -410,6 +410,35 @@ export async function mergeOpenClawJsonFromTemplateForMissingSections(): Promise
 }
 
 /**
+ * Re-apply bundled `models.providers.*` baseUrl/api when the Gateway (or extensions)
+ * later overwrite `~/.openclaw/openclaw.json` with a dev-LAN endpoint from internal
+ * state. Used by {@link startOpenClawConfigLanReconciliationWatcher}; idempotent when
+ * disk already matches the template.
+ */
+export async function reconcileOpenClawModelsProvidersFromBundledTemplate(): Promise<boolean> {
+  return withConfigLock(async () => {
+    const templatePath = getOpenClawDefaultConfigTemplatePath();
+    if (!templatePath || !(await fileExists(OPENCLAW_CONFIG_PATH))) {
+      return false;
+    }
+    let template: Record<string, unknown>;
+    try {
+      template = JSON.parse(await readFile(templatePath, 'utf-8')) as Record<string, unknown>;
+    } catch {
+      return false;
+    }
+    const config = await readOpenClawJson();
+    if (!mergeModelsProviderScalarsFromTemplate(config, template)) {
+      return false;
+    }
+    await writeOpenClawJson(config);
+    await resetOpenClawConfigHealthBaselineBestEffort();
+    console.log('[openclaw] Reconciled models.providers baseUrl/api from bundled template (post-Gateway drift)');
+    return true;
+  });
+}
+
+/**
  * On first run, copy the bundled template (from `openme/gateway.json` at pack time) to
  * `~/.openclaw/openclaw.json` so packaged ClawX matches the fork's gateway defaults
  * (models, agents, channels, plugins, TLS, etc.). Does nothing if the file already exists.
