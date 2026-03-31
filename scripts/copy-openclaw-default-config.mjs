@@ -15,9 +15,13 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
+// Prefer monorepo fork + committed canonical template over npm package: the published
+// @shadanai/openclaw may carry a dev gateway.json (e.g. LAN baseUrl) that must not
+// seed end-user ~/.openclaw/openclaw.json or drift from openme/gateway.json.
 const SRC_CANDIDATES = [
-  path.join(ROOT, 'node_modules', '@shadanai', 'openclaw', 'gateway.json'),
   path.join(ROOT, '..', 'openme', 'gateway.json'),
+  path.join(ROOT, 'resources', 'openclaw-default.json'),
+  path.join(ROOT, 'node_modules', '@shadanai', 'openclaw', 'gateway.json'),
 ];
 const SRC = SRC_CANDIDATES.find((p) => fs.existsSync(p));
 const DEST = path.join(ROOT, 'resources', 'openclaw-default.json');

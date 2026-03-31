@@ -64,6 +64,17 @@ fs.mkdirSync(OUTPUT, { recursive: true });
 echo`   Copying openclaw package...`;
 fs.cpSync(openclawReal, OUTPUT, { recursive: true, dereference: true });
 
+// 3b. npm 包内的 gateway.json 可能带内网/开发 baseUrl；与 openme / resources 模板对齐，保证安装目录 resources/openclaw/gateway.json 一致。
+const gatewayOverwriteCandidates = [
+  path.join(ROOT, '..', 'openme', 'gateway.json'),
+  path.join(ROOT, 'resources', 'openclaw-default.json'),
+];
+const gatewayOverwrite = gatewayOverwriteCandidates.find((p) => fs.existsSync(p));
+if (gatewayOverwrite) {
+  fs.copyFileSync(gatewayOverwrite, path.join(OUTPUT, 'gateway.json'));
+  echo`   Patched bundled gateway.json <- ${gatewayOverwrite}`;
+}
+
 // 4. Recursively collect ALL transitive dependencies via pnpm virtual store BFS
 //
 // pnpm structure example:

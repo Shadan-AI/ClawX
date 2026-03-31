@@ -300,6 +300,49 @@ function mergeBoxImChannelFromTemplate(config: Record<string, unknown>, template
   return mergeMissingKeysDeep(cbox, tbox);
 }
 
+/** Private / loopback base URLs often come from dev machines and must not override shipped gateway defaults. */
+function isLikelyDevLanOpenAiBaseUrl(url: unknown): boolean {
+  if (typeof url !== 'string') return false;
+  const u = url.trim();
+  return /^https?:\/\/(192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|127\.0\.0\.1|localhost)(?::\d+)?/i.test(u);
+}
+
+/**
+ * When models.providers.* already exists (so needsModelsFromTemplate is false), still align
+ * baseUrl/api from the bundled template if the on-disk values look like a dev LAN endpoint
+ * while the template points at production — fixes drift from an older npm-seeded template.
+ */
+function mergeModelsProviderScalarsFromTemplate(config: Record<string, unknown>, template: Record<string, unknown>): boolean {
+  const tModels = template.models;
+  const cModels = config.models;
+  if (!tModels || typeof tModels !== 'object' || !cModels || typeof cModels !== 'object') {
+    return false;
+  }
+  const tProviders = (tModels as Record<string, unknown>).providers;
+  const cProviders = (cModels as Record<string, unknown>).providers;
+  if (!tProviders || typeof tProviders !== 'object' || !cProviders || typeof cProviders !== 'object') {
+    return false;
+  }
+  let changed = false;
+  for (const [key, tEntry] of Object.entries(tProviders)) {
+    if (!tEntry || typeof tEntry !== 'object' || Array.isArray(tEntry)) continue;
+    const cur = cProviders[key];
+    if (!cur || typeof cur !== 'object' || Array.isArray(cur)) continue;
+    const curRec = cur as Record<string, unknown>;
+    const tRec = tEntry as Record<string, unknown>;
+    const tBase = typeof tRec.baseUrl === 'string' ? tRec.baseUrl : undefined;
+    const cBase = typeof curRec.baseUrl === 'string' ? curRec.baseUrl : undefined;
+    if (!tBase || !cBase || cBase === tBase) continue;
+    if (!isLikelyDevLanOpenAiBaseUrl(cBase)) continue;
+    curRec.baseUrl = tBase;
+    if (typeof tRec.api === 'string') {
+      curRec.api = tRec.api;
+    }
+    changed = true;
+  }
+  return changed;
+}
+
 async function resetOpenClawConfigHealthBaselineBestEffort(): Promise<void> {
   const healthPath = join(homedir(), '.openclaw', 'logs', 'config-health.json');
   try {
@@ -351,6 +394,10 @@ export async function mergeOpenClawJsonFromTemplateForMissingSections(): Promise
     }
 
     if (mergeBoxImChannelFromTemplate(config, template)) {
+      modified = true;
+    }
+
+    if (mergeModelsProviderScalarsFromTemplate(config, template)) {
       modified = true;
     }
 
