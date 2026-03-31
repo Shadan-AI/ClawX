@@ -6,8 +6,7 @@
  * Bundles the box-im plugin from the sibling openclaw repo into
  * build/openclaw-plugins/box-im/ for electron-builder to pick up.
  *
- * box-im is a local plugin (not on npm), so we copy it directly
- * from the openclaw source tree and install its runtime deps.
+ * Copy from the installed @shadanai/openclaw package (npm) or local openme checkout.
  */
 
 import 'zx/globals';
@@ -15,15 +14,19 @@ import 'zx/globals';
 const ROOT = path.resolve(__dirname, '..');
 const OUTPUT = path.join(ROOT, 'build', 'openclaw-plugins', 'box-im');
 
-// Resolve box-im source: prefer installed openclaw package, fallback to sibling repo
-const INSTALLED_BOX_IM = path.join(ROOT, 'node_modules', 'openclaw', 'extensions', 'box-im');
-const SIBLING_BOX_IM = path.join(ROOT, '..', 'openclaw', 'extensions', 'box-im');
-const BOX_IM_SRC = fs.existsSync(INSTALLED_BOX_IM) ? INSTALLED_BOX_IM : SIBLING_BOX_IM;
+const BOX_IM_CANDIDATES = [
+  path.join(ROOT, 'node_modules', '@shadanai', 'openclaw', 'extensions', 'box-im'),
+  path.join(ROOT, 'node_modules', 'openclaw', 'extensions', 'box-im'),
+  path.join(ROOT, '..', 'openme', 'extensions', 'box-im'),
+  path.join(ROOT, '..', 'openclaw', 'extensions', 'box-im'),
+];
+const BOX_IM_SRC = BOX_IM_CANDIDATES.find((p) => fs.existsSync(p));
 
-if (!fs.existsSync(BOX_IM_SRC)) {
+if (!BOX_IM_SRC) {
   echo`❌ box-im source not found`;
-  echo`   Checked: ${INSTALLED_BOX_IM}`;
-  echo`   Checked: ${SIBLING_BOX_IM}`;
+  for (const p of BOX_IM_CANDIDATES) {
+    echo`   Checked: ${p}`;
+  }
   process.exit(1);
 }
 

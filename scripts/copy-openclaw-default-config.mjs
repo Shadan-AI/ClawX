@@ -5,7 +5,7 @@
  * On first launch, ClawX seeds ~/.openclaw/openclaw.json from this file so packaged
  * builds match your local openme configuration (models, agents, channels, plugins).
  *
- * Source: ../openme/gateway.json (relative to ClawX repo root).
+ * Source: @shadanai/openclaw package (npm) or ../openme/gateway.json when developing.
  */
 
 import 'zx/globals';
@@ -15,12 +15,16 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
-const SRC = path.join(ROOT, '..', 'openme', 'gateway.json');
+const SRC_CANDIDATES = [
+  path.join(ROOT, 'node_modules', '@shadanai', 'openclaw', 'gateway.json'),
+  path.join(ROOT, '..', 'openme', 'gateway.json'),
+];
+const SRC = SRC_CANDIDATES.find((p) => fs.existsSync(p));
 const DEST = path.join(ROOT, 'resources', 'openclaw-default.json');
 
-if (!fs.existsSync(SRC)) {
-  echo`⚠️  openme gateway template missing: ${SRC}`;
-  echo`   Skipping resources/openclaw-default.json — first-run seed will fall back to ../openme/gateway.json when running from source.`;
+if (!SRC) {
+  echo`⚠️  gateway template missing (tried npm @shadanai/openclaw and ../openme/gateway.json)`;
+  echo`   Skipping resources/openclaw-default.json`;
   process.exit(0);
 }
 

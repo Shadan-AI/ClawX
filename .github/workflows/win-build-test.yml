@@ -22,14 +22,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Clone openme (path dependency)
-        shell: bash
-        env:
-          OPENME_GIT_URL: ${{ secrets.OPENME_GIT_URL }}
-          OPENME_GIT_TOKEN: ${{ secrets.OPENME_GIT_TOKEN }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: bash .github/scripts/clone-openme-path-dep.sh
-
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:

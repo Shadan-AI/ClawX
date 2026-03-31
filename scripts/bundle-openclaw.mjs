@@ -981,6 +981,6 @@ if (!cliExists || !gatewayExists) {
       echo`     - ${p} ${fs.existsSync(normWin(p)) ? '✓' : '✗'}`;
     }
   }
-  echo`   Hint: run openme "pnpm run build" before ClawX pack (CI: .github/scripts/build-openme-ci.sh)`;
+  echo`   Hint: ensure @shadanai/openclaw is installed (pnpm install) and dist/ exists in the package`;
   process.exit(1);
 }

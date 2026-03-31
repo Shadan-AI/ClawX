@@ -37,15 +37,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Clone openme (path dependency)
-        shell: bash
-        env:
-          # Prefer OPENME_GIT_TOKEN (PAT only); avoids URL parse errors from special chars in token.
-          OPENME_GIT_URL: ${{ secrets.OPENME_GIT_URL }}
-          OPENME_GIT_TOKEN: ${{ secrets.OPENME_GIT_TOKEN }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: bash .github/scripts/clone-openme-path-dep.sh
-
       # Node first, then install pnpm with that Node's npm (no pnpm/action-setup:
       # avoids Node 20 action runtime + "forced to Node 24" warnings).
       - name: Setup Node.js
@@ -56,13 +47,6 @@ jobs:
       - name: Install pnpm
         shell: bash
         run: npm install -g pnpm@10.31.0
-
-      # openme keeps dist/ out of git; file:../openme must include a full build.
-      - name: Build openme (path dependency)
-        shell: bash
-        env:
-          NODE_OPTIONS: --max-old-space-size=8192
-        run: bash .github/scripts/build-openme-ci.sh
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
