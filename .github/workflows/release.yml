@@ -52,6 +52,11 @@ jobs:
         shell: bash
         run: npm install -g pnpm@10.31.0
 
+      # package.json uses "latest"; refresh lockfile resolution to current npm dist-tag before frozen install.
+      - name: Refresh @shadanai/openclaw to registry latest
+        shell: bash
+        run: pnpm update @shadanai/openclaw --latest
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 

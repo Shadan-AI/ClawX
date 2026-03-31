@@ -47,6 +47,10 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pnpm-store-
 
+      - name: Refresh @shadanai/openclaw to registry latest
+        shell: bash
+        run: pnpm update @shadanai/openclaw --latest
+
       - name: Install dependencies
         run: pnpm install
 
