@@ -11,6 +11,9 @@ on:
 permissions:
   contents: read
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   package-windows:
     runs-on: windows-latest
@@ -56,7 +59,7 @@ jobs:
         run: pnpm run package:win
 
       - name: Upload Windows Installer (x64)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: windows-installer-x64
           path: release/*-win-x64.exe
@@ -64,7 +67,7 @@ jobs:
           retention-days: 7
 
       - name: Upload Windows Installer (arm64)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: windows-installer-arm64
           path: release/*-win-arm64.exe
@@ -72,7 +75,7 @@ jobs:
           retention-days: 7
 
       - name: Upload Windows Blockmap Files
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: windows-blockmap
           path: release/*.blockmap
@@ -80,7 +83,7 @@ jobs:
           retention-days: 7
 
       - name: Upload Windows Update Manifests
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: windows-update-manifests
           path: |
