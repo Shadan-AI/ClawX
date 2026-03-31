@@ -102,6 +102,9 @@ const electronAPI = {
         'channel:validate',
         'channel:validate',
         'channel:validateCredentials',
+        // Box-IM
+        'box-im:getTokenKey',
+        'box-im:logout',
         // WhatsApp
         'channel:requestWhatsAppQr',
         'channel:cancelWhatsAppQr',

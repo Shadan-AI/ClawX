@@ -533,6 +533,36 @@ export function Settings() {
 
           <Separator className="bg-black/5 dark:bg-white/5" />
 
+          {/* Account */}
+          <div>
+            <h2 className="text-3xl font-serif text-foreground mb-6 font-normal tracking-tight" style={{ fontFamily: 'Georgia, Cambria, "Times New Roman", Times, serif' }}>
+              {t('account.title')}
+            </h2>
+            <div className="space-y-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label className="text-[15px] font-medium text-foreground">{t('account.loginStatus')}</Label>
+                  <p className="text-[13px] text-muted-foreground mt-1">
+                    {t('account.loginStatusDesc')}
+                  </p>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={async () => {
+                    const { useModelsStore } = await import('@/stores/models');
+                    useModelsStore.getState().logout();
+                  }}
+                  className="rounded-full h-8 px-4 border-red-200 text-red-600 hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-900/20"
+                >
+                  {t('account.logout')}
+                </Button>
+              </div>
+            </div>
+          </div>
+
+          <Separator className="bg-black/5 dark:bg-white/5" />
+
           {/* Gateway */}
           <div>
             <h2 className="text-3xl font-serif text-foreground mb-6 font-normal tracking-tight" style={{ fontFamily: 'Georgia, Cambria, "Times New Roman", Times, serif' }}>

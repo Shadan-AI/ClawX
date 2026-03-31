@@ -301,6 +301,9 @@ function AgentCard({
     ? boundChannelAccounts.join(', ')
     : t('none');
 
+  const displayName = agent.digitalEmployee?.nickName || agent.name;
+  const displayModel = agent.digitalEmployee?.model || agent.modelDisplay;
+
   return (
     <div
       className={cn(
@@ -308,13 +311,21 @@ function AgentCard({
         agent.isDefault && 'bg-black/[0.04] dark:bg-white/[0.06]'
       )}
     >
-      <div className="h-[46px] w-[46px] shrink-0 flex items-center justify-center text-primary bg-primary/10 rounded-full shadow-sm mb-3">
-        <Bot className="h-[22px] w-[22px]" />
+      <div className="h-[46px] w-[46px] shrink-0 flex items-center justify-center text-primary bg-primary/10 rounded-full shadow-sm mb-3 overflow-hidden">
+        {agent.digitalEmployee?.headImage ? (
+          <img 
+            src={agent.digitalEmployee.headImage} 
+            alt={displayName}
+            className="h-full w-full object-cover"
+          />
+        ) : (
+          <Bot className="h-[22px] w-[22px]" />
+        )}
       </div>
       <div className="flex flex-col flex-1 min-w-0 py-0.5 mt-1">
         <div className="flex items-center justify-between gap-3 mb-1">
           <div className="flex items-center gap-2 min-w-0">
-            <h2 className="text-[16px] font-semibold text-foreground truncate">{agent.name}</h2>
+            <h2 className="text-[16px] font-semibold text-foreground truncate">{displayName}</h2>
             {agent.isDefault && (
               <Badge
                 variant="secondary"
@@ -353,8 +364,8 @@ function AgentCard({
         </div>
         <p className="text-[13.5px] text-muted-foreground line-clamp-2 leading-[1.5]">
           {t('modelLine', {
-            model: agent.modelDisplay,
-            suffix: agent.inheritedModel ? ` (${t('inherited')})` : '',
+            model: displayModel,
+            suffix: agent.inheritedModel && !agent.digitalEmployee?.model ? ` (${t('inherited')})` : '',
           })}
         </p>
         <p className="text-[13.5px] text-muted-foreground line-clamp-2 leading-[1.5]">

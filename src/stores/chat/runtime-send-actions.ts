@@ -1,5 +1,6 @@
 import { invokeIpc } from '@/lib/api-client';
 import { useAgentsStore } from '@/stores/agents';
+import { useModelsStore } from '@/stores/models';
 import {
   clearErrorRecoveryTimer,
   clearHistoryPoll,
@@ -80,6 +81,12 @@ export function createRuntimeSendActions(set: ChatSet, get: ChatGet): Pick<Runti
       }
 
       const currentSessionKey = targetSessionKey;
+
+      try {
+        await useModelsStore.getState().ensureSessionModel(currentSessionKey);
+      } catch (err) {
+        console.warn('[sendMessage] Failed to ensure session model:', err);
+      }
 
       // Add user message optimistically (with local file metadata for UI display)
       const nowMs = Date.now();

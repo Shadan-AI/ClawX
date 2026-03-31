@@ -12,6 +12,12 @@
     "launchAtStartup": "Launch at system startup",
     "launchAtStartupDesc": "Automatically launch ClawX when you log in"
   },
+  "account": {
+    "title": "Account",
+    "loginStatus": "Login Status",
+    "loginStatusDesc": "You will need to scan QR code again after logout",
+    "logout": "Logout"
+  },
   "aiProviders": {
     "title": "AI Providers",
     "description": "Configure your AI model providers and API keys",

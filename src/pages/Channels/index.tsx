@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { RefreshCw, Trash2, AlertCircle, Plus } from 'lucide-react';
+import { RefreshCw, Trash2, AlertCircle, Plus, Lock } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
@@ -159,7 +159,9 @@ export function Channels() {
     return [...known, ...unknown];
   }, [channelGroups, displayedChannelTypes, groupedByType]);
 
-  const unsupportedGroups = displayedChannelTypes.filter((type) => !configuredTypes.includes(type));
+  const unsupportedGroups = displayedChannelTypes.filter((type) => 
+    !configuredTypes.includes(type) && type !== 'box-im'
+  );
 
   const handleRefresh = () => {
     void fetchPageData();
@@ -276,7 +278,9 @@ export function Channels() {
                 {t('configured')}
               </h2>
               <div className="space-y-4">
-                {configuredGroups.map((group) => (
+                {configuredGroups.map((group) => {
+                  const isBoxIm = group.channelType === 'box-im';
+                  return (
                   <div key={group.channelType} className="rounded-2xl border border-black/10 dark:border-white/10 p-4 bg-transparent">
                     <div className="flex items-center justify-between gap-2 mb-3">
                       <div className="flex items-center gap-3 min-w-0">
@@ -301,8 +305,15 @@ export function Channels() {
                                   : 'bg-muted-foreground'
                           )}
                         />
+                        {isBoxIm && (
+                          <div className="flex items-center gap-1 text-muted-foreground">
+                            <Lock className="h-3 w-3" />
+                            <span className="text-[10px]">自动同步</span>
+                          </div>
+                        )}
                       </div>
 
+                      {!isBoxIm && (
                       <div className="flex items-center gap-2">
                         <Button
                           size="sm"
@@ -338,6 +349,7 @@ export function Channels() {
                           <Trash2 className="h-4 w-4" />
                         </Button>
                       </div>
+                      )}
                     </div>
 
                     <div className="space-y-2">
@@ -346,6 +358,7 @@ export function Channels() {
                           account.accountId === 'default' && account.name === account.accountId
                             ? t('account.mainAccount')
                             : account.name;
+                        const boundAgent = agents.find(a => a.id === account.agentId);
                         return (
                         <div key={`${group.channelType}-${account.accountId}`} className="rounded-xl bg-black/5 dark:bg-white/5 px-3 py-2">
                           <div className="flex items-center justify-between gap-3">
@@ -359,55 +372,65 @@ export function Channels() {
                             </div>
 
                             <div className="flex items-center gap-2">
-                              <span className="text-xs text-muted-foreground">{t('account.bindAgentLabel')}</span>
-                              <select
-                                className="h-8 rounded-lg border border-black/10 dark:border-white/10 bg-background px-2 text-xs"
-                                value={account.agentId || ''}
-                                onChange={(event) => {
-                                  void handleBindAgent(group.channelType, account.accountId, event.target.value);
-                                }}
-                              >
-                                <option value="">{t('account.unassigned')}</option>
-                                {agents.map((agent) => (
-                                  <option key={agent.id} value={agent.id}>{agent.name}</option>
-                                ))}
-                              </select>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="h-8 text-xs rounded-full"
-                                  onClick={() => {
-                                    void (async () => {
-                                      try {
-                                        const accountParam = `?accountId=${encodeURIComponent(account.accountId)}`;
-                                        const result = await hostApiFetch<{ success: boolean; values?: Record<string, string> }>(
-                                          `/api/channels/config/${encodeURIComponent(group.channelType)}${accountParam}`
-                                        );
-                                        setInitialConfigValuesForModal(result.success ? (result.values || {}) : undefined);
-                                      } catch {
-                                        // Fall back to modal-side loading when prefetch fails.
-                                        setInitialConfigValuesForModal(undefined);
-                                      }
-                                      setSelectedChannelType(group.channelType as ChannelType);
-                                      setSelectedAccountId(account.accountId);
-                                      setAllowExistingConfigInModal(true);
-                                      setAllowEditAccountIdInModal(false);
-                                      setExistingAccountIdsForModal([]);
-                                      setShowConfigModal(true);
-                                    })();
-                                  }}
-                                >
-                                {t('account.edit')}
-                              </Button>
-                              <Button
-                                size="icon"
-                                variant="ghost"
-                                className="h-7 w-7 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-                                onClick={() => setDeleteTarget({ channelType: group.channelType, accountId: account.accountId })}
-                                title={t('account.delete')}
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </Button>
+                              {isBoxIm ? (
+                                <>
+                                  <span className="text-xs text-muted-foreground">{t('account.bindEmployeeLabel')}</span>
+                                  <span className="h-8 rounded-lg border border-black/10 dark:border-white/10 bg-background px-3 text-xs flex items-center text-foreground">
+                                    {boundAgent?.name || t('account.unassigned')}
+                                  </span>
+                                </>
+                              ) : (
+                                <>
+                                  <span className="text-xs text-muted-foreground">{t('account.bindAgentLabel')}</span>
+                                  <select
+                                    className="h-8 rounded-lg border border-black/10 dark:border-white/10 bg-background px-2 text-xs"
+                                    value={account.agentId || ''}
+                                    onChange={(event) => {
+                                      void handleBindAgent(group.channelType, account.accountId, event.target.value);
+                                    }}
+                                  >
+                                    <option value="">{t('account.unassigned')}</option>
+                                    {agents.map((agent) => (
+                                      <option key={agent.id} value={agent.id}>{agent.name}</option>
+                                    ))}
+                                  </select>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-8 text-xs rounded-full"
+                                      onClick={() => {
+                                        void (async () => {
+                                          try {
+                                            const accountParam = `?accountId=${encodeURIComponent(account.accountId)}`;
+                                            const result = await hostApiFetch<{ success: boolean; values?: Record<string, string> }>(
+                                              `/api/channels/config/${encodeURIComponent(group.channelType)}${accountParam}`
+                                            );
+                                            setInitialConfigValuesForModal(result.success ? (result.values || {}) : undefined);
+                                          } catch {
+                                            setInitialConfigValuesForModal(undefined);
+                                          }
+                                          setSelectedChannelType(group.channelType as ChannelType);
+                                          setSelectedAccountId(account.accountId);
+                                          setAllowExistingConfigInModal(true);
+                                          setAllowEditAccountIdInModal(false);
+                                          setExistingAccountIdsForModal([]);
+                                          setShowConfigModal(true);
+                                        })();
+                                      }}
+                                    >
+                                    {t('account.edit')}
+                                  </Button>
+                                  <Button
+                                    size="icon"
+                                    variant="ghost"
+                                    className="h-7 w-7 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                                    onClick={() => setDeleteTarget({ channelType: group.channelType, accountId: account.accountId })}
+                                    title={t('account.delete')}
+                                  >
+                                    <Trash2 className="h-4 w-4" />
+                                  </Button>
+                                </>
+                              )}
                             </div>
                           </div>
                         </div>
@@ -415,7 +438,8 @@ export function Channels() {
                       })}
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}

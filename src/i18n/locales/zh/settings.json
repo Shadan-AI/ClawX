@@ -12,6 +12,12 @@
     "launchAtStartup": "开机自动启动",
     "launchAtStartupDesc": "登录系统后自动启动 ClawX"
   },
+  "account": {
+    "title": "账户",
+    "loginStatus": "登录状态",
+    "loginStatusDesc": "退出登录后需要重新扫码登录",
+    "logout": "退出登录"
+  },
   "aiProviders": {
     "title": "AI 模型提供商",
     "description": "配置 AI 模型提供商和 API 密钥",

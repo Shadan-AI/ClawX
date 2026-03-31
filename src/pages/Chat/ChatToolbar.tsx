@@ -31,7 +31,7 @@ export function ChatToolbar() {
         <Bot className="h-3.5 w-3.5 text-primary" />
         <span>{t('toolbar.currentAgent', { agent: currentAgentName })}</span>
       </div>
-      {/* Refresh */}
+
       <Tooltip>
         <TooltipTrigger asChild>
           <Button
@@ -49,7 +49,6 @@ export function ChatToolbar() {
         </TooltipContent>
       </Tooltip>
 
-      {/* Thinking Toggle */}
       <Tooltip>
         <TooltipTrigger asChild>
           <Button

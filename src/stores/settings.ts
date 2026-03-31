@@ -65,6 +65,7 @@ interface SettingsState {
   setDevModeUnlocked: (value: boolean) => void;
   markSetupComplete: () => void;
   markBoxImGateComplete: () => void;
+  resetBoxImGateComplete: () => void;
   resetSettings: () => void;
 }
 
@@ -97,21 +98,20 @@ export const useSettingsStore = create<SettingsState>()(
       ...defaultSettings,
 
       init: async () => {
+        console.log('[settings] init called');
         try {
           const settings = await hostApiFetch<Partial<typeof defaultSettings>>('/api/settings');
           const resolvedLanguage = settings.language
             ? resolveSupportedLanguage(settings.language)
             : undefined;
           set((state) => {
+            console.log('[settings] init: current state boxImGateComplete=', state.boxImGateComplete);
             const next = {
               ...state,
               ...settings,
               ...(resolvedLanguage ? { language: resolvedLanguage } : {}),
             };
-            // Upgrades: already finished setup before box-im gate existed — skip gate.
-            if (next.setupComplete && !next.boxImGateComplete) {
-              return { ...next, boxImGateComplete: true };
-            }
+            console.log('[settings] init: next boxImGateComplete=', next.boxImGateComplete);
             return next;
           });
           if (resolvedLanguage) {
@@ -186,17 +186,37 @@ export const useSettingsStore = create<SettingsState>()(
         }).catch(() => { });
       },
       markSetupComplete: () => set({ setupComplete: true }),
-      markBoxImGateComplete: () => set({ boxImGateComplete: true }),
+      markBoxImGateComplete: () => {
+        console.log('[settings] markBoxImGateComplete called');
+        set({ boxImGateComplete: true });
+        try {
+          const stored = localStorage.getItem('clawx-settings');
+          const parsed = stored ? JSON.parse(stored) : {};
+          parsed.state = { ...parsed.state, boxImGateComplete: true };
+          localStorage.setItem('clawx-settings', JSON.stringify(parsed));
+          console.log('[settings] markBoxImGateComplete: saved to localStorage');
+        } catch (err) {
+          console.error('[settings] markBoxImGateComplete: failed to save to localStorage', err);
+        }
+      },
+      resetBoxImGateComplete: () => {
+        console.log('[settings] resetBoxImGateComplete called');
+        set({ boxImGateComplete: false });
+      },
       resetSettings: () => set(defaultSettings),
     }),
     {
       name: 'clawx-settings',
       merge: (persistedState, currentState) => {
-        const merged = { ...currentState, ...(persistedState as Partial<SettingsState>) };
-        if (merged.setupComplete && !merged.boxImGateComplete) {
-          merged.boxImGateComplete = true;
-        }
+        const persisted = persistedState as Partial<SettingsState>;
+        const merged = { ...currentState, ...persisted };
+        console.log('[settings] merge: persisted boxImGateComplete=', persisted?.boxImGateComplete);
+        console.log('[settings] merge: current boxImGateComplete=', currentState.boxImGateComplete);
+        console.log('[settings] merge: merged boxImGateComplete=', merged.boxImGateComplete);
         return merged;
+      },
+      onRehydrateStorage: () => (state) => {
+        console.log('[settings] onRehydrateStorage: boxImGateComplete=', state?.boxImGateComplete);
       },
     }
   )
