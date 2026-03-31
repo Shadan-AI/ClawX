@@ -234,6 +234,39 @@ async function terminateOrphanedProcessIds(port: number, pids: string[]): Promis
   }
 }
 
+/**
+ * Returns true if something on `port` accepts a WebSocket connection to /ws.
+ * Used to detect a live Gateway without relying on PID matching.
+ */
+function probeGatewayWebSocketListening(port: number, timeoutMs: number): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const testWs = new WebSocket(`ws://localhost:${port}/ws`);
+    const timeout = setTimeout(() => {
+      try {
+        testWs.close();
+      } catch {
+        // ignore
+      }
+      resolve(false);
+    }, timeoutMs);
+
+    testWs.on('open', () => {
+      clearTimeout(timeout);
+      try {
+        testWs.close();
+      } catch {
+        // ignore
+      }
+      resolve(true);
+    });
+
+    testWs.on('error', () => {
+      clearTimeout(timeout);
+      resolve(false);
+    });
+  });
+}
+
 export async function findExistingGatewayProcess(options: {
   port: number;
   ownedPid?: number;
@@ -243,7 +276,22 @@ export async function findExistingGatewayProcess(options: {
   try {
     try {
       const pids = await getListeningProcessIds(port);
-      if (pids.length > 0 && (!ownedPid || !pids.includes(String(ownedPid)))) {
+      const pidMatchesOwned = ownedPid != null && pids.includes(String(ownedPid));
+
+      if (pids.length > 0 && !pidMatchesOwned) {
+        // On Windows, Electron utilityProcess.pid often differs from the PID that
+        // `netstat` attributes to the listening socket (same ClawX gateway). Killing
+        // based on PID mismatch alone destroys a healthy Gateway and causes restart loops
+        // (e.g. after QR login when the main process reconnects while the socket owner PID
+        // does not match `child.pid`).
+        const gatewayResponds = await probeGatewayWebSocketListening(port, 5000);
+        if (gatewayResponds) {
+          logger.debug(
+            `Port ${port} in use by PID(s) ${pids.join(', ')} (ownedPid=${ownedPid ?? 'none'}); WebSocket responds — using existing Gateway`,
+          );
+          return { port };
+        }
+
         await terminateOrphanedProcessIds(port, pids);
         if (process.platform === 'win32') {
           await waitForPortFree(port, 10000);

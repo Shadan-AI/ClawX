@@ -6,9 +6,15 @@ const originalPlatform = process.platform;
 const {
   mockExec,
   mockCreateServer,
+  mockWsConstructor,
 } = vi.hoisted(() => ({
   mockExec: vi.fn(),
   mockCreateServer: vi.fn(),
+  mockWsConstructor: vi.fn(),
+}));
+
+vi.mock('ws', () => ({
+  default: mockWsConstructor,
 }));
 
 vi.mock('electron', () => ({
@@ -52,6 +58,15 @@ describe('gateway supervisor process cleanup', () => {
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
+
+    mockWsConstructor.mockImplementation(function MockWebSocket() {
+      const ee = new EventEmitter() as EventEmitter & { close: () => void };
+      ee.close = () => {
+        /* no-op */
+      };
+      queueMicrotask(() => ee.emit('error', new Error('ECONNREFUSED')));
+      return ee as unknown as import('ws').default;
+    });
 
     mockExec.mockImplementation((_cmd: string, _opts: object, cb: (err: Error | null, stdout: string) => void) => {
       cb(null, '');
@@ -133,5 +148,36 @@ describe('gateway supervisor process cleanup', () => {
       expect.any(Function),
     );
     expect(mockCreateServer).toHaveBeenCalled();
+  });
+
+  it('does not kill listener when netstat PID mismatches ownedPid but WebSocket accepts (Windows)', async () => {
+    setPlatform('win32');
+    mockWsConstructor.mockImplementation(function MockWebSocketOpen() {
+      const ee = new EventEmitter() as EventEmitter & { close: () => void };
+      ee.close = () => {
+        /* no-op */
+      };
+      queueMicrotask(() => ee.emit('open'));
+      return ee as unknown as import('ws').default;
+    });
+
+    mockExec.mockImplementation((cmd: string, _opts: object, cb: (err: Error | null, stdout: string) => void) => {
+      if (cmd.includes('netstat -ano')) {
+        cb(null, '  TCP    127.0.0.1:18789    0.0.0.0:0    LISTENING    1884\n');
+        return {} as never;
+      }
+      cb(null, '');
+      return {} as never;
+    });
+
+    const { findExistingGatewayProcess } = await import('@electron/gateway/supervisor');
+    const result = await findExistingGatewayProcess({ port: 18789, ownedPid: 7728 });
+
+    expect(result).toEqual({ port: 18789 });
+    expect(mockExec).not.toHaveBeenCalledWith(
+      expect.stringContaining('taskkill'),
+      expect.anything(),
+      expect.anything(),
+    );
   });
 });

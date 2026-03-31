@@ -110,7 +110,7 @@ export function BoxImGate() {
           <>
             <div className="rounded-2xl border border-black/10 dark:border-white/10 overflow-hidden bg-background shadow-sm">
               <iframe
-                key={iframeKey}
+                key={`${pluginUrl}-${gatewayStatus.connectedAt ?? 0}-${iframeKey}`}
                 title={t('iframeTitle')}
                 src={pluginUrl}
                 className="w-full min-h-[420px] border-0 bg-background"

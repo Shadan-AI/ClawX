@@ -9,6 +9,16 @@ import {
 } from '../utils/device-identity';
 import { logger } from '../utils/logger';
 
+/** Wait for connect.challenge after the WebSocket opens (slow TLS / busy event loop). */
+const GATEWAY_CHALLENGE_TIMEOUT_MS = 20_000;
+
+/**
+ * Wait for the connect RPC response after sending the handshake.
+ * The Gateway may still be loading channel plugins (box-im, lark, etc.); a 10s limit
+ * routinely fails on Windows dev while stderr shows plugin registration in flight.
+ */
+const GATEWAY_CONNECT_RESPONSE_TIMEOUT_MS = 45_000;
+
 function localGatewayWsUrl(port: number, tls: boolean): string {
   const proto = tls ? 'wss' : 'ws';
   return `${proto}://127.0.0.1:${port}/ws`;
@@ -262,7 +272,7 @@ export async function connectGatewaySocket(options: {
           ws.close();
           rejectOnce(new Error('Connect handshake timeout'));
         }
-      }, 10000);
+      }, GATEWAY_CONNECT_RESPONSE_TIMEOUT_MS);
       handshakeTimeout = requestTimeout;
 
       options.pendingRequests.set(connectId, {
@@ -286,7 +296,7 @@ export async function connectGatewaySocket(options: {
         ws.close();
         rejectOnce(new Error('Timed out waiting for connect.challenge from Gateway'));
       }
-    }, 10000);
+    }, GATEWAY_CHALLENGE_TIMEOUT_MS);
 
     ws.on('open', () => {
       logger.debug('Gateway WebSocket opened, waiting for connect.challenge...');
