@@ -165,3 +165,58 @@
     transform: translateY(-4px);
   }
 }
+
+/* Typing cursor blink animation */
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+/* Chat input shake on typing */
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-2px); }
+  75% { transform: translateX(2px); }
+}
+
+/* Typing particle burst */
+@keyframes particle {
+  0% {
+    opacity: 1;
+    transform: translate(0, 0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(
+      calc((var(--random-x, 0.5) - 0.5) * 80px),
+      calc(-40px - var(--random-y, 0.5) * 40px)
+    ) scale(0);
+  }
+}
+
+/* Randomize particle directions via inline style fallback */
+.animate-\[particle_0\.7s_ease-out_forwards\] {
+  --random-x: 0.5;
+  --random-y: 0.5;
+}
+.animate-\[particle_0\.7s_ease-out_forwards\]:nth-child(odd) { --random-x: 0.2; --random-y: 0.8; }
+.animate-\[particle_0\.7s_ease-out_forwards\]:nth-child(even) { --random-x: 0.8; --random-y: 0.3; }
+.animate-\[particle_0\.7s_ease-out_forwards\]:nth-child(3n) { --random-x: 0.1; --random-y: 0.6; }
+.animate-\[particle_0\.7s_ease-out_forwards\]:nth-child(3n+1) { --random-x: 0.9; --random-y: 0.9; }
+.animate-\[particle_0\.7s_ease-out_forwards\]:nth-child(3n+2) { --random-x: 0.5; --random-y: 0.4; }
+
+/* Smooth scrolling for chat */
+.overflow-y-auto {
+  scroll-behavior: smooth;
+}
+
+/* Sidebar session item hover */
+[data-session-item] {
+  transition: background-color 0.15s, transform 0.15s;
+}
+[data-session-item]:hover {
+  transform: translateX(2px);
+}
+[data-session-item]:active {
+  transform: scale(0.98);
+}

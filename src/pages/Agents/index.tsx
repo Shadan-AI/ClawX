@@ -225,15 +225,16 @@ export function Agents() {
             </div>
           )}
 
-          <div className="space-y-3">
-            {agents.map((agent) => (
-              <AgentCard
-                key={agent.id}
-                agent={agent}
-                channelGroups={channelGroups}
-                onOpenSettings={() => setActiveAgentId(agent.id)}
-                onDelete={() => setAgentToDelete(agent)}
-              />
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {agents.map((agent, idx) => (
+              <div key={agent.id} className="animate-in fade-in-0 duration-500 ease-out" style={{ animationDelay: `${idx * 60}ms`, animationFillMode: 'both' }}>
+                <AgentCard
+                  agent={agent}
+                  channelGroups={channelGroups}
+                  onOpenSettings={() => setActiveAgentId(agent.id)}
+                  onDelete={() => setAgentToDelete(agent)}
+                />
+              </div>
             ))}
           </div>
         </div>
@@ -319,70 +320,60 @@ function AgentCard({
   return (
     <div
       className={cn(
-        'group flex items-start gap-4 p-4 rounded-2xl transition-all text-left border relative overflow-hidden bg-transparent border-transparent hover:bg-black/5 dark:hover:bg-white/5',
-        agent.isDefault && 'bg-black/[0.04] dark:bg-white/[0.06]'
+        'group relative p-5 rounded-2xl transition-all duration-200 border cursor-pointer',
+        'hover:shadow-lg hover:border-black/15 dark:hover:border-white/15',
+        agent.isDefault
+          ? 'bg-gradient-to-br from-primary/5 to-transparent border-primary/20'
+          : 'bg-transparent border-black/8 dark:border-white/8 hover:bg-black/[0.02] dark:hover:bg-white/[0.02]'
       )}
+      onClick={onOpenSettings}
     >
-      <div className="h-[46px] w-[46px] shrink-0 flex items-center justify-center text-primary bg-primary/10 rounded-full shadow-sm mb-3 overflow-hidden">
-        {agent.digitalEmployee?.headImage ? (
-          <img 
-            src={agent.digitalEmployee.headImage} 
-            alt={displayName}
-            className="h-full w-full object-cover"
-          />
-        ) : (
-          <Bot className="h-[22px] w-[22px]" />
+      {/* Top-right actions */}
+      <div className="absolute top-3 right-3 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+        {!agent.isDefault && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+            onClick={(e) => { e.stopPropagation(); onDelete(); }}
+            title={t('deleteAgent')}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </Button>
         )}
       </div>
-      <div className="flex flex-col flex-1 min-w-0 py-0.5 mt-1">
-        <div className="flex items-center justify-between gap-3 mb-1">
-          <div className="flex items-center gap-2 min-w-0">
-            <h2 className="text-[16px] font-semibold text-foreground truncate">{displayName}</h2>
+
+      {/* Avatar + Name */}
+      <div className="flex items-center gap-3 mb-3">
+        <div className="h-10 w-10 shrink-0 flex items-center justify-center text-primary bg-gradient-to-br from-primary/15 to-violet-500/15 rounded-full overflow-hidden">
+          {agent.digitalEmployee?.headImage ? (
+            <img src={agent.digitalEmployee.headImage} alt={displayName} className="h-full w-full object-cover" />
+          ) : (
+            <Bot className="h-5 w-5" />
+          )}
+        </div>
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <h2 className="text-[15px] font-semibold text-foreground truncate">{displayName}</h2>
             {agent.isDefault && (
-              <Badge
-                variant="secondary"
-                className="flex items-center gap-1 font-mono text-[10px] font-medium px-2 py-0.5 rounded-full bg-black/[0.04] dark:bg-white/[0.08] border-0 shadow-none text-foreground/70"
-              >
-                <Check className="h-3 w-3" />
-                {t('defaultBadge')}
-              </Badge>
+              <span className="text-[10px] font-medium text-primary/70 bg-primary/10 px-1.5 py-0.5 rounded-full">{t('defaultBadge')}</span>
             )}
-          </div>
-          <div className="flex items-center gap-1 shrink-0">
-            {!agent.isDefault && (
-              <Button
-                variant="ghost"
-                size="icon"
-                className="opacity-0 group-hover:opacity-100 h-7 w-7 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-all"
-                onClick={onDelete}
-                title={t('deleteAgent')}
-              >
-                <Trash2 className="h-4 w-4" />
-              </Button>
-            )}
-            <Button
-              variant="ghost"
-              size="icon"
-              className={cn(
-                'h-7 w-7 text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/10 transition-all',
-                !agent.isDefault && 'opacity-0 group-hover:opacity-100',
-              )}
-              onClick={onOpenSettings}
-              title={t('settings')}
-            >
-              <Settings2 className="h-4 w-4" />
-            </Button>
           </div>
         </div>
-        <p className="text-[13.5px] text-muted-foreground line-clamp-2 leading-[1.5]">
-          {t('modelLine', {
-            model: displayModel,
-            suffix: agent.inheritedModel && !agent.digitalEmployee?.model ? ` (${t('inherited')})` : '',
-          })}
-        </p>
-        <p className="text-[13.5px] text-muted-foreground line-clamp-2 leading-[1.5]">
-          {t('channelsLine', { channels: channelsText })}
-        </p>
+      </div>
+
+      {/* Tags */}
+      <div className="flex flex-wrap gap-1.5">
+        {displayModel && (
+          <span className="inline-flex items-center text-[11px] text-muted-foreground bg-black/5 dark:bg-white/8 px-2 py-0.5 rounded-full">
+            {displayModel}
+          </span>
+        )}
+        {boundChannelAccounts.map((ch, i) => (
+          <span key={i} className="inline-flex items-center text-[11px] text-muted-foreground bg-black/5 dark:bg-white/8 px-2 py-0.5 rounded-full">
+            {ch}
+          </span>
+        ))}
       </div>
     </div>
   );
@@ -654,7 +645,7 @@ function AgentSettingsModal({
                 {t('settingsDialog.noChannels')}
               </div>
             ) : (
-              <div className="space-y-3">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {assignedChannels.map((channel) => (
                   <div key={`${channel.channelType}-${channel.accountId}`} className="flex items-center justify-between rounded-2xl bg-black/5 dark:bg-white/5 border border-transparent p-4">
                     <div className="flex items-center gap-3 min-w-0">

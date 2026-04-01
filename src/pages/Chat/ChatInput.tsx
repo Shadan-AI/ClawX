@@ -412,11 +412,45 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
     [stageBufferFiles],
   );
 
+
+  // ── Typing particles + shake ──────────────────────────────────
+  const inputBoxRef = useRef<HTMLDivElement>(null);
+  const [shaking, setShaking] = useState(false);
+  const [particles, setParticles] = useState<Array<{ id: number; x: number; y: number; color: string; size: number }>>([]);
+  const particleIdRef = useRef(0);
+
+  const spawnParticles = useCallback(() => {
+    if (!inputBoxRef.current) return;
+    const rect = inputBoxRef.current.getBoundingClientRect();
+    const colors = ['#f43f5e', '#8b5cf6', '#3b82f6', '#10b981', '#f59e0b', '#ec4899', '#06b6d4'];
+    const newParticles = Array.from({ length: 3 }, () => ({
+      id: particleIdRef.current++,
+      x: rect.left + Math.random() * rect.width,
+      y: rect.top + Math.random() * 20,
+      color: colors[Math.floor(Math.random() * colors.length)],
+      size: 4 + Math.random() * 6,
+    }));
+    setParticles(prev => [...prev.slice(-15), ...newParticles]);
+    setTimeout(() => {
+      setParticles(prev => prev.filter(p => !newParticles.some(np => np.id === p.id)));
+    }, 700);
+  }, []);
+
+  const handleInputChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const prev = input;
+    setInput(e.target.value);
+    if (e.target.value.length > prev.length) {
+      setShaking(true);
+      spawnParticles();
+      setTimeout(() => setShaking(false), 100);
+    }
+  }, [input, spawnParticles]);
+
   return (
     <div
       className={cn(
         "w-full mx-auto transition-all duration-300 ease-out bg-transparent",
-        isExpanded ? "max-w-5xl p-4 pb-6" : "max-w-2xl px-4 py-2"
+        isExpanded ? "max-w-3xl p-4 pb-4" : "max-w-2xl px-4 py-2"
       )}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
@@ -486,10 +520,11 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
           </div>
         )}
 
-        <div className={cn(
+        <div ref={inputBoxRef} className={cn(
           "relative bg-white dark:bg-card rounded-[28px] shadow-sm border transition-all duration-300 ease-out",
-          dragOver ? 'border-primary ring-1 ring-primary' : 'border-black/10 dark:border-white/10',
-          isExpanded ? "shadow-md p-3" : "p-1"
+          shaking && "animate-[shake_0.1s_ease-in-out]",
+          dragOver ? 'border-primary ring-2 ring-primary/30' : 'border-black/8 dark:border-white/10 focus-within:border-black/20 dark:focus-within:border-white/20 focus-within:shadow-lg focus-within:shadow-black/5 dark:focus-within:shadow-white/5',
+          isExpanded ? "shadow-md p-2" : "p-1"
         )}>
           {selectedTarget && (
             <div className={cn(
@@ -514,13 +549,13 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
               size="icon"
               className={cn(
                 "shrink-0 rounded-full text-muted-foreground hover:bg-black/5 dark:hover:bg-white/10 hover:text-foreground transition-all duration-300",
-                isExpanded ? "h-14 w-14" : "h-11 w-11"
+                isExpanded ? "h-10 w-10" : "h-9 w-9"
               )}
               onClick={pickFiles}
               disabled={disabled || sending}
               title={t('composer.attachFiles')}
             >
-              <Paperclip className={cn("h-5 w-5", isExpanded && "h-6 w-6")} />
+              <Paperclip className={cn("h-4 w-4", isExpanded && "h-5 w-5")} />
             </Button>
 
             {showAgentPicker && (
@@ -530,14 +565,14 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                   size="icon"
                   className={cn(
                     'rounded-full text-muted-foreground hover:bg-black/5 dark:hover:bg-white/10 hover:text-foreground transition-colors',
-                    isExpanded ? "h-14 w-14" : "h-11 w-11",
+                    isExpanded ? "h-10 w-10" : "h-9 w-9",
                     (pickerOpen || selectedTarget) && 'bg-primary/10 text-primary hover:bg-primary/20'
                   )}
                   onClick={() => setPickerOpen((open) => !open)}
                   disabled={disabled || sending}
                   title={t('composer.pickAgent')}
                 >
-                  <AtSign className={cn("h-4 w-4", isExpanded && "h-5 w-5")} />
+                  <AtSign className={cn("h-3.5 w-3.5", isExpanded && "h-4 w-4")} />
                 </Button>
                 {pickerOpen && (
                   <div className="absolute left-0 bottom-full z-20 mb-2 w-72 overflow-hidden rounded-2xl border border-black/10 bg-white p-1.5 shadow-xl dark:border-white/10 dark:bg-card">
@@ -567,7 +602,7 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
               <Textarea
                 ref={textareaRef}
                 value={input}
-                onChange={(e) => setInput(e.target.value)}
+                onChange={handleInputChange}
                 onKeyDown={handleKeyDown}
                 onCompositionStart={() => {
                   isComposingRef.current = true;
@@ -581,10 +616,10 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                 placeholder={disabled ? t('composer.gatewayDisconnectedPlaceholder') : ''}
                 disabled={disabled}
                 className={cn(
-                  "resize-none border-0 focus-visible:ring-0 focus-visible:ring-offset-0 shadow-none bg-transparent px-2 placeholder:text-muted-foreground/60",
+                  "resize-none border-0 focus-visible:ring-0 focus-visible:ring-offset-0 shadow-none bg-transparent px-1 placeholder:text-muted-foreground/60",
                   isExpanded 
-                    ? "min-h-[60px] max-h-[60px] py-2 text-[20px] leading-[30px]" 
-                    : "!min-h-[44px] h-[44px] overflow-hidden !py-[12px] text-[20px] leading-[20px]"
+                    ? "min-h-[90px] max-h-[90px] py-3.5 text-base leading-normal" 
+                    : "!min-h-[48px] h-[48px] overflow-hidden !py-[13px] text-base leading-normal"
                 )}
                 rows={isExpanded ? 2 : 1}
               />
@@ -652,24 +687,43 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
               disabled={sending ? !canStop : !canSend}
               size="icon"
               className={cn(
-                "shrink-0 rounded-full transition-all duration-300",
+                "shrink-0 rounded-full transition-all duration-300 active:scale-90",
                 (sending || canSend)
                   ? 'bg-black/5 dark:bg-white/10 text-foreground hover:bg-black/10 dark:hover:bg-white/20'
                   : 'text-muted-foreground/50 hover:bg-transparent bg-transparent',
-                isExpanded ? "h-14 w-14" : "h-11 w-11"
+                isExpanded ? "h-10 w-10" : "h-9 w-9"
               )}
               variant="ghost"
               title={sending ? t('composer.stop') : t('composer.send')}
             >
               {sending ? (
-                <Square className={cn("h-5 w-5", isExpanded && "h-6 w-6")} fill="currentColor" />
+                <Square className={cn("h-4 w-4", isExpanded && "h-4.5 w-4.5")} fill="currentColor" />
               ) : (
-                <SendHorizontal className={cn("h-5 w-5", isExpanded && "h-6 w-6")} strokeWidth={2} />
+                <SendHorizontal className={cn("h-4 w-4", isExpanded && "h-4.5 w-4.5")} strokeWidth={2} />
               )}
             </Button>
           </div>
         </div>
       </div>
+
+      {/* Typing particles */}
+      {particles.length > 0 && (
+        <div className="fixed inset-0 pointer-events-none z-[9999]">
+          {particles.map(p => (
+            <div
+              key={p.id}
+              className="absolute rounded-full animate-[particle_0.7s_ease-out_forwards]"
+              style={{
+                left: p.x,
+                top: p.y,
+                width: p.size,
+                height: p.size,
+                backgroundColor: p.color,
+              }}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
