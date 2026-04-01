@@ -76,13 +76,16 @@ export const useAgentsStore = create<AgentsState>((set, get) => ({
     set({ loading: true, error: null });
     try {
       console.log('[agents] fetchAgents: starting...');
-      const [snapshot, botsRes] = await Promise.all([
-        hostApiFetch<AgentsSnapshot & { success?: boolean }>('/api/agents'),
-        hostApiFetch<{ bots?: DigitalEmployee[]; success?: boolean }>('/plugins/box-im/bots').catch((err) => {
-          console.warn('[agents] Failed to fetch bots:', err);
-          return { bots: [] };
-        }),
-      ]);
+      // 必须先拉 /plugins/box-im/bots：内部会 saveBoxImAccountsAndSyncAgents 写入 agents/bindings。
+      // 若与 /api/agents 并行，快照会在写入前返回，误判「缺 agent」→ 重复 POST /api/agents →
+      // 多次 debouncedReload，在 Windows 上每次 reload 都会整进程重启 Gateway，表现为断联循环。
+      let botsRes: { bots?: DigitalEmployee[]; success?: boolean } = { bots: [] };
+      try {
+        botsRes = await hostApiFetch<{ bots?: DigitalEmployee[]; success?: boolean }>('/plugins/box-im/bots');
+      } catch (err) {
+        console.warn('[agents] Failed to fetch bots:', err);
+      }
+      const snapshot = await hostApiFetch<AgentsSnapshot & { success?: boolean }>('/api/agents');
       
       console.log('[agents] API responses:', {
         agentsCount: snapshot.agents?.length,

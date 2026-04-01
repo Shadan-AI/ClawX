@@ -709,7 +709,16 @@ export async function deleteAgentConfig(agentId: string): Promise<{ snapshot: Ag
   });
 }
 
-export async function assignChannelToAgent(agentId: string, channelType: string): Promise<AgentsSnapshot> {
+export type AssignChannelToAgentResult = {
+  snapshot: AgentsSnapshot;
+  /** false when bindings were already satisfied (avoids redundant Gateway reload on Windows). */
+  configChanged: boolean;
+};
+
+export async function assignChannelToAgent(
+  agentId: string,
+  channelType: string,
+): Promise<AssignChannelToAgentResult> {
   return withConfigLock(async () => {
     const config = await readOpenClawConfig() as AgentConfigDocument;
     const { entries } = normalizeAgentsConfig(config);
@@ -718,10 +727,22 @@ export async function assignChannelToAgent(agentId: string, channelType: string)
     }
 
     const accountId = resolveAccountIdForAgent(agentId);
-    config.bindings = upsertBindingsForChannel(config.bindings, channelType, agentId, accountId);
+    const nextBindings = upsertBindingsForChannel(config.bindings, channelType, agentId, accountId);
+    const unchanged =
+      JSON.stringify(config.bindings ?? null) === JSON.stringify(nextBindings ?? null);
+    if (unchanged) {
+      logger.debug('assignChannelToAgent: bindings unchanged, skipping write', {
+        agentId,
+        channelType,
+        accountId,
+      });
+      return { snapshot: await buildSnapshotFromConfig(config), configChanged: false };
+    }
+
+    config.bindings = nextBindings;
     await writeOpenClawConfig(config);
     logger.info('Assigned channel to agent', { agentId, channelType, accountId });
-    return buildSnapshotFromConfig(config);
+    return { snapshot: await buildSnapshotFromConfig(config), configChanged: true };
   });
 }
 

@@ -176,8 +176,10 @@ export async function handleAgentRoutes(
       try {
         const agentId = decodeURIComponent(parts[0]);
         const channelType = decodeURIComponent(parts[2]);
-        const snapshot = await assignChannelToAgent(agentId, channelType);
-        scheduleGatewayReload(ctx, 'assign-channel');
+        const { snapshot, configChanged } = await assignChannelToAgent(agentId, channelType);
+        if (configChanged) {
+          scheduleGatewayReload(ctx, 'assign-channel');
+        }
         sendJson(res, 200, { success: true, ...snapshot });
       } catch (error) {
         sendJson(res, 500, { success: false, error: String(error) });
