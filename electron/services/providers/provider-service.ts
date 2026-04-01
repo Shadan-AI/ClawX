@@ -101,10 +101,28 @@ export class ProviderService {
         const aliasAccounts = storeGroup.filter((a) => a.vendorId !== key);
         const candidates = aliasAccounts.length > 0 ? aliasAccounts : storeGroup;
         candidates.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-        result.push(candidates[0]);
+        let kept = candidates[0];
+
+        // openclaw.json is source of truth for provider endpoints; refresh cached baseUrl
+        // when the store drifted (e.g. after template merge fixes LAN defaults).
+        const entry = openClawProviders[key];
+        if (entry && typeof entry === 'object') {
+          const entryBase = (entry as Record<string, unknown>).baseUrl;
+          if (typeof entryBase === 'string' && entryBase.trim() && kept.baseUrl !== entryBase) {
+            const updated = {
+              ...kept,
+              baseUrl: entryBase.trim(),
+              updatedAt: new Date().toISOString(),
+            };
+            await saveProviderAccount(updated);
+            kept = updated;
+            logger.info(`[provider-sync] Refreshed account baseUrl from openclaw.json for key "${key}"`);
+          }
+        }
+
+        result.push(kept);
 
         // Clean up orphaned duplicates from the store.
-        const kept = candidates[0];
         for (const account of storeGroup) {
           if (account.id !== kept.id) {
             logger.info(

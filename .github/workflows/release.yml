@@ -17,19 +17,23 @@ permissions:
   contents: write
   actions: read
 
+# Run JS-based actions (upload-artifact, etc.) on Node 24 — see GitHub deprecation of Node 20 runtimes.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   release:
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - os: macos-latest
+          - os: macos-15
             platform: mac
           - os: windows-latest
             platform: win
-          - os: ubuntu-latest
-            platform: linux
 
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
     
     steps:
       - name: Checkout code
@@ -37,17 +41,24 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-
+      # Node first, then install pnpm with that Node's npm (no pnpm/action-setup:
+      # avoids Node 20 action runtime + "forced to Node 24" warnings).
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
           node-version: '24'
-          cache: 'pnpm'
+
+      - name: Install pnpm
+        shell: bash
+        run: npm install -g pnpm@10.31.0
+
+      # package.json uses "latest"; refresh lockfile resolution to current npm dist-tag before frozen install.
+      - name: Refresh @shadanai/openclaw to registry latest
+        shell: bash
+        run: pnpm update @shadanai/openclaw --latest
 
       - name: Install dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       - name: Download uv binaries for macOS
         if: matrix.platform == 'mac'
@@ -73,14 +84,24 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          HAS_MAC_CERTS: ${{ secrets.MAC_CERTS != '' && secrets.MAC_CERTS_PASSWORD != '' }}
+          HAS_APPLE_NOTARY: ${{ secrets.APPLE_ID != '' && secrets.APPLE_APP_SPECIFIC_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' }}
         run: |
           ulimit -n 65536
           echo "File descriptor limit: $(ulimit -n)"
-          pnpm run package:mac
+          if [[ "$HAS_MAC_CERTS" == "true" && "$HAS_APPLE_NOTARY" == "true" ]]; then
+            echo "Using signed + notarized macOS release build"
+            pnpm run package:mac
+          else
+            echo "Mac signing/notarization secrets are incomplete; building unsigned macOS release instead"
+            node scripts/package-mac.mjs --config.mac.identity=null --config.mac.notarize=false
+          fi
 
       # Windows specific steps
       - name: Build Windows
         if: matrix.platform == 'win'
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
         run: pnpm run package:win
 
       # # Detect release channel from tag to skip code signing for alpha/beta builds
@@ -118,7 +139,7 @@ jobs:
       # - name: Upload unsigned Windows artifacts for SignPath
       #   if: matrix.platform == 'win' && steps.win-channel.outputs.is_stable == 'true'
       #   id: upload-unsigned-windows-artifact
-      #   uses: actions/upload-artifact@v4
+      #   uses: actions/upload-artifact@v5
       #   with:
       #     name: unsigned-win-exe-${{ github.run_id }}-${{ github.run_attempt }}
       #     path: release/*.exe
@@ -231,7 +252,7 @@ jobs:
         run: pnpm run package:linux
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: release-${{ matrix.platform }}
           path: |
@@ -255,7 +276,7 @@ jobs:
     
     steps:
       - name: Download release artifacts only
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           path: release-artifacts
           pattern: release-*
@@ -273,10 +294,14 @@ jobs:
           echo "Removing builder-debug.yml files to avoid duplicate asset upload conflicts..."
           find release-artifacts/ -name "builder-debug.yml" -delete -print || true
 
+      # Tag push: github.ref is refs/tags/v* → ref_name is the tag.
+      # workflow_dispatch: github.ref is refs/heads/* → must set tag_name from inputs (otherwise this step is skipped).
       - name: Create GitHub Release (as pre-release)
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', github.event.inputs.version) || github.ref_name }}
+          target_commitish: ${{ github.sha }}
           files: |
             release-artifacts/**/*.dmg
             release-artifacts/**/*.zip
@@ -290,7 +315,7 @@ jobs:
           make_latest: false
           generate_release_notes: true
           body: |
-            ## 🚀 ClawX ${{ github.ref_name }}
+            ## 🚀 ClawX ${{ github.event_name == 'workflow_dispatch' && format('v{0}', github.event.inputs.version) || github.ref_name }}
             
             ClawX - Graphical AI Assistant based on OpenClaw
             
@@ -348,7 +373,7 @@ jobs:
 
     steps:
       - name: Download release artifacts only
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           path: release-artifacts
           pattern: release-*
@@ -531,14 +556,18 @@ jobs:
   finalize:
     needs: [publish, upload-oss]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
 
     steps:
       - name: Promote release from pre-release to latest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            TAG="v${{ github.event.inputs.version }}"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
           IS_PRERELEASE_CHANNEL=false
 
           if [[ "$TAG" == *"alpha"* ]] || [[ "$TAG" == *"beta"* ]]; then

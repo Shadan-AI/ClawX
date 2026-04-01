@@ -84,7 +84,7 @@ export interface ChannelMeta {
  * Channel icons mapping
  */
 export const CHANNEL_ICONS: Record<ChannelType, string> = {
-  'box-im': '🦞',
+  'box-im': '🤖',
   whatsapp: '📱',
   wechat: '💬',
   dingtalk: '💬',
@@ -106,7 +106,7 @@ export const CHANNEL_ICONS: Record<ChannelType, string> = {
  * Channel display names
  */
 export const CHANNEL_NAMES: Record<ChannelType, string> = {
-  'box-im': 'Box IM',
+  'box-im': 'Box-IM',
   whatsapp: 'WhatsApp',
   wechat: 'WeChat',
   dingtalk: 'DingTalk',
@@ -128,18 +128,6 @@ export const CHANNEL_NAMES: Record<ChannelType, string> = {
  * Channel metadata with configuration information
  */
 export const CHANNEL_META: Record<ChannelType, ChannelMeta> = {
-  'box-im': {
-    id: 'box-im',
-    name: 'Box IM',
-    icon: '🦞',
-    description: 'channels:meta.box-im.description',
-    connectionType: 'embeddedPlugin',
-    embeddedPluginPath: '/plugins/box-im/login',
-    docsUrl: 'channels:meta.box-im.docsUrl',
-    configFields: [],
-    instructions: ['channels:meta.box-im.instructions.0', 'channels:meta.box-im.instructions.1'],
-    isPlugin: true,
-  },
   qqbot: {
     id: 'qqbot',
     name: 'QQ Bot',
@@ -588,6 +576,22 @@ export const CHANNEL_META: Record<ChannelType, ChannelMeta> = {
       'channels:meta.mattermost.instructions.0',
       'channels:meta.mattermost.instructions.1',
       'channels:meta.mattermost.instructions.2',
+    ],
+    isPlugin: true,
+  },
+  'box-im': {
+    id: 'box-im',
+    name: 'Box-IM',
+    icon: '🤖',
+    description: 'Box-IM 数字员工平台',
+    connectionType: 'embeddedPlugin',
+    embeddedPluginPath: '/plugins/box-im/login',
+    docsUrl: '',
+    configFields: [],
+    instructions: [
+      '通过微信扫码登录后自动配置',
+      '支持多 Bot 账号管理',
+      '支持 OpenMe 广场问答',
     ],
     isPlugin: true,
   },

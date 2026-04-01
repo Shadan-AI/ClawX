@@ -347,10 +347,13 @@ pnpm run comms:compare    # Compare replay metrics against baseline thresholds
 pnpm run build:vite       # Build frontend only
 pnpm build                # Full production build (with packaging assets)
 pnpm package              # Package for current platform (includes bundled preinstalled skills)
-pnpm package:mac          # Package for macOS
+pnpm package:mac          # Package for macOS (macOS 11/12 defaults to zip-only)
+pnpm package:mac:dmg      # Force dmg + zip on macOS
 pnpm package:win          # Package for Windows
 pnpm package:linux        # Package for Linux
 ```
+
+On macOS 11 and 12, `pnpm package:mac` intentionally skips the DMG target by default because the bundled `dmgbuild` runtime used by `electron-builder` relies on `mkfifoat`, which is only available on macOS 13+. If you have a compatible custom `dmgbuild` and want to force DMG generation anyway, run `pnpm package:mac:dmg` (or set `CLAWX_FORCE_DMG=1`).
 
 ### Communication Regression Checks
 

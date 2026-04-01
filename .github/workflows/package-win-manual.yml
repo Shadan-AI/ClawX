@@ -11,6 +11,9 @@ on:
 permissions:
   contents: read
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   package-windows:
     runs-on: windows-latest
@@ -27,8 +30,9 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+      - name: Install pnpm
+        shell: bash
+        run: npm install -g pnpm@10.31.0
 
       - name: Get pnpm store directory
         shell: bash
@@ -43,6 +47,10 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pnpm-store-
 
+      - name: Refresh @shadanai/openclaw to registry latest
+        shell: bash
+        run: pnpm update @shadanai/openclaw --latest
+
       - name: Install dependencies
         run: pnpm install
 
@@ -55,7 +63,7 @@ jobs:
         run: pnpm run package:win
 
       - name: Upload Windows Installer (x64)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: windows-installer-x64
           path: release/*-win-x64.exe
@@ -63,7 +71,7 @@ jobs:
           retention-days: 7
 
       - name: Upload Windows Installer (arm64)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: windows-installer-arm64
           path: release/*-win-arm64.exe
@@ -71,7 +79,7 @@ jobs:
           retention-days: 7
 
       - name: Upload Windows Blockmap Files
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: windows-blockmap
           path: release/*.blockmap
@@ -79,7 +87,7 @@ jobs:
           retention-days: 7
 
       - name: Upload Windows Update Manifests
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: windows-update-manifests
           path: |

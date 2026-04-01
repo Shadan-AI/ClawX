@@ -776,7 +776,7 @@ export function ChannelConfigModal({
                 <>
                   <div className="rounded-2xl border border-black/10 dark:border-white/10 overflow-hidden bg-background shadow-sm">
                     <iframe
-                      key={iframeKey}
+                      key={`${pluginUrl}-${gatewayStatus.connectedAt ?? 0}-${iframeKey}`}
                       title={t('dialog.embeddedPlugin.iframeTitle')}
                       src={pluginUrl}
                       className="w-full min-h-[440px] border-0 bg-background"
