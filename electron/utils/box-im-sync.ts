@@ -8,6 +8,13 @@
 import { readOpenClawConfig, writeOpenClawConfig } from './channel-config';
 import { logger } from './logger';
 
+// ── Constants ────────────────────────────────────────────────────
+
+const CHANNEL_ID = 'box-im';
+const SYSTEM_AGENTS = new Set(['main', 'dev']);
+const DEFAULT_API_URL = 'https://im.shadanai.com/api';
+const DEFAULT_ONEAPI_BASE_URL = 'https://one-api.shadanai.com';
+
 // ── Types ────────────────────────────────────────────────────────
 
 export interface BotInfo {
@@ -57,10 +64,6 @@ interface Binding {
   [key: string]: unknown;
 }
 
-const CHANNEL_ID = 'box-im';
-const SYSTEM_AGENTS = new Set(['main', 'dev']);
-const DEFAULT_API_URL = 'https://im.shadanai.com/api';
-
 // ── Config reading ───────────────────────────────────────────────
 
 export async function getBoxImConfig(): Promise<{
@@ -82,6 +85,57 @@ export async function getBoxImConfig(): Promise<{
     logger.error('[box-im] Failed to read config:', err);
     return { tokenKey: null, apiUrl: DEFAULT_API_URL, accounts: {} };
   }
+}
+
+/**
+ * Read tokenKey from openclaw.json — single source of truth for login status.
+ */
+export async function getTokenKey(): Promise<string | null> {
+  const { tokenKey } = await getBoxImConfig();
+  return tokenKey;
+}
+
+/**
+ * Read OneAPI base URL from openclaw.json models.providers.shadan.baseUrl,
+ * falling back to the default public endpoint.
+ */
+export async function getOneApiBaseUrl(): Promise<string> {
+  try {
+    const cfg = await readOpenClawConfig();
+    const models = (cfg as any).models as Record<string, unknown> | undefined;
+    const providers = (models?.providers ?? {}) as Record<string, unknown>;
+    const shadan = (providers.shadan ?? {}) as Record<string, unknown>;
+    const baseUrl = shadan.baseUrl;
+    if (typeof baseUrl === 'string' && baseUrl.length > 0) {
+      // Strip trailing /v1 if present — callers append their own paths
+      return baseUrl.replace(/\/v1\/?$/, '');
+    }
+  } catch { /* ignore */ }
+  return DEFAULT_ONEAPI_BASE_URL;
+}
+
+/**
+ * Logout: clear ownerAuth, accounts, and shadan provider from config.
+ */
+export async function logoutBoxIm(): Promise<void> {
+  const cfg = await readOpenClawConfig();
+
+  // Clear box-im auth & accounts
+  const boxIm = (cfg.channels?.[CHANNEL_ID] ?? {}) as Record<string, unknown>;
+  delete boxIm.ownerAuth;
+  delete boxIm.accounts;
+  boxIm.loggedIn = false;
+  if (cfg.channels) cfg.channels[CHANNEL_ID] = boxIm;
+
+  // Remove shadan provider
+  const models = ((cfg as any).models ?? {}) as Record<string, unknown>;
+  const providers = (models.providers ?? {}) as Record<string, unknown>;
+  delete providers.shadan;
+  models.providers = providers;
+  (cfg as any).models = models;
+
+  await writeOpenClawConfig(cfg);
+  logger.info('[box-im] Logged out, cleared ownerAuth, accounts, and shadan provider');
 }
 
 // ── API ──────────────────────────────────────────────────────────
@@ -167,9 +221,7 @@ function reconcileBindings(
   oldBindings: Binding[],
   accountIds: string[],
 ): Binding[] {
-  // Keep non-box-im bindings
   const result = oldBindings.filter(b => b.match?.channel !== CHANNEL_ID);
-  // Add one binding per account
   for (const agentId of accountIds) {
     result.push({ agentId, match: { channel: CHANNEL_ID, accountId: agentId } });
   }

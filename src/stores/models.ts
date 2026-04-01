@@ -42,7 +42,7 @@ export interface ModelState {
   setSessionModel: (sessionKey: string, modelId: string) => void;
 }
 
-const ONEAPI_BASE_URL = 'http://192.168.10.252:3002';
+const ONEAPI_BASE_URL = 'https://one-api.shadanai.com';
 
 const MODEL_META: Record<string, { name?: string }> = {
   'glm-5': { name: 'GLM-5' },

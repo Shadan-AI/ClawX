@@ -70,6 +70,7 @@ import {
   type AppRequest,
   type AppResponse,
 } from './ipc/request-helpers';
+import { getTokenKey as getBoxImTokenKey, logoutBoxIm } from '../utils/box-im-sync';
 
 /**
  * Register all IPC handlers
@@ -730,17 +731,7 @@ function registerSkillConfigHandlers(): void {
 function registerBoxImConfigHandlers(): void {
   ipcMain.handle('box-im:getTokenKey', async () => {
     try {
-      const configPath = join(homedir(), '.openclaw', 'openclaw.json');
-      if (!existsSync(configPath)) {
-        return null;
-      }
-      const raw = await import('node:fs/promises').then(fs => fs.readFile(configPath, 'utf-8'));
-      const cfg = JSON.parse(raw) as Record<string, unknown>;
-      const channels = cfg.channels as Record<string, unknown> | undefined;
-      const boxIm = channels?.['box-im'] as Record<string, unknown> | undefined;
-      const ownerAuth = boxIm?.ownerAuth as Record<string, unknown> | undefined;
-      const tokenKey = ownerAuth?.tokenKey;
-      return typeof tokenKey === 'string' && tokenKey.length > 0 ? tokenKey : null;
+      return await getBoxImTokenKey();
     } catch (err) {
       logger.warn('[box-im] Failed to read tokenKey:', err);
       return null;
@@ -749,34 +740,7 @@ function registerBoxImConfigHandlers(): void {
 
   ipcMain.handle('box-im:logout', async () => {
     try {
-      const configPath = join(homedir(), '.openclaw', 'openclaw.json');
-      if (!existsSync(configPath)) {
-        return { success: true };
-      }
-      const fs = await import('node:fs/promises');
-      const raw = await fs.readFile(configPath, 'utf-8');
-      const cfg = JSON.parse(raw) as Record<string, unknown>;
-      
-      if (cfg.channels && typeof cfg.channels === 'object') {
-        const channels = cfg.channels as Record<string, unknown>;
-        if (channels['box-im'] && typeof channels['box-im'] === 'object') {
-          const boxIm = channels['box-im'] as Record<string, unknown>;
-          delete boxIm.ownerAuth;
-          delete boxIm.accounts;
-          boxIm.loggedIn = false;
-        }
-      }
-      
-      if (cfg.models && typeof cfg.models === 'object') {
-        const models = cfg.models as Record<string, unknown>;
-        if (models.providers && typeof models.providers === 'object') {
-          const providers = models.providers as Record<string, unknown>;
-          delete providers['shadan'];
-        }
-      }
-      
-      await fs.writeFile(configPath, JSON.stringify(cfg, null, 2), 'utf-8');
-      logger.info('[box-im] Logged out, cleared ownerAuth and accounts');
+      await logoutBoxIm();
       return { success: true };
     } catch (err) {
       logger.error('[box-im] Logout failed:', err);
