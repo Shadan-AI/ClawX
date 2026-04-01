@@ -7,17 +7,18 @@
  * are sent with the message (no base64 over WebSocket).
  */
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { SendHorizontal, Square, X, Paperclip, FileText, Film, Music, FileArchive, File, Loader2, AtSign } from 'lucide-react';
+import { SendHorizontal, Square, X, Paperclip, FileText, Film, Music, FileArchive, File, Loader2, AtSign, ChevronDown, Check, RefreshCw, Brain, Bot } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { hostApiFetch } from '@/lib/host-api';
 import { invokeIpc } from '@/lib/api-client';
 import { cn } from '@/lib/utils';
-import { useGatewayStore } from '@/stores/gateway';
 import { useAgentsStore } from '@/stores/agents';
 import { useChatStore } from '@/stores/chat';
+import { useModelsStore } from '@/stores/models';
 import type { AgentSummary } from '@/types/agent';
 import { useTranslation } from 'react-i18next';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -37,7 +38,8 @@ interface ChatInputProps {
   onStop?: () => void;
   disabled?: boolean;
   sending?: boolean;
-  isEmpty?: boolean;
+  isExpanded?: boolean;
+  onFocusChange?: (focused: boolean) => void;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -84,16 +86,17 @@ function readFileAsBase64(file: globalThis.File): Promise<string> {
 
 // ── Component ────────────────────────────────────────────────────
 
-export function ChatInput({ onSend, onStop, disabled = false, sending = false, isEmpty = false }: ChatInputProps) {
+export function ChatInput({ onSend, onStop, disabled = false, sending = false, isExpanded = true, onFocusChange }: ChatInputProps) {
   const { t } = useTranslation('chat');
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState<FileAttachment[]>([]);
   const [targetAgentId, setTargetAgentId] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const pickerRef = useRef<HTMLDivElement>(null);
+  const modelMenuRef = useRef<HTMLDivElement>(null);
   const isComposingRef = useRef(false);
-  const gatewayStatus = useGatewayStore((s) => s.status);
   const agents = useAgentsStore((s) => s.agents);
   const currentAgentId = useChatStore((s) => s.currentAgentId);
   const currentAgentName = useMemo(
@@ -110,13 +113,27 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
   );
   const showAgentPicker = mentionableAgents.length > 0;
 
-  // Auto-resize textarea
+  const models = useModelsStore((s) => s.models);
+  const currentModelId = useModelsStore((s) => s.currentModelId);
+  const setCurrentModel = useModelsStore((s) => s.setCurrentModel);
+  const currentModel = models.find((m) => m.id === currentModelId);
+
+  const refresh = useChatStore((s) => s.refresh);
+  const loading = useChatStore((s) => s.loading);
+  const showThinking = useChatStore((s) => s.showThinking);
+  const toggleThinking = useChatStore((s) => s.toggleThinking);
+
+  // Auto-resize textarea (only when expanded)
   useEffect(() => {
     if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto';
-      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 200)}px`;
+      if (isExpanded) {
+        textareaRef.current.style.height = 'auto';
+        textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 200)}px`;
+      } else {
+        textareaRef.current.style.height = '44px';
+      }
     }
-  }, [input]);
+  }, [input, isExpanded]);
 
   // Focus textarea on mount (avoids Windows focus loss after session delete + native dialog)
   useEffect(() => {
@@ -150,6 +167,19 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
       document.removeEventListener('mousedown', handlePointerDown);
     };
   }, [pickerOpen]);
+
+  useEffect(() => {
+    if (!modelMenuOpen) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!modelMenuRef.current?.contains(event.target as Node)) {
+        setModelMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+    };
+  }, [modelMenuOpen]);
 
   // ── File staging via native dialog ─────────────────────────────
 
@@ -284,7 +314,6 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
   }, []);
 
   const allReady = attachments.length === 0 || attachments.every(a => a.status === 'ready');
-  const hasFailedAttachments = attachments.some((a) => a.status === 'error');
   const canSend = (input.trim() || attachments.length > 0) && allReady && !disabled && !sending;
   const canStop = sending && !disabled && !!onStop;
 
@@ -305,7 +334,7 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
     setInput('');
     setAttachments([]);
     if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto';
+      textareaRef.current.style.height = isExpanded ? 'auto' : '44px';
     }
     onSend(textToSend, attachmentsToSend, targetAgentId);
     setTargetAgentId(null);
@@ -386,17 +415,67 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
   return (
     <div
       className={cn(
-        "p-4 pb-6 w-full mx-auto transition-all duration-300",
-        isEmpty ? "max-w-3xl" : "max-w-4xl"
+        "w-full mx-auto transition-all duration-300 ease-out bg-transparent",
+        isExpanded ? "max-w-5xl p-4 pb-6" : "max-w-2xl px-4 py-2"
       )}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
       <div className="w-full">
-        {/* Attachment Previews */}
+        {isExpanded && (
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5 rounded-full border border-black/10 bg-white/70 dark:bg-white/5 px-3 py-1.5 text-[12px] font-medium text-foreground/80 dark:border-white/10">
+                <Bot className="h-3.5 w-3.5 text-primary" />
+                <span>{t('toolbar.currentAgent', { agent: currentAgentName })}</span>
+              </div>
+            </div>
+            <div className="flex items-center gap-1">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7"
+                    onClick={() => refresh()}
+                    disabled={loading}
+                  >
+                    <RefreshCw className={cn('h-3.5 w-3.5', loading && 'animate-spin')} />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>{t('toolbar.refresh')}</p>
+                </TooltipContent>
+              </Tooltip>
+
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className={cn(
+                      'h-7 w-7',
+                      showThinking && 'bg-primary/10 text-primary',
+                    )}
+                    onClick={toggleThinking}
+                  >
+                    <Brain className="h-3.5 w-3.5" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>{showThinking ? t('toolbar.hideThinking') : t('toolbar.showThinking')}</p>
+                </TooltipContent>
+              </Tooltip>
+            </div>
+          </div>
+        )}
+
         {attachments.length > 0 && (
-          <div className="flex gap-2 mb-3 flex-wrap">
+          <div className={cn(
+            "flex gap-2 mb-3 flex-wrap transition-all duration-300",
+            !isExpanded && "opacity-0 h-0 mb-0 overflow-hidden"
+          )}>
             {attachments.map((att) => (
               <AttachmentPreview
                 key={att.id}
@@ -407,10 +486,16 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
           </div>
         )}
 
-        {/* Input Row */}
-        <div className={`relative bg-white dark:bg-card rounded-[28px] shadow-sm border p-1.5 transition-all ${dragOver ? 'border-primary ring-1 ring-primary' : 'border-black/10 dark:border-white/10'}`}>
+        <div className={cn(
+          "relative bg-white dark:bg-card rounded-[28px] shadow-sm border transition-all duration-300 ease-out",
+          dragOver ? 'border-primary ring-1 ring-primary' : 'border-black/10 dark:border-white/10',
+          isExpanded ? "shadow-md p-3" : "p-1"
+        )}>
           {selectedTarget && (
-            <div className="px-2.5 pt-2 pb-1">
+            <div className={cn(
+              "px-2.5 pt-2 pb-1 transition-all duration-300",
+              !isExpanded && "opacity-0 h-0 py-0 overflow-hidden"
+            )}>
               <button
                 type="button"
                 onClick={() => setTargetAgentId(null)}
@@ -423,33 +508,36 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
             </div>
           )}
 
-          <div className="flex items-end gap-1.5">
-            {/* Attach Button */}
+          <div className={cn("flex items-center gap-2", !isExpanded && "gap-1")}>
             <Button
               variant="ghost"
               size="icon"
-              className="shrink-0 h-10 w-10 rounded-full text-muted-foreground hover:bg-black/5 dark:hover:bg-white/10 hover:text-foreground transition-colors"
+              className={cn(
+                "shrink-0 rounded-full text-muted-foreground hover:bg-black/5 dark:hover:bg-white/10 hover:text-foreground transition-all duration-300",
+                isExpanded ? "h-14 w-14" : "h-11 w-11"
+              )}
               onClick={pickFiles}
               disabled={disabled || sending}
               title={t('composer.attachFiles')}
             >
-              <Paperclip className="h-4 w-4" />
+              <Paperclip className={cn("h-5 w-5", isExpanded && "h-6 w-6")} />
             </Button>
 
             {showAgentPicker && (
-              <div ref={pickerRef} className="relative shrink-0">
+              <div ref={pickerRef} className={cn("relative shrink-0 transition-all duration-300", !isExpanded && "opacity-0 w-0 overflow-hidden")}>
                 <Button
                   variant="ghost"
                   size="icon"
                   className={cn(
-                    'h-10 w-10 rounded-full text-muted-foreground hover:bg-black/5 dark:hover:bg-white/10 hover:text-foreground transition-colors',
+                    'rounded-full text-muted-foreground hover:bg-black/5 dark:hover:bg-white/10 hover:text-foreground transition-colors',
+                    isExpanded ? "h-14 w-14" : "h-11 w-11",
                     (pickerOpen || selectedTarget) && 'bg-primary/10 text-primary hover:bg-primary/20'
                   )}
                   onClick={() => setPickerOpen((open) => !open)}
                   disabled={disabled || sending}
                   title={t('composer.pickAgent')}
                 >
-                  <AtSign className="h-4 w-4" />
+                  <AtSign className={cn("h-4 w-4", isExpanded && "h-5 w-5")} />
                 </Button>
                 {pickerOpen && (
                   <div className="absolute left-0 bottom-full z-20 mb-2 w-72 overflow-hidden rounded-2xl border border-black/10 bg-white p-1.5 shadow-xl dark:border-white/10 dark:bg-card">
@@ -475,7 +563,6 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
               </div>
             )}
 
-            {/* Textarea */}
             <div className="flex-1 relative">
               <Textarea
                 ref={textareaRef}
@@ -489,60 +576,98 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                   isComposingRef.current = false;
                 }}
                 onPaste={handlePaste}
+                onFocus={() => onFocusChange?.(true)}
+                onBlur={() => onFocusChange?.(false)}
                 placeholder={disabled ? t('composer.gatewayDisconnectedPlaceholder') : ''}
                 disabled={disabled}
-                className="min-h-[40px] max-h-[200px] resize-none border-0 focus-visible:ring-0 focus-visible:ring-offset-0 shadow-none bg-transparent py-2.5 px-2 text-[15px] placeholder:text-muted-foreground/60 leading-relaxed"
-                rows={1}
+                className={cn(
+                  "resize-none border-0 focus-visible:ring-0 focus-visible:ring-offset-0 shadow-none bg-transparent px-2 placeholder:text-muted-foreground/60",
+                  isExpanded 
+                    ? "min-h-[60px] max-h-[60px] py-2 text-[20px] leading-[30px]" 
+                    : "!min-h-[44px] h-[44px] overflow-hidden !py-[12px] text-[20px] leading-[20px]"
+                )}
+                rows={isExpanded ? 2 : 1}
               />
             </div>
 
-            {/* Send Button */}
+            {models.length > 0 && isExpanded && (
+              <div ref={modelMenuRef} className="relative shrink-0 self-end pb-1">
+                <button
+                  type="button"
+                  aria-haspopup="listbox"
+                  aria-expanded={modelMenuOpen}
+                  onClick={() => setModelMenuOpen((open) => !open)}
+                  className={cn(
+                    'flex items-center gap-1 rounded-full border border-black/10 bg-black/5 dark:bg-white/10 px-3 py-2 text-[12px] font-medium text-foreground/80 dark:border-white/10',
+                    'focus:outline-none focus:ring-1 focus:ring-ring/50',
+                    'transition-all duration-200',
+                    modelMenuOpen && 'ring-1 ring-ring/50'
+                  )}
+                >
+                  <span className="truncate max-w-[100px]">
+                    {currentModel?.name || currentModelId || t('selectModel')}
+                  </span>
+                  <ChevronDown className={cn('h-3.5 w-3.5 text-muted-foreground shrink-0 transition-transform duration-200', modelMenuOpen && 'rotate-180')} />
+                </button>
+
+                {modelMenuOpen && (
+                  <div
+                    role="listbox"
+                    className={cn(
+                      'absolute z-50 right-0 bottom-full mb-2 min-w-[160px] rounded-lg border border-border bg-popover shadow-lg',
+                      'animate-in fade-in-0 zoom-in-95 duration-150',
+                      'max-h-48 overflow-auto py-1'
+                    )}
+                  >
+                    {models.map((model) => {
+                      const isSelected = model.id === currentModelId;
+                      return (
+                        <button
+                          key={model.id}
+                          type="button"
+                          role="option"
+                          aria-selected={isSelected}
+                          onClick={() => {
+                            setCurrentModel(model.id);
+                            setModelMenuOpen(false);
+                          }}
+                          className={cn(
+                            'w-full px-3 py-2 text-left text-[12px] flex items-center justify-between gap-2',
+                            'hover:bg-accent transition-colors duration-150',
+                            isSelected && 'bg-accent/60'
+                          )}
+                        >
+                          <span className="truncate">{model.name || model.id}</span>
+                          {isSelected && <Check className="h-3.5 w-3.5 text-primary shrink-0" />}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
             <Button
               onClick={sending ? handleStop : handleSend}
               disabled={sending ? !canStop : !canSend}
               size="icon"
-              className={`shrink-0 h-10 w-10 rounded-full transition-colors ${
+              className={cn(
+                "shrink-0 rounded-full transition-all duration-300",
                 (sending || canSend)
                   ? 'bg-black/5 dark:bg-white/10 text-foreground hover:bg-black/10 dark:hover:bg-white/20'
-                  : 'text-muted-foreground/50 hover:bg-transparent bg-transparent'
-              }`}
+                  : 'text-muted-foreground/50 hover:bg-transparent bg-transparent',
+                isExpanded ? "h-14 w-14" : "h-11 w-11"
+              )}
               variant="ghost"
               title={sending ? t('composer.stop') : t('composer.send')}
             >
               {sending ? (
-                <Square className="h-4 w-4" fill="currentColor" />
+                <Square className={cn("h-5 w-5", isExpanded && "h-6 w-6")} fill="currentColor" />
               ) : (
-                <SendHorizontal className="h-[18px] w-[18px]" strokeWidth={2} />
+                <SendHorizontal className={cn("h-5 w-5", isExpanded && "h-6 w-6")} strokeWidth={2} />
               )}
             </Button>
           </div>
-        </div>
-        <div className="mt-2.5 flex items-center justify-between gap-2 text-[11px] text-muted-foreground/60 px-4">
-          <div className="flex items-center gap-1.5">
-            <div className={cn("w-1.5 h-1.5 rounded-full", gatewayStatus.state === 'running' ? "bg-green-500/80" : "bg-red-500/80")} />
-            <span>
-              {t('composer.gatewayStatus', {
-                state: gatewayStatus.state === 'running'
-                  ? t('composer.gatewayConnected')
-                  : gatewayStatus.state,
-                port: gatewayStatus.port,
-                pid: gatewayStatus.pid ? `| pid: ${gatewayStatus.pid}` : '',
-              })}
-            </span>
-          </div>
-          {hasFailedAttachments && (
-            <Button
-              variant="link"
-              size="sm"
-              className="h-auto p-0 text-[11px]"
-              onClick={() => {
-                setAttachments((prev) => prev.filter((att) => att.status !== 'error'));
-                void pickFiles();
-              }}
-            >
-              {t('composer.retryFailedAttachments')}
-            </Button>
-          )}
         </div>
       </div>
     </div>

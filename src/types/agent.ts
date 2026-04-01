@@ -1,3 +1,14 @@
+export interface DigitalEmployee {
+  id: number;
+  userName: string;
+  nickName: string;
+  headImage: string;
+  openclawAgentId: string;
+  model?: string;
+  nodeId?: string;
+  deviceNodeId?: string;
+}
+
 export interface AgentSummary {
   id: string;
   name: string;
@@ -10,6 +21,7 @@ export interface AgentSummary {
   agentDir: string;
   mainSessionKey: string;
   channelTypes: string[];
+  digitalEmployee?: DigitalEmployee;
 }
 
 export interface AgentsSnapshot {

@@ -43,6 +43,7 @@
         "default": "当前默认",
         "setDefault": "设为频道默认账号",
         "bindAgentLabel": "绑定 Agent",
+        "bindEmployeeLabel": "绑定员工",
         "unassigned": "未绑定",
         "mainAccount": "主账号",
         "customIdLabel": "账号 ID",

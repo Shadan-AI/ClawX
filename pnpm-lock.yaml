@@ -7,6 +7,7 @@ settings:
 overrides:
   isbinaryfile: ^5.0.0
   https-proxy-agent: 7.0.6
+  '@slack/web-api': 7.15.0
 
 importers:
 

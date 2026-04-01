@@ -106,6 +106,46 @@ export function createSessionActions(
             },
           }));
 
+          (async () => {
+            const { useModelsStore } = await import('../models');
+            const modelsStore = useModelsStore.getState();
+            
+            const sessionModel = modelsStore.getSessionModel(nextSessionKey);
+            if (sessionModel && modelsStore.models.some(m => m.id === sessionModel)) {
+              useModelsStore.setState({ currentModelId: sessionModel });
+              return;
+            }
+            
+            const agentId = getAgentIdFromSessionKey(nextSessionKey);
+            const agentDefaultModel = modelsStore.getAgentDefaultModel(agentId);
+            if (agentDefaultModel && modelsStore.models.some(m => m.id === agentDefaultModel)) {
+              useModelsStore.setState({ currentModelId: agentDefaultModel });
+              return;
+            }
+            
+            try {
+              const result = await invokeIpc(
+                'gateway:rpc',
+                'sessions.get',
+                { key: nextSessionKey }
+              ) as { success: boolean; result?: Record<string, unknown> };
+              
+              if (result.success && result.result) {
+                const sessionData = result.result;
+                const model = sessionData.model as string | undefined;
+                if (model) {
+                  const modelId = model.replace(/^shadan\//, '');
+                  if (modelsStore.models.some(m => m.id === modelId)) {
+                    useModelsStore.setState({ currentModelId: modelId });
+                    modelsStore.setSessionModel(nextSessionKey, modelId);
+                  }
+                }
+              }
+            } catch (err) {
+              console.warn('[loadSessions] Failed to get session model:', err);
+            }
+          })();
+
           if (currentSessionKey !== nextSessionKey) {
             get().loadHistory();
           }
@@ -154,9 +194,6 @@ export function createSessionActions(
 
     switchSession: (key: string) => {
       const { currentSessionKey, messages, sessionLastActivity, sessionLabels } = get();
-      // 仅将没有任何历史记录且无活动时间的会话视为空会话。
-      // 单纯依赖 messages.length 是不可靠的，因为 switchSession 会在真正调用 loadHistory 前抢先清空当前 messages，
-      // 造成竞争条件，使得带有真实历史的会话被判定为空并从侧边栏移除。
       const leavingEmpty = !currentSessionKey.endsWith(':main')
         && messages.length === 0
         && !sessionLastActivity[currentSessionKey]
@@ -184,6 +221,46 @@ export function createSessionActions(
         } : {}),
       }));
       get().loadHistory();
+
+      (async () => {
+        const { useModelsStore } = await import('../models');
+        const modelsStore = useModelsStore.getState();
+        
+        const sessionModel = modelsStore.getSessionModel(key);
+        if (sessionModel && modelsStore.models.some(m => m.id === sessionModel)) {
+          useModelsStore.setState({ currentModelId: sessionModel });
+          return;
+        }
+        
+        const agentId = getAgentIdFromSessionKey(key);
+        const agentDefaultModel = modelsStore.getAgentDefaultModel(agentId);
+        if (agentDefaultModel && modelsStore.models.some(m => m.id === agentDefaultModel)) {
+          useModelsStore.setState({ currentModelId: agentDefaultModel });
+          return;
+        }
+        
+        try {
+          const result = await invokeIpc(
+            'gateway:rpc',
+            'sessions.get',
+            { key }
+          ) as { success: boolean; result?: Record<string, unknown> };
+          
+          if (result.success && result.result) {
+            const sessionData = result.result;
+            const model = sessionData.model as string | undefined;
+            if (model) {
+              const modelId = model.replace(/^shadan\//, '');
+              if (modelsStore.models.some(m => m.id === modelId)) {
+                useModelsStore.setState({ currentModelId: modelId });
+                modelsStore.setSessionModel(key, modelId);
+              }
+            }
+          }
+        } catch (err) {
+          console.warn('[switchSession] Failed to get session model:', err);
+        }
+      })();
     },
 
     // ── Delete session ──

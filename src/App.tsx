@@ -3,7 +3,7 @@
  * Handles routing and global providers
  */
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
-import { Component, useEffect } from 'react';
+import { Component, useEffect, useRef } from 'react';
 import type { ErrorInfo, ReactNode } from 'react';
 import { Toaster } from 'sonner';
 import i18n from './i18n';
@@ -22,6 +22,7 @@ import { Datasources } from './pages/Datasources';
 import { useSettingsStore } from './stores/settings';
 import { useGatewayStore } from './stores/gateway';
 import { useProviderStore } from './stores/providers';
+import { useModelsStore } from './stores/models';
 import { applyGatewayTransportPreference } from './lib/api-client';
 
 
@@ -89,6 +90,8 @@ class ErrorBoundary extends Component<
   }
 }
 
+const LOGIN_CHECK_INTERVAL = 5000;
+
 function App() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -99,45 +102,76 @@ function App() {
   const boxImGateComplete = useSettingsStore((state) => state.boxImGateComplete);
   const initGateway = useGatewayStore((state) => state.init);
   const initProviders = useProviderStore((state) => state.init);
+  const gatewayStatus = useGatewayStore((state) => state.status);
+  const isLoggedIn = useModelsStore((state) => state.isLoggedIn);
+  const checkLoginStatus = useModelsStore((state) => state.checkLoginStatus);
+  const checkIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     initSettings();
   }, [initSettings]);
 
-  // Sync i18n language with persisted settings on mount
   useEffect(() => {
     if (language && language !== i18n.language) {
       i18n.changeLanguage(language);
     }
   }, [language]);
 
-  // Initialize Gateway connection on mount
   useEffect(() => {
     initGateway();
   }, [initGateway]);
 
-  // Initialize provider snapshot on mount
   useEffect(() => {
     initProviders();
   }, [initProviders]);
 
-  // First-run: box-im gate → setup wizard → main app
+  useEffect(() => {
+    if (gatewayStatus.state !== 'running') return;
+    checkLoginStatus();
+  }, [gatewayStatus.state, checkLoginStatus]);
+
+  useEffect(() => {
+    if (gatewayStatus.state !== 'running') {
+      if (checkIntervalRef.current) {
+        clearInterval(checkIntervalRef.current);
+        checkIntervalRef.current = null;
+      }
+      return;
+    }
+
+    checkIntervalRef.current = setInterval(() => {
+      checkLoginStatus();
+    }, LOGIN_CHECK_INTERVAL);
+
+    return () => {
+      if (checkIntervalRef.current) {
+        clearInterval(checkIntervalRef.current);
+        checkIntervalRef.current = null;
+      }
+    };
+  }, [gatewayStatus.state, checkLoginStatus]);
+
   useEffect(() => {
     const path = location.pathname;
+    console.log('[App] route check: path=', path, 'setupComplete=', setupComplete, 'boxImGateComplete=', boxImGateComplete, 'isLoggedIn=', isLoggedIn);
     if (path.startsWith('/setup') || path === '/box-im-gate') {
       return;
     }
-    if (setupComplete) {
+    if (setupComplete && isLoggedIn === true) {
       return;
     }
     if (!boxImGateComplete) {
+      console.log('[App] navigating to /box-im-gate');
       navigate('/box-im-gate', { replace: true });
       return;
     }
-    navigate('/setup', { replace: true });
-  }, [setupComplete, boxImGateComplete, location.pathname, navigate]);
+    if (!setupComplete) {
+      console.log('[App] navigating to /setup');
+      navigate('/setup', { replace: true });
+      return;
+    }
+  }, [setupComplete, boxImGateComplete, isLoggedIn, location.pathname, navigate]);
 
-  // Listen for navigation events from main process
   useEffect(() => {
     const handleNavigate = (...args: unknown[]) => {
       const path = args[0];
@@ -155,7 +189,6 @@ function App() {
     };
   }, [navigate]);
 
-  // Apply theme
   useEffect(() => {
     const root = window.document.documentElement;
     root.classList.remove('light', 'dark');

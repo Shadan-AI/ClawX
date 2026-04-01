@@ -4,7 +4,7 @@
  * via gateway:rpc IPC. Session selector, thinking toggle, and refresh
  * are in the toolbar; messages render with markdown + streaming.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback, useLayoutEffect } from 'react';
 import { AlertCircle, Loader2, Sparkles } from 'lucide-react';
 import { useChatStore, type RawMessage } from '@/stores/chat';
 import { useGatewayStore } from '@/stores/gateway';
@@ -12,7 +12,6 @@ import { useAgentsStore } from '@/stores/agents';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 import { ChatMessage } from './ChatMessage';
 import { ChatInput } from './ChatInput';
-import { ChatToolbar } from './ChatToolbar';
 import { extractImages, extractText, extractThinking, extractToolUse } from './message-utils';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
@@ -43,6 +42,46 @@ export function Chat() {
   const [streamingTimestamp, setStreamingTimestamp] = useState<number>(0);
   const minLoading = useMinLoading(loading && messages.length > 0);
   const { contentRef, scrollRef } = useStickToBottomInstant(currentSessionKey);
+
+  const [isAtBottom, setIsAtBottom] = useState(true);
+  const [isInputFocused, setIsInputFocused] = useState(false);
+  const isInputExpanded = isAtBottom;
+
+  const scrollToBottom = useCallback(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [scrollRef]);
+
+  useEffect(() => {
+    if (isInputFocused) {
+      scrollToBottom();
+    }
+  }, [isInputFocused, scrollToBottom]);
+
+  const handleScroll = useCallback(() => {
+    if (scrollRef.current) {
+      const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
+      const isBottom = scrollHeight - scrollTop - clientHeight < 100;
+      setIsAtBottom(isBottom);
+    }
+  }, [scrollRef]);
+
+  useEffect(() => {
+    const scrollElement = scrollRef.current;
+    if (scrollElement) {
+      scrollElement.addEventListener('scroll', handleScroll);
+      return () => scrollElement.removeEventListener('scroll', handleScroll);
+    }
+  }, [handleScroll, scrollRef]);
+
+  useLayoutEffect(() => {
+    if (scrollRef.current) {
+      const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
+      const isBottom = scrollHeight - scrollTop - clientHeight < 100;
+      setIsAtBottom(isBottom);
+    }
+  }, [currentSessionKey, scrollRef]);
 
   // Load data when gateway is running.
   // When the store already holds messages for this session (i.e. the user
@@ -92,13 +131,8 @@ export function Chat() {
 
   return (
     <div className={cn("relative flex flex-col -m-6 transition-colors duration-500 dark:bg-background")} style={{ height: 'calc(100vh - 2.5rem)' }}>
-      {/* Toolbar */}
-      <div className="flex shrink-0 items-center justify-end px-4 py-2">
-        <ChatToolbar />
-      </div>
-
       {/* Messages Area */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-4">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-4 pb-40">
         <div ref={contentRef} className="max-w-4xl mx-auto space-y-4">
           {isEmpty ? (
             <WelcomeScreen />
@@ -165,14 +199,19 @@ export function Chat() {
         </div>
       )}
 
-      {/* Input Area */}
-      <ChatInput
-        onSend={sendMessage}
-        onStop={abortRun}
-        disabled={!isGatewayRunning}
-        sending={sending}
-        isEmpty={isEmpty}
-      />
+      {/* Input Area - Floating */}
+      <div className="absolute bottom-0 left-0 right-0 z-10 pointer-events-none">
+        <div className="pointer-events-auto">
+          <ChatInput
+            onSend={sendMessage}
+            onStop={abortRun}
+            disabled={!isGatewayRunning}
+            sending={sending}
+            isExpanded={isInputExpanded}
+            onFocusChange={setIsInputFocused}
+          />
+        </div>
+      </div>
 
       {/* Transparent loading overlay */}
       {minLoading && !sending && (

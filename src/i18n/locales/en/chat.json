@@ -15,7 +15,8 @@
         "refresh": "Refresh chat",
         "showThinking": "Show thinking",
         "hideThinking": "Hide thinking",
-        "currentAgent": "Talking to {{agent}}"
+        "currentAgent": "Talking to {{agent}}",
+        "selectModel": "Select model"
     },
     "composer": {
         "attachFiles": "Attach files",
