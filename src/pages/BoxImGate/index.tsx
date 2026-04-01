@@ -322,7 +322,7 @@ export function BoxImGate() {
         <div className="mx-auto max-w-md p-8 pt-16">
           <div className="text-center mb-8">
             <div className="mb-4 flex justify-center">
-              <img src={clawxIcon} alt="ClawX" className="h-16 w-16" />
+              <img src={clawxIcon} alt="OpenMe" className="h-16 w-16" />
             </div>
             <h1 className="text-2xl font-semibold mb-2">{t('title')}</h1>
             <p className="text-muted-foreground">{t('subtitle')}</p>

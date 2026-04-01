@@ -5,6 +5,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
+import { AlertTriangle } from 'lucide-react';
 
 interface ConfirmDialogProps {
   open: boolean;
@@ -33,7 +34,6 @@ export function ConfirmDialog({
   const [confirming, setConfirming] = useState(false);
   const [prevOpen, setPrevOpen] = useState(open);
 
-  // Reset confirming when dialog closes (during render to avoid setState-in-effect)
   if (prevOpen !== open) {
     setPrevOpen(open);
     if (!open) {
@@ -71,9 +71,11 @@ export function ConfirmDialog({
     }
   };
 
+  const isDestructive = variant === 'destructive';
+
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm animate-in fade-in-0 duration-150"
       role="dialog"
       aria-modal="true"
       aria-labelledby="confirm-dialog-title"
@@ -81,28 +83,40 @@ export function ConfirmDialog({
     >
       <div
         className={cn(
-          'mx-4 max-w-md rounded-lg border bg-card p-6 shadow-lg',
+          'mx-4 w-full max-w-sm rounded-2xl border p-6 shadow-xl',
+          'border-black/10 dark:border-white/10',
+          'bg-[#f3f1e9] dark:bg-card',
+          'animate-in zoom-in-95 fade-in-0 duration-200',
           'focus:outline-none'
         )}
         tabIndex={-1}
       >
-        <h2 id="confirm-dialog-title" className="text-lg font-semibold">
+        {isDestructive && (
+          <div className="flex items-center justify-center mb-4">
+            <div className="h-10 w-10 rounded-full bg-destructive/10 flex items-center justify-center">
+              <AlertTriangle className="h-5 w-5 text-destructive" />
+            </div>
+          </div>
+        )}
+        <h2 id="confirm-dialog-title" className={cn("font-semibold text-foreground", isDestructive ? "text-center text-lg" : "text-lg")}>
           {title}
         </h2>
-        <p className="mt-2 text-sm text-muted-foreground">{message}</p>
-        <div className="mt-6 flex justify-end gap-2">
+        <p className={cn("mt-2 text-sm text-muted-foreground leading-relaxed", isDestructive && "text-center")}>{message}</p>
+        <div className={cn("mt-6 flex gap-2", isDestructive ? "justify-center" : "justify-end")}>
           <Button
             ref={cancelRef}
             variant="outline"
             onClick={onCancel}
             disabled={confirming}
+            className="h-9 text-[13px] font-medium rounded-full px-5 border-black/10 dark:border-white/10 bg-transparent hover:bg-black/5 dark:hover:bg-white/5 shadow-none"
           >
             {cancelLabel}
           </Button>
           <Button
-            variant={variant === 'destructive' ? 'destructive' : 'default'}
+            variant={isDestructive ? 'destructive' : 'default'}
             onClick={handleConfirm}
             disabled={confirming}
+            className="h-9 text-[13px] font-medium rounded-full px-5 shadow-none active:scale-95 transition-all"
           >
             {confirmLabel}
           </Button>

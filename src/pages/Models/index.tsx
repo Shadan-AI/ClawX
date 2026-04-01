@@ -223,15 +223,15 @@ export function Models() {
           <div className="mb-8 grid grid-cols-3 gap-4 shrink-0">
             <div className="rounded-2xl border border-black/10 dark:border-white/10 p-4 bg-gradient-to-br from-blue-500/5 to-transparent">
               <p className="text-[12px] text-muted-foreground mb-1">总额度</p>
-              <p className="text-2xl font-semibold text-foreground">${quota.totalQuota.toFixed(2)}</p>
+              <p className="text-2xl font-semibold text-foreground">${(quota.totalQuota ?? 0).toFixed(2)}</p>
             </div>
             <div className="rounded-2xl border border-black/10 dark:border-white/10 p-4 bg-gradient-to-br from-amber-500/5 to-transparent">
               <p className="text-[12px] text-muted-foreground mb-1">已使用</p>
-              <p className="text-2xl font-semibold text-foreground">${quota.usedQuota.toFixed(2)}</p>
+              <p className="text-2xl font-semibold text-foreground">${(quota.usedQuota ?? 0).toFixed(2)}</p>
             </div>
             <div className="rounded-2xl border border-black/10 dark:border-white/10 p-4 bg-gradient-to-br from-green-500/5 to-transparent">
               <p className="text-[12px] text-muted-foreground mb-1">剩余</p>
-              <p className="text-2xl font-semibold text-foreground">${quota.remainQuota.toFixed(2)}</p>
+              <p className="text-2xl font-semibold text-foreground">${(quota.remainQuota ?? 0).toFixed(2)}</p>
             </div>
           </div>
         )}

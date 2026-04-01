@@ -57,7 +57,7 @@ export function createTray(mainWindow: BrowserWindow): Tray {
   tray = new Tray(icon);
   
   // Set tooltip
-  tray.setToolTip('ClawX - AI Assistant');
+  tray.setToolTip('OpenMe - AI Assistant');
   
   const showWindow = () => {
     if (mainWindow.isDestroyed()) return;

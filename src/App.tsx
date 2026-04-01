@@ -161,8 +161,8 @@ function App() {
     if (setupComplete && isLoggedIn === true) {
       return;
     }
-    if (!boxImGateComplete) {
-      console.log('[App] navigating to /box-im-gate');
+    if (!boxImGateComplete || isLoggedIn === false) {
+      console.log('[App] navigating to /box-im-gate (not logged in)');
       navigate('/box-im-gate', { replace: true });
       return;
     }

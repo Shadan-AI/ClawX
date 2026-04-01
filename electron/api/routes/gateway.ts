@@ -208,6 +208,28 @@ export async function handleGatewayRoutes(
     return true;
   }
 
+  // ── Box-IM delete bot ────────────────────────────────────────
+
+  if (url.pathname.startsWith('/plugins/box-im/bots/') && req.method === 'DELETE') {
+    try {
+      const { tokenKey, apiUrl } = await getBoxImConfig();
+      if (!tokenKey) { sendJson(res, 401, { error: '未绑定用户' }); return true; }
+      const agentId = url.pathname.split('/').pop();
+      if (!agentId) { sendJson(res, 400, { error: 'missing agentId' }); return true; }
+      const resp = await fetch(`${apiUrl}/bot/${agentId}`, {
+        method: 'DELETE',
+        headers: { 'Token-Key': tokenKey },
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!resp.ok) throw new Error(`delete error: ${resp.status}`);
+      const result = await resp.json() as any;
+      if (result.code !== 200) throw new Error(result.message || 'delete failed');
+      sendJson(res, 200, { success: true });
+    } catch (error) {
+      sendJson(res, 500, { success: false, error: String(error) });
+    }
+    return true;
+  }
   // ── Generic plugin proxy ─────────────────────────────────────
 
   if (url.pathname.startsWith('/plugins/')) {

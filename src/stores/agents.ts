@@ -188,11 +188,20 @@ export const useAgentsStore = create<AgentsState>((set, get) => ({
   deleteAgent: async (agentId: string) => {
     set({ error: null });
     try {
+      // Delete bot from ai-im platform
+      try {
+        await hostApiFetch(`/plugins/box-im/bots/${encodeURIComponent(agentId)}`, { method: 'DELETE' });
+      } catch { /* best-effort */ }
+
+      // Delete local agent
       const snapshot = await hostApiFetch<AgentsSnapshot>(
         `/api/agents/${encodeURIComponent(agentId)}`,
         { method: 'DELETE' },
       );
       set(applySnapshot(snapshot, get().digitalEmployees));
+
+      // Re-sync to clean up
+      await get().fetchAgents();
     } catch (error) {
       set({ error: String(error) });
       throw error;
