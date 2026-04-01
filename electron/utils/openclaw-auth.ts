@@ -1369,6 +1369,21 @@ export async function sanitizeOpenClawConfig(): Promise<void> {
     const config: Record<string, unknown> = rawConfig;
     let modified = false;
 
+    // ClawX host API 曾写入根键 enabledChannels；当前 OpenClaw schema 不识别，会导致 Gateway 拒绝启动。
+    if ('enabledChannels' in config) {
+      console.log('[sanitize] Removing unrecognized root key "enabledChannels" from openclaw.json');
+      delete config.enabledChannels;
+      modified = true;
+    }
+
+    // channels.* 只能是各频道配置；曾误把 plugins.entries 写进 channels 导致 key "entries" 被当成频道 id。
+    const channelsSan = config.channels;
+    if (channelsSan && typeof channelsSan === 'object' && !Array.isArray(channelsSan) && 'entries' in channelsSan) {
+      console.log('[sanitize] Removing mistaken channels.entries (not a channel id) from openclaw.json');
+      delete (channelsSan as Record<string, unknown>).entries;
+      modified = true;
+    }
+
     // ── skills section ──────────────────────────────────────────────
     // OpenClaw's Zod schema uses .strict() on the skills object, accepting
     // only: allowBundled, load, install, limits, entries.

@@ -36,7 +36,7 @@
         "init": "pnpm install && pnpm run uv:download",
         "predev": "zx scripts/prepare-preinstalled-skills-dev.mjs",
         "dev": "vite",
-        "build": "vite build && zx scripts/bundle-openclaw.mjs && zx scripts/bundle-openclaw-plugins.mjs && zx scripts/bundle-box-im.mjs && zx scripts/bundle-preinstalled-skills.mjs && zx scripts/copy-openclaw-default-config.mjs && zx scripts/copy-mkcert.mjs && electron-builder",
+        "build": "vite build && zx scripts/bundle-openclaw.mjs && zx scripts/bundle-openclaw-plugins.mjs && zx scripts/bundle-box-im.mjs && zx scripts/bundle-preinstalled-skills.mjs && zx scripts/copy-openclaw-default-config.mjs && zx scripts/copy-mkcert.mjs",
         "build:vite": "vite build",
         "bundle:openclaw-plugins": "zx scripts/bundle-openclaw-plugins.mjs",
         "bundle:preinstalled-skills": "zx scripts/bundle-preinstalled-skills.mjs",

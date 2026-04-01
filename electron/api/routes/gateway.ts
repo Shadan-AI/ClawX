@@ -141,21 +141,25 @@ async function saveBoxImAccountsAndSyncAgents(accounts: Record<string, any>): Pr
       accounts,
     };
     
-    // 确保 channels.box-im 在 enabledChannels 中
-    const enabledChannels = (cfg.enabledChannels as string[]) ?? [];
-    if (!enabledChannels.includes('box-im')) {
-      enabledChannels.push('box-im');
+    // channels.* 只能是各频道配置；启用插件在 plugins.entries.*（勿把 entries 写在 channels 下，否则会被当成频道 id "entries"）
+    const ch = { ...(channels ?? {}) } as Record<string, unknown>;
+    delete ch.entries;
+    ch['box-im'] = updatedBoxIm;
+    cfg.channels = ch;
+
+    const plugins = (cfg.plugins as Record<string, unknown>) ?? {};
+    const pluginEntries = {
+      ...((plugins.entries as Record<string, unknown>) ?? {}),
+      'box-im': { enabled: true },
+    };
+    const allow = Array.isArray(plugins.allow) ? [...(plugins.allow as string[])] : [];
+    if (!allow.includes('box-im')) {
+      allow.push('box-im');
     }
-    
-    // 确保 channels.entries.box-im.enabled = true
-    const entries = (cfg.channels as Record<string, unknown>)?.entries as Record<string, unknown> ?? {};
-    entries['box-im'] = { enabled: true };
-    
-    // 写入配置
-    cfg.channels = {
-      ...(channels ?? {}),
-      'box-im': updatedBoxIm,
-      entries,
+    cfg.plugins = {
+      ...plugins,
+      allow,
+      entries: pluginEntries,
     };
     
     cfg.agents = {
@@ -164,8 +168,8 @@ async function saveBoxImAccountsAndSyncAgents(accounts: Record<string, any>): Pr
     };
     
     cfg.bindings = newBindings;
-    cfg.enabledChannels = enabledChannels;
-    
+    delete cfg.enabledChannels;
+
     await writeFile(configPath, JSON.stringify(cfg, null, 2), 'utf-8');
     console.log('[box-im] Saved accounts, agents, bindings successfully');
   } catch (err) {
