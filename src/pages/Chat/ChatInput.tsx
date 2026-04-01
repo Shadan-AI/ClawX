@@ -16,6 +16,7 @@ import { cn } from '@/lib/utils';
 import { useAgentsStore } from '@/stores/agents';
 import { useChatStore } from '@/stores/chat';
 import { useModelsStore } from '@/stores/models';
+import { useProviderStore } from '@/stores/providers';
 import type { AgentSummary } from '@/types/agent';
 import { useTranslation } from 'react-i18next';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -116,7 +117,37 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
   const models = useModelsStore((s) => s.models);
   const currentModelId = useModelsStore((s) => s.currentModelId);
   const setCurrentModel = useModelsStore((s) => s.setCurrentModel);
-  const currentModel = models.find((m) => m.id === currentModelId);
+
+  // Gateway mode: derive model list from provider accounts when box-im models are unavailable
+  const providerAccounts = useProviderStore((s) => s.accounts);
+  const currentSessionKey = useChatStore((s) => s.currentSessionKey);
+  const gatewayModels = useMemo(() => {
+    if (models.length > 0) return [];
+    return providerAccounts
+      .filter((a) => a.enabled && a.model)
+      .map((a) => ({ id: a.model as string, name: a.label ? `${a.label} (${a.model})` : a.model as string, accountId: a.id }));
+  }, [models.length, providerAccounts]);
+
+  const [gatewayCurrentModelId, setGatewayCurrentModelId] = useState<string | null>(null);
+  const effectiveModels = models.length > 0 ? models : gatewayModels;
+  const effectiveCurrentModelId = models.length > 0 ? currentModelId : (gatewayCurrentModelId ?? gatewayModels[0]?.id ?? null);
+  const effectiveCurrentModel = effectiveModels.find((m) => m.id === effectiveCurrentModelId);
+
+  const handleSetModel = useCallback(async (modelId: string) => {
+    if (models.length > 0) {
+      setCurrentModel(modelId);
+    } else {
+      setGatewayCurrentModelId(modelId);
+      try {
+        await invokeIpc('gateway:rpc', 'sessions.patch', {
+          key: currentSessionKey,
+          model: modelId,
+        });
+      } catch (err) {
+        console.error('[ChatInput] Failed to patch gateway session model:', err);
+      }
+    }
+  }, [models.length, setCurrentModel, currentSessionKey]);
 
   const refresh = useChatStore((s) => s.refresh);
   const loading = useChatStore((s) => s.loading);
@@ -590,7 +621,7 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
               />
             </div>
 
-            {models.length > 0 && isExpanded && (
+            {effectiveModels.length > 0 && isExpanded && (
               <div ref={modelMenuRef} className="relative shrink-0 self-end pb-1">
                 <button
                   type="button"
@@ -605,7 +636,7 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                   )}
                 >
                   <span className="truncate max-w-[100px]">
-                    {currentModel?.name || currentModelId || t('selectModel')}
+                    {effectiveCurrentModel?.name || effectiveCurrentModelId || t('selectModel')}
                   </span>
                   <ChevronDown className={cn('h-3.5 w-3.5 text-muted-foreground shrink-0 transition-transform duration-200', modelMenuOpen && 'rotate-180')} />
                 </button>
@@ -619,8 +650,8 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                       'max-h-48 overflow-auto py-1'
                     )}
                   >
-                    {models.map((model) => {
-                      const isSelected = model.id === currentModelId;
+                    {effectiveModels.map((model) => {
+                      const isSelected = model.id === effectiveCurrentModelId;
                       return (
                         <button
                           key={model.id}
@@ -628,7 +659,7 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                           role="option"
                           aria-selected={isSelected}
                           onClick={() => {
-                            setCurrentModel(model.id);
+                            handleSetModel(model.id);
                             setModelMenuOpen(false);
                           }}
                           className={cn(
