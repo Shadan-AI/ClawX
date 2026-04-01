@@ -9,6 +9,7 @@ import { AlertCircle, Loader2, Sparkles } from 'lucide-react';
 import { useChatStore, type RawMessage } from '@/stores/chat';
 import { useGatewayStore } from '@/stores/gateway';
 import { useAgentsStore } from '@/stores/agents';
+import { useModelsStore } from '@/stores/models';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 import { ChatMessage } from './ChatMessage';
 import { ChatInput } from './ChatInput';
@@ -100,6 +101,13 @@ export function Chat() {
     void fetchAgents();
   }, [fetchAgents]);
 
+
+  // Sync model display when session changes (agent switch / session switch)
+  useEffect(() => {
+    if (currentSessionKey) {
+      void useModelsStore.getState().ensureSessionModel(currentSessionKey);
+    }
+  }, [currentSessionKey]);
   // Update timestamp when sending starts
   useEffect(() => {
     if (sending && streamingTimestamp === 0) {

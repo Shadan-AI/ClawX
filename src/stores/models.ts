@@ -177,7 +177,7 @@ export const useModelsStore = create<ModelState>((set, get) => ({
   },
 
   ensureSessionModel: async (sessionKey: string) => {
-    const { currentModelId, models, digitalEmployees, sessionModels } = get();
+    const { models, digitalEmployees, sessionModels } = get();
     if (models.length === 0) return;
 
     const agentId = getAgentIdFromSessionKey(sessionKey);
@@ -192,7 +192,7 @@ export const useModelsStore = create<ModelState>((set, get) => ({
     }
     
     if (!modelId) {
-      modelId = currentModelId || models.find(m => m.id === 'glm-5')?.id || models[0]?.id;
+      modelId = models.find(m => m.id === 'glm-5')?.id || models[0]?.id;
     }
 
     if (modelId && models.some(m => m.id === modelId)) {
@@ -231,6 +231,12 @@ export const useModelsStore = create<ModelState>((set, get) => ({
       
       const { useSettingsStore } = await import('./settings');
       useSettingsStore.getState().resetBoxImGateComplete();
+
+      // Restart gateway so new user gets fresh sessions
+      const { useGatewayStore } = await import('./gateway');
+      try {
+        await useGatewayStore.getState().restart();
+      } catch { /* best-effort */ }
       
       console.log('[models] reloading...');
       window.location.reload();

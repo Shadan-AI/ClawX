@@ -70,5 +70,13 @@
         "channelAssignFailed": "Failed to assign channel: {{error}}",
         "channelRemoved": "{{channel}} removed",
         "channelRemoveFailed": "Failed to remove channel: {{error}}"
-    }
+    },
+    "syncRemote": "Sync Remote",
+    "syncing": "Syncing...",
+    "createDialog.nickNameLabel": "Nickname",
+    "createDialog.nickNamePlaceholder": "e.g. Customer Service Bot",
+    "createDialog.headImageLabel": "Avatar URL",
+    "createDialog.headImagePlaceholder": "Optional, leave empty for default",
+    "createDialog.modelLabel": "Model",
+    "createDialog.modelPlaceholder": "Select model"
 }

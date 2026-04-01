@@ -69,6 +69,7 @@ interface Binding {
 export async function getBoxImConfig(): Promise<{
   tokenKey: string | null;
   apiUrl: string;
+  ownerUserId: number | null;
   accounts: Record<string, BoxImAccount>;
 }> {
   try {
@@ -79,11 +80,12 @@ export async function getBoxImConfig(): Promise<{
       ? ownerAuth.tokenKey : null;
     const apiUrl = typeof boxIm.apiUrl === 'string' && boxIm.apiUrl.length > 0
       ? boxIm.apiUrl : DEFAULT_API_URL;
+    const ownerUserId = typeof ownerAuth.userId === 'number' ? ownerAuth.userId : null;
     const accounts = (boxIm.accounts ?? {}) as Record<string, BoxImAccount>;
-    return { tokenKey, apiUrl, accounts };
+    return { tokenKey, apiUrl, ownerUserId, accounts };
   } catch (err) {
     logger.error('[box-im] Failed to read config:', err);
-    return { tokenKey: null, apiUrl: DEFAULT_API_URL, accounts: {} };
+    return { tokenKey: null, apiUrl: DEFAULT_API_URL, ownerUserId: null, accounts: {} };
   }
 }
 
@@ -134,8 +136,21 @@ export async function logoutBoxIm(): Promise<void> {
   models.providers = providers;
   (cfg as any).models = models;
 
+  // Clear box-im agents (keep only system agents like dev)
+  const agents = ((cfg as any).agents ?? {}) as Record<string, unknown>;
+  const oldList = (agents.list ?? []) as Array<Record<string, unknown>>;
+  agents.list = oldList.filter(a => SYSTEM_AGENTS.has(a.id as string));
+  (cfg as any).agents = agents;
+
+  // Clear box-im bindings
+  const oldBindings = ((cfg as any).bindings ?? []) as Array<Record<string, unknown>>;
+  (cfg as any).bindings = oldBindings.filter(b => {
+    const match = b.match as Record<string, unknown> | undefined;
+    return match?.channel !== CHANNEL_ID;
+  });
+
   await writeOpenClawConfig(cfg);
-  logger.info('[box-im] Logged out, cleared ownerAuth, accounts, and shadan provider');
+  logger.info('[box-im] Logged out, cleared ownerAuth, accounts, agents, bindings, and shadan provider');
 }
 
 // ── API ──────────────────────────────────────────────────────────
@@ -191,19 +206,24 @@ function reconcileAgents(
 
   const result: AgentEntry[] = [];
 
-  // System agents first
+  // System agents first — preserve if they exist
   for (const id of SYSTEM_AGENTS) {
     const existing = keep.get(id);
     if (existing) result.push(existing);
   }
 
-  // Bot agents
+  // Bot agents (including 'main' if it has an account but no agent entry)
   for (const [agentId, acct] of Object.entries(accounts)) {
-    if (SYSTEM_AGENTS.has(agentId)) continue;
+    if (agentId !== 'main' && SYSTEM_AGENTS.has(agentId)) continue;
     const existing = keep.get(agentId);
     if (existing) {
-      existing.name = acct.botName || agentId;
-      result.push(existing);
+      // Already added as system agent, just update name
+      if (SYSTEM_AGENTS.has(agentId)) {
+        existing.name = existing.name || acct.botName || agentId;
+      } else {
+        existing.name = acct.botName || agentId;
+        result.push(existing);
+      }
     } else {
       const home = process.env.HOME || process.env.USERPROFILE || '';
       result.push({
@@ -277,7 +297,50 @@ export async function syncBots(): Promise<BoxImSyncResult> {
   try {
     const bots = await fetchBotsFromApi(apiUrl, tokenKey);
     const newAccounts = buildAccountsFromBots(bots, accounts);
+
+    // Refresh accessToken for bots that don't have one (needed for WS connection)
+    for (const [agentId, acct] of Object.entries(newAccounts)) {
+      if (!acct.accessToken) {
+        try {
+          const resp = await fetch(`${apiUrl}/bot/token/${agentId}`, {
+            method: 'POST',
+            headers: { 'Token-Key': tokenKey },
+            signal: AbortSignal.timeout(5000),
+          });
+          if (resp.ok) {
+            const result = await resp.json() as any;
+            if (result.code === 200 && result.data?.accessToken) {
+              acct.accessToken = result.data.accessToken;
+              acct.userId = result.data.id;
+            }
+          }
+        } catch { /* best-effort */ }
+      }
+    }
+
     await saveBoxImAccounts(newAccounts);
+
+    // Ensure all bots are friends with owner (only add missing ones)
+    try {
+      const friendResp = await fetch(`${apiUrl}/friend/list`, {
+        headers: { 'Token-Key': tokenKey },
+        signal: AbortSignal.timeout(5000),
+      });
+      const friendData = friendResp.ok ? await friendResp.json() as any : null;
+      const friendIds = new Set((friendData?.data ?? []).map((f: any) => f.id));
+      for (const bot of bots) {
+        if (!friendIds.has(bot.id)) {
+          try {
+            await fetch(`${apiUrl}/friend/add?friendId=${bot.id}`, {
+              method: 'POST',
+              headers: { 'Token-Key': tokenKey },
+              signal: AbortSignal.timeout(3000),
+            });
+          } catch { /* ignore */ }
+        }
+      }
+    } catch { /* ignore friend sync errors */ }
+
     logger.info(`[box-im] Synced ${bots.length} bots from API`);
     return { bots };
   } catch (err: any) {

@@ -70,5 +70,13 @@
         "channelAssignFailed": "分配频道失败：{{error}}",
         "channelRemoved": "{{channel}} 已移除",
         "channelRemoveFailed": "移除频道失败：{{error}}"
-    }
+    },
+    "syncRemote": "同步远程",
+    "syncing": "同步中...",
+    "createDialog.nickNameLabel": "昵称",
+    "createDialog.nickNamePlaceholder": "如: 客服小助手",
+    "createDialog.headImageLabel": "头像URL",
+    "createDialog.headImagePlaceholder": "可选，留空使用默认头像",
+    "createDialog.modelLabel": "模型",
+    "createDialog.modelPlaceholder": "选择模型"
 }

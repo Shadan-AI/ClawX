@@ -134,6 +134,55 @@ export async function handleGatewayRoutes(
     return true;
   }
 
+  if (url.pathname === '/plugins/box-im/bots' && req.method === 'POST') {
+    try {
+      const { tokenKey, apiUrl } = await getBoxImConfig();
+      if (!tokenKey) {
+        sendJson(res, 401, { error: '未绑定用户' });
+        return true;
+      }
+      const body = await parseJsonBody<{ nickName?: string; headImage?: string; model?: string }>(req);
+      const agentId = 'bot-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+      const registerBody: Record<string, string> = {
+        agentId,
+        nickName: body.nickName || '新数字员工',
+        headImage: body.headImage || '',
+      };
+      if (body.model) registerBody.model = body.model;
+      // Read nodeId from ownerAuth
+      const cfg = await (await import('../../utils/channel-config')).readOpenClawConfig();
+      const ownerAuth = (cfg.channels?.['box-im'] as any)?.ownerAuth;
+      if (ownerAuth?.nodeId) registerBody.nodeId = ownerAuth.nodeId;
+
+      const resp = await fetch(`${apiUrl}/bot/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Token-Key': tokenKey },
+        body: JSON.stringify(registerBody),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!resp.ok) throw new Error(`register error: ${resp.status}`);
+      const result = await resp.json() as any;
+      if (result.code !== 200) throw new Error(result.message || 'register failed');
+
+      // Auto-add bot as owner's friend so they can chat immediately
+      const botUserId = result.data?.id;
+      if (botUserId) {
+        try {
+          await fetch(`${apiUrl}/friend/add?friendId=${botUserId}`, {
+            method: 'POST',
+            headers: { 'Token-Key': tokenKey },
+            signal: AbortSignal.timeout(5000),
+          });
+        } catch { /* best-effort */ }
+      }
+
+      sendJson(res, 200, { success: true, data: result.data });
+    } catch (error) {
+      sendJson(res, 500, { success: false, error: String(error) });
+    }
+    return true;
+  }
+
   // ── Generic plugin proxy ─────────────────────────────────────
 
   if (url.pathname.startsWith('/plugins/')) {

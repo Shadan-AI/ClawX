@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, Bot, Check, Plus, RefreshCw, Settings2, Trash2, X } from 'lucide-react';
+import { AlertCircle, Bot, Check, Loader2, Plus, RefreshCw, Settings2, Trash2, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -9,6 +9,7 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { Switch } from '@/components/ui/switch';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 import { useAgentsStore } from '@/stores/agents';
+import { useModelsStore } from '@/stores/models';
 import { useGatewayStore } from '@/stores/gateway';
 import { useProviderStore } from '@/stores/providers';
 import { hostApiFetch } from '@/lib/host-api';
@@ -100,8 +101,10 @@ export function Agents() {
   const {
     agents,
     loading,
+    syncing,
     error,
     fetchAgents,
+    syncFromRemote,
     createAgent,
     deleteAgent,
   } = useAgentsStore();
@@ -185,6 +188,15 @@ export function Agents() {
               {t('refresh')}
             </Button>
             <Button
+              variant="outline"
+              onClick={() => void syncFromRemote()}
+              disabled={syncing}
+              className="h-9 text-[13px] font-medium rounded-full px-4 border-black/10 dark:border-white/10 bg-transparent hover:bg-black/5 dark:hover:bg-white/5 shadow-none text-foreground/80 hover:text-foreground transition-colors"
+            >
+              {syncing ? <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5 mr-2" />}
+              {syncing ? t('syncing') : t('syncRemote')}
+            </Button>
+            <Button
               onClick={() => setShowAddDialog(true)}
               className="h-9 text-[13px] font-medium rounded-full px-4 shadow-none"
             >
@@ -195,7 +207,7 @@ export function Agents() {
         </div>
 
         <div className="flex-1 overflow-y-auto pr-2 pb-10 min-h-0 -mr-2">
-          {gatewayStatus.state !== 'running' && (
+          {gatewayStatus.state !== 'running' && gatewayStatus.state !== 'starting' && (
             <div className="mb-8 p-4 rounded-xl border border-yellow-500/50 bg-yellow-500/10 flex items-center gap-3">
               <AlertCircle className="h-5 w-5 text-yellow-600 dark:text-yellow-400" />
               <span className="text-yellow-700 dark:text-yellow-400 text-sm font-medium">
@@ -408,18 +420,20 @@ function AddAgentDialog({
   onCreate,
 }: {
   onClose: () => void;
-  onCreate: (name: string, options: { inheritWorkspace: boolean }) => Promise<void>;
+  onCreate: (name: string, options: { headImage?: string; model?: string }) => Promise<void>;
 }) {
   const { t } = useTranslation('agents');
-  const [name, setName] = useState('');
-  const [inheritWorkspace, setInheritWorkspace] = useState(false);
+  const models = useModelsStore((s) => s.models);
+  const [nickName, setNickName] = useState('');
+  const [headImage, setHeadImage] = useState('');
+  const [model, setModel] = useState('');
   const [saving, setSaving] = useState(false);
 
   const handleSubmit = async () => {
-    if (!name.trim()) return;
+    if (!nickName.trim()) return;
     setSaving(true);
     try {
-      await onCreate(name.trim(), { inheritWorkspace });
+      await onCreate(nickName.trim(), { headImage: headImage.trim() || undefined, model: model || undefined });
     } catch (error) {
       toast.error(t('toast.agentCreateFailed', { error: String(error) }));
       setSaving(false);
@@ -439,29 +453,42 @@ function AddAgentDialog({
             {t('createDialog.description')}
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-6 pt-4 p-6">
-          <div className="space-y-2.5">
-            <Label htmlFor="agent-name" className={labelClasses}>{t('createDialog.nameLabel')}</Label>
+        <CardContent className="space-y-5 pt-4 p-6">
+          <div className="space-y-2">
+            <Label htmlFor="agent-nickname" className={labelClasses}>{t('createDialog.nickNameLabel')}</Label>
             <Input
-              id="agent-name"
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              placeholder={t('createDialog.namePlaceholder')}
+              id="agent-nickname"
+              value={nickName}
+              onChange={(e) => setNickName(e.target.value)}
+              placeholder={t('createDialog.nickNamePlaceholder')}
               className={inputClasses}
             />
           </div>
-          <div className="flex items-center justify-between">
-            <div className="space-y-0.5">
-              <Label htmlFor="inherit-workspace" className={labelClasses}>{t('createDialog.inheritWorkspaceLabel')}</Label>
-              <p className="text-[13px] text-foreground/60">{t('createDialog.inheritWorkspaceDescription')}</p>
-            </div>
-            <Switch
-              id="inherit-workspace"
-              checked={inheritWorkspace}
-              onCheckedChange={setInheritWorkspace}
+          <div className="space-y-2">
+            <Label htmlFor="agent-avatar" className={labelClasses}>{t('createDialog.headImageLabel')}</Label>
+            <Input
+              id="agent-avatar"
+              value={headImage}
+              onChange={(e) => setHeadImage(e.target.value)}
+              placeholder={t('createDialog.headImagePlaceholder')}
+              className={inputClasses}
             />
           </div>
-          <div className="flex justify-end gap-2">
+          <div className="space-y-2">
+            <Label htmlFor="agent-model" className={labelClasses}>{t('createDialog.modelLabel')}</Label>
+            <select
+              id="agent-model"
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              className="w-full h-10 rounded-xl border border-black/10 dark:border-white/10 bg-background px-3 text-sm"
+            >
+              <option value="">{t('createDialog.modelPlaceholder')}</option>
+              {models.map((m) => (
+                <option key={m.id} value={m.id}>{m.name || m.id}</option>
+              ))}
+            </select>
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
             <Button
               variant="outline"
               onClick={onClose}
@@ -471,7 +498,7 @@ function AddAgentDialog({
             </Button>
             <Button
               onClick={() => void handleSubmit()}
-              disabled={saving || !name.trim()}
+              disabled={saving || !nickName.trim()}
               className="h-9 text-[13px] font-medium rounded-full px-4 shadow-none"
             >
               {saving ? (

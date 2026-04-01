@@ -70,5 +70,13 @@
         "channelAssignFailed": "Channel の割り当てに失敗しました: {{error}}",
         "channelRemoved": "{{channel}} を削除しました",
         "channelRemoveFailed": "Channel の削除に失敗しました: {{error}}"
-    }
+    },
+    "syncRemote": "リモート同期",
+    "syncing": "同期中...",
+    "createDialog.nickNameLabel": "ニックネーム",
+    "createDialog.nickNamePlaceholder": "例: カスタマーサポート",
+    "createDialog.headImageLabel": "アバターURL",
+    "createDialog.headImagePlaceholder": "任意、空欄でデフォルト",
+    "createDialog.modelLabel": "モデル",
+    "createDialog.modelPlaceholder": "モデルを選択"
 }

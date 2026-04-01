@@ -12,8 +12,10 @@ interface AgentsState {
   channelOwners: Record<string, string>;
   channelAccountOwners: Record<string, string>;
   loading: boolean;
+  syncing: boolean;
   error: string | null;
   fetchAgents: () => Promise<void>;
+  syncFromRemote: () => Promise<void>;
   createAgent: (name: string, options?: { inheritWorkspace?: boolean }) => Promise<void>;
   updateAgent: (agentId: string, name: string) => Promise<void>;
   updateAgentModel: (agentId: string, modelRef: string | null) => Promise<void>;
@@ -25,33 +27,19 @@ interface AgentsState {
 
 function applySnapshot(snapshot: AgentsSnapshot | undefined, digitalEmployees: DigitalEmployee[] = []) {
   if (!snapshot) return {};
-  
+
   const agentMap = new Map<string, DigitalEmployee>();
   for (const e of digitalEmployees) {
-    if (e.openclawAgentId) {
-      agentMap.set(e.openclawAgentId, e);
-    }
+    if (e.openclawAgentId) agentMap.set(e.openclawAgentId, e);
     agentMap.set(e.nickName, e);
     agentMap.set(e.userName, e);
   }
-  
-  console.log('[agents] applySnapshot:', {
-    agents: snapshot.agents?.map(a => ({ id: a.id, name: a.name })),
-    digitalEmployees: digitalEmployees.map(e => ({ id: e.id, openclawAgentId: e.openclawAgentId, nickName: e.nickName })),
-    agentMapKeys: [...agentMap.keys()],
-  });
-  
+
   return {
-    agents: (snapshot.agents ?? []).map(agent => {
-      let digitalEmployee = agentMap.get(agent.id);
-      if (!digitalEmployee) {
-        digitalEmployee = agentMap.get(agent.name);
-      }
-      return {
-        ...agent,
-        digitalEmployee,
-      };
-    }),
+    agents: (snapshot.agents ?? []).map(agent => ({
+      ...agent,
+      digitalEmployee: agentMap.get(agent.id) ?? agentMap.get(agent.name),
+    })),
     digitalEmployees,
     defaultAgentId: snapshot.defaultAgentId ?? 'main',
     defaultModelRef: snapshot.defaultModelRef ?? null,
@@ -70,133 +58,100 @@ export const useAgentsStore = create<AgentsState>((set, get) => ({
   channelOwners: {},
   channelAccountOwners: {},
   loading: false,
+  syncing: false,
   error: null,
 
+  /**
+   * Load agents from local config only (fast, no remote API call).
+   * Digital employees come from whatever is already persisted locally.
+   */
   fetchAgents: async () => {
     set({ loading: true, error: null });
     try {
-      console.log('[agents] fetchAgents: starting...');
       const [snapshot, botsRes] = await Promise.all([
         hostApiFetch<AgentsSnapshot & { success?: boolean }>('/api/agents'),
-        hostApiFetch<{ bots?: DigitalEmployee[]; success?: boolean }>('/plugins/box-im/bots').catch((err) => {
-          console.warn('[agents] Failed to fetch bots:', err);
-          return { bots: [] };
-        }),
+        hostApiFetch<{ bots?: DigitalEmployee[] }>('/plugins/box-im/bots').catch(() => ({ bots: [] })),
       ]);
-      
-      console.log('[agents] API responses:', {
-        agentsCount: snapshot.agents?.length,
-        botsResKeys: Object.keys(botsRes),
-        botsCount: botsRes.bots?.length,
-        botsRaw: botsRes,
-      });
-      
-      let digitalEmployees = botsRes.bots || [];
-      const existingAgents = snapshot.agents ?? [];
-      const agentIds = new Set(existingAgents.map(a => a.id));
-      const agentNames = new Set(existingAgents.map(a => a.name));
-      
-      console.log('[agents] fetchAgents initial:', {
-        agents: existingAgents.map(a => ({ id: a.id, name: a.name })),
-        bots: digitalEmployees.map(b => ({ id: b.id, openclawAgentId: b.openclawAgentId, nickName: b.nickName })),
-      });
-      
-      const botsNeedingAgent: DigitalEmployee[] = [];
-      
-      for (const bot of digitalEmployees) {
-        const hasMatchingId = bot.openclawAgentId && agentIds.has(bot.openclawAgentId);
-        const hasMatchingName = agentNames.has(bot.nickName);
-        
-        if (!hasMatchingId && !hasMatchingName) {
-          botsNeedingAgent.push(bot);
-        }
-      }
-      
-      for (const bot of botsNeedingAgent) {
-        try {
-          console.log('[agents] Creating agent for bot:', bot.openclawAgentId || bot.nickName);
-          await hostApiFetch('/api/agents', {
-            method: 'POST',
-            body: JSON.stringify({ name: bot.nickName || bot.openclawAgentId || `bot-${bot.id}` }),
-          });
-        } catch (createErr) {
-          console.warn('[agents] Failed to create agent for bot:', bot.openclawAgentId || bot.nickName, createErr);
-        }
-      }
-      
-      if (botsNeedingAgent.length > 0) {
-        const newSnapshot = await hostApiFetch<AgentsSnapshot & { success?: boolean }>('/api/agents');
-        const newAgents = newSnapshot.agents ?? [];
-        const newAgentIds = new Set(newAgents.map(a => a.id));
-        
-        for (const bot of digitalEmployees) {
-          const agentId = bot.openclawAgentId || bot.nickName;
-          if (agentId && newAgentIds.has(agentId)) {
-            const agent = newAgents.find(a => a.id === agentId || a.name === bot.nickName);
-            if (agent && !agent.channelTypes?.includes('box-im')) {
-              try {
-                console.log('[agents] Binding box-im channel for agent:', agent.id);
-                await hostApiFetch(`/api/agents/${encodeURIComponent(agent.id)}/channels/box-im`, {
-                  method: 'PUT',
-                });
-              } catch (bindErr) {
-                console.warn('[agents] Failed to bind box-im channel for agent:', agent.id, bindErr);
-              }
-            }
-          }
-        }
-        
-        const finalSnapshot = await hostApiFetch<AgentsSnapshot & { success?: boolean }>('/api/agents');
-        const finalBotsRes = await hostApiFetch<{ bots?: DigitalEmployee[]; success?: boolean }>('/plugins/box-im/bots').catch(() => ({ bots: [] }));
-        digitalEmployees = finalBotsRes.bots || [];
-        set({
-          ...applySnapshot(finalSnapshot, digitalEmployees),
-          loading: false,
-        });
-      } else {
-        set({
-          ...applySnapshot(snapshot, digitalEmployees),
-          loading: false,
-        });
-      }
+      set({ ...applySnapshot(snapshot, botsRes.bots || []), loading: false });
     } catch (error) {
       set({ loading: false, error: String(error) });
     }
   },
 
-  createAgent: async (name: string, options?: { inheritWorkspace?: boolean }) => {
-    set({ error: null });
+  /**
+   * Sync from remote ai-im API: pull bots, create missing agents, bind channels.
+   * Only triggered by explicit user action (sync button).
+   */
+  syncFromRemote: async () => {
+    set({ syncing: true, error: null });
     try {
-      const snapshot = await hostApiFetch<AgentsSnapshot & { success?: boolean }>('/api/agents', {
-        method: 'POST',
-        body: JSON.stringify({ name, inheritWorkspace: options?.inheritWorkspace }),
-      });
-      
-      const newAgent = (snapshot.agents ?? []).find(a => a.name === name && !get().agents.some((ga: AgentSummary) => ga.id === a.id));
-      if (newAgent) {
+      // 1. Trigger remote sync (box-im-sync.ts pulls from API and writes config)
+      const botsRes = await hostApiFetch<{ bots?: DigitalEmployee[] }>('/plugins/box-im/bots');
+      const bots = botsRes.bots || [];
+
+      // 2. Reload agents after config was updated by sync
+      const snapshot = await hostApiFetch<AgentsSnapshot & { success?: boolean }>('/api/agents');
+      const existingIds = new Set((snapshot.agents ?? []).map(a => a.id));
+
+      // 3. Create agents for bots that don't have one yet
+      const missing = bots.filter(b => b.openclawAgentId && !existingIds.has(b.openclawAgentId));
+      for (const bot of missing) {
         try {
-          await hostApiFetch('/plugins/box-im/bots', {
+          await hostApiFetch('/api/agents', {
             method: 'POST',
-            body: JSON.stringify({
-              agentId: newAgent.id,
-              nickName: name,
-            }),
+            body: JSON.stringify({ name: bot.nickName || bot.openclawAgentId }),
           });
-          
-          try {
-            await hostApiFetch(`/api/agents/${encodeURIComponent(newAgent.id)}/channels/box-im`, {
-              method: 'PUT',
-            });
-          } catch (bindErr) {
-            console.warn('[agents] Failed to bind box-im channel:', bindErr);
-          }
-        } catch (botErr) {
-          console.warn('[agents] Failed to create digital employee:', botErr);
+        } catch (err) {
+          console.warn('[agents] Failed to create agent for bot:', bot.openclawAgentId, err);
         }
       }
-      
+
+      // 4. Bind box-im channel for new agents
+      if (missing.length > 0) {
+        const updated = await hostApiFetch<AgentsSnapshot & { success?: boolean }>('/api/agents');
+        for (const bot of missing) {
+          const agent = (updated.agents ?? []).find(a => a.id === bot.openclawAgentId || a.name === bot.nickName);
+          if (agent && !agent.channelTypes?.includes('box-im')) {
+            try {
+              await hostApiFetch(`/api/agents/${encodeURIComponent(agent.id)}/channels/box-im`, { method: 'PUT' });
+            } catch (err) {
+              console.warn('[agents] Failed to bind box-im for:', agent.id, err);
+            }
+          }
+        }
+      }
+
+      // 5. Final reload
       await get().fetchAgents();
     } catch (error) {
+      set({ error: String(error) });
+    } finally {
+      set({ syncing: false });
+    }
+  },
+
+  createAgent: async (name: string, options?: { headImage?: string; model?: string }) => {
+    set({ error: null });
+    try {
+      // Register bot on ai-im platform (with nodeId via ownerAuth)
+      const result = await hostApiFetch<{ error?: string; data?: { userName?: string } }>('/plugins/box-im/bots', {
+        method: 'POST',
+        body: JSON.stringify({ nickName: name, headImage: options?.headImage || '', model: options?.model || '' }),
+      });
+      if (result.error) throw new Error(result.error);
+
+      // Sync to pick up the new bot, create agent, bind channel
+      await get().syncFromRemote();
+
+      // Set model if specified
+      if (options?.model) {
+        const newAgent = get().agents.find(a => a.name === name);
+        if (newAgent) {
+          await get().updateAgentModel(newAgent.id, `shadan/${options.model}`);
+        }
+      }
+    } catch (error) {
+      console.error('[agents] createAgent failed:', error);
       set({ error: String(error) });
       throw error;
     }
@@ -205,12 +160,9 @@ export const useAgentsStore = create<AgentsState>((set, get) => ({
   updateAgent: async (agentId: string, name: string) => {
     set({ error: null });
     try {
-      const snapshot = await hostApiFetch<AgentsSnapshot & { success?: boolean }>(
+      const snapshot = await hostApiFetch<AgentsSnapshot>(
         `/api/agents/${encodeURIComponent(agentId)}`,
-        {
-          method: 'PUT',
-          body: JSON.stringify({ name }),
-        }
+        { method: 'PUT', body: JSON.stringify({ name }) },
       );
       set(applySnapshot(snapshot, get().digitalEmployees));
     } catch (error) {
@@ -222,12 +174,9 @@ export const useAgentsStore = create<AgentsState>((set, get) => ({
   updateAgentModel: async (agentId: string, modelRef: string | null) => {
     set({ error: null });
     try {
-      const snapshot = await hostApiFetch<AgentsSnapshot & { success?: boolean }>(
+      const snapshot = await hostApiFetch<AgentsSnapshot>(
         `/api/agents/${encodeURIComponent(agentId)}/model`,
-        {
-          method: 'PUT',
-          body: JSON.stringify({ modelRef }),
-        }
+        { method: 'PUT', body: JSON.stringify({ modelRef }) },
       );
       set(applySnapshot(snapshot, get().digitalEmployees));
     } catch (error) {
@@ -239,9 +188,9 @@ export const useAgentsStore = create<AgentsState>((set, get) => ({
   deleteAgent: async (agentId: string) => {
     set({ error: null });
     try {
-      const snapshot = await hostApiFetch<AgentsSnapshot & { success?: boolean }>(
+      const snapshot = await hostApiFetch<AgentsSnapshot>(
         `/api/agents/${encodeURIComponent(agentId)}`,
-        { method: 'DELETE' }
+        { method: 'DELETE' },
       );
       set(applySnapshot(snapshot, get().digitalEmployees));
     } catch (error) {
@@ -253,9 +202,9 @@ export const useAgentsStore = create<AgentsState>((set, get) => ({
   assignChannel: async (agentId: string, channelType: ChannelType) => {
     set({ error: null });
     try {
-      const snapshot = await hostApiFetch<AgentsSnapshot & { success?: boolean }>(
+      const snapshot = await hostApiFetch<AgentsSnapshot>(
         `/api/agents/${encodeURIComponent(agentId)}/channels/${encodeURIComponent(channelType)}`,
-        { method: 'PUT' }
+        { method: 'PUT' },
       );
       set(applySnapshot(snapshot, get().digitalEmployees));
     } catch (error) {
@@ -267,9 +216,9 @@ export const useAgentsStore = create<AgentsState>((set, get) => ({
   removeChannel: async (agentId: string, channelType: ChannelType) => {
     set({ error: null });
     try {
-      const snapshot = await hostApiFetch<AgentsSnapshot & { success?: boolean }>(
+      const snapshot = await hostApiFetch<AgentsSnapshot>(
         `/api/agents/${encodeURIComponent(agentId)}/channels/${encodeURIComponent(channelType)}`,
-        { method: 'DELETE' }
+        { method: 'DELETE' },
       );
       set(applySnapshot(snapshot, get().digitalEmployees));
     } catch (error) {
