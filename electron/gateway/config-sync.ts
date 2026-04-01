@@ -75,7 +75,7 @@ const CHANNEL_PLUGIN_MAP: Record<
  * ~/.openclaw/extensions/, the broken copy overrides the working built-in
  * plugin and must be removed.
  */
-const BUILTIN_CHANNEL_EXTENSIONS = ['discord', 'telegram'];
+const BUILTIN_CHANNEL_EXTENSIONS: string[] = [];
 
 function cleanupStaleBuiltInExtensions(): void {
   for (const ext of BUILTIN_CHANNEL_EXTENSIONS) {

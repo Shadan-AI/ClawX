@@ -11,8 +11,6 @@ export type ChannelType =
   | 'whatsapp'
   | 'wechat'
   | 'dingtalk'
-  | 'telegram'
-  | 'discord'
   | 'signal'
   | 'feishu'
   | 'wecom'
@@ -88,8 +86,6 @@ export const CHANNEL_ICONS: Record<ChannelType, string> = {
   whatsapp: '📱',
   wechat: '💬',
   dingtalk: '💬',
-  telegram: '✈️',
-  discord: '🎮',
   signal: '🔒',
   feishu: '🐦',
   wecom: '💼',
@@ -110,8 +106,6 @@ export const CHANNEL_NAMES: Record<ChannelType, string> = {
   whatsapp: 'WhatsApp',
   wechat: 'WeChat',
   dingtalk: 'DingTalk',
-  telegram: 'Telegram',
-  discord: 'Discord',
   signal: 'Signal',
   feishu: 'Feishu / Lark',
   wecom: 'WeCom',
@@ -240,82 +234,6 @@ export const CHANNEL_META: Record<ChannelType, ChannelMeta> = {
     ],
     isPlugin: true,
   },
-  telegram: {
-    id: 'telegram',
-    name: 'Telegram',
-    icon: '✈️',
-    description: 'channels:meta.telegram.description',
-    connectionType: 'token',
-    docsUrl: 'channels:meta.telegram.docsUrl',
-    configFields: [
-      {
-        key: 'botToken',
-        label: 'channels:meta.telegram.fields.botToken.label',
-        type: 'password',
-        placeholder: 'channels:meta.telegram.fields.botToken.placeholder',
-        required: true,
-        envVar: 'TELEGRAM_BOT_TOKEN',
-      },
-      {
-        key: 'allowedUsers',
-        label: 'channels:meta.telegram.fields.allowedUsers.label',
-        type: 'text',
-        placeholder: 'channels:meta.telegram.fields.allowedUsers.placeholder',
-        description: 'channels:meta.telegram.fields.allowedUsers.description',
-        required: true,
-      },
-    ],
-    instructions: [
-      'channels:meta.telegram.instructions.0',
-      'channels:meta.telegram.instructions.1',
-      'channels:meta.telegram.instructions.2',
-      'channels:meta.telegram.instructions.3',
-      'channels:meta.telegram.instructions.4',
-    ],
-  },
-  discord: {
-    id: 'discord',
-    name: 'Discord',
-    icon: '🎮',
-    description: 'channels:meta.discord.description',
-    connectionType: 'token',
-    docsUrl: 'channels:meta.discord.docsUrl',
-    configFields: [
-      {
-        key: 'token',
-        label: 'channels:meta.discord.fields.token.label',
-        type: 'password',
-        placeholder: 'channels:meta.discord.fields.token.placeholder',
-        required: true,
-        envVar: 'DISCORD_BOT_TOKEN',
-      },
-      {
-        key: 'guildId',
-        label: 'channels:meta.discord.fields.guildId.label',
-        type: 'text',
-        placeholder: 'channels:meta.discord.fields.guildId.placeholder',
-        required: true,
-        description: 'channels:meta.discord.fields.guildId.description',
-      },
-      {
-        key: 'channelId',
-        label: 'channels:meta.discord.fields.channelId.label',
-        type: 'text',
-        placeholder: 'channels:meta.discord.fields.channelId.placeholder',
-        required: false,
-        description: 'channels:meta.discord.fields.channelId.description',
-      },
-    ],
-    instructions: [
-      'channels:meta.discord.instructions.0',
-      'channels:meta.discord.instructions.1',
-      'channels:meta.discord.instructions.2',
-      'channels:meta.discord.instructions.3',
-      'channels:meta.discord.instructions.4',
-      'channels:meta.discord.instructions.5',
-    ],
-  },
-
   whatsapp: {
     id: 'whatsapp',
     name: 'WhatsApp',
@@ -601,7 +519,7 @@ export const CHANNEL_META: Record<ChannelType, ChannelMeta> = {
  * Get primary supported channels (non-plugin, commonly used)
  */
 export function getPrimaryChannels(): ChannelType[] {
-  return ['box-im', 'telegram', 'discord', 'whatsapp', 'wechat', 'dingtalk', 'feishu', 'wecom', 'qqbot'];
+  return ['box-im', 'whatsapp', 'wechat', 'dingtalk', 'feishu', 'wecom', 'qqbot'];
 }
 
 /**

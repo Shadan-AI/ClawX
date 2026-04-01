@@ -10,7 +10,6 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { getOpenClawResolvedDir } from './paths';
 import * as logger from './logger';
-import { proxyAwareFetch } from './proxy-fetch';
 import { withConfigLock } from './config-mutex';
 import { stampOpenClawConfigMeta } from './openclaw-config-meta';
 import {
@@ -37,8 +36,6 @@ const LEGACY_WECHAT_SYNC_DIR = join(OPENCLAW_DIR, 'agents', 'default', 'sessions
 const PLUGIN_CHANNELS: string[] = [];
 const LEGACY_BUILTIN_CHANNEL_PLUGIN_IDS = new Set(['whatsapp']);
 const BUILTIN_CHANNEL_IDS = new Set([
-    'discord',
-    'telegram',
     'whatsapp',
     'slack',
     'signal',
@@ -51,14 +48,10 @@ const BUILTIN_CHANNEL_IDS = new Set([
 ]);
 
 // Unique credential key per channel type – used for duplicate bot detection.
-// Maps each channel type to the field that uniquely identifies a bot/account.
-// When two agents try to use the same value for this field, the save is rejected.
 const CHANNEL_UNIQUE_CREDENTIAL_KEY: Record<string, string> = {
     feishu: 'appId',
     wecom: 'botId',
     dingtalk: 'clientId',
-    telegram: 'botToken',
-    discord: 'token',
     qqbot: 'appId',
     signal: 'phoneNumber',
     imessage: 'serverUrl',
@@ -515,56 +508,6 @@ function transformChannelConfig(
 ): ChannelConfigData {
     let transformedConfig: ChannelConfigData = { ...config };
 
-    if (channelType === 'discord') {
-        const { guildId, channelId, ...restConfig } = config;
-        transformedConfig = { ...restConfig };
-
-        transformedConfig.groupPolicy = 'allowlist';
-        transformedConfig.dm = { enabled: false };
-        transformedConfig.retry = {
-            attempts: 3,
-            minDelayMs: 500,
-            maxDelayMs: 30000,
-            jitter: 0.1,
-        };
-
-        if (guildId && typeof guildId === 'string' && guildId.trim()) {
-            const guildConfig: Record<string, unknown> = {
-                users: ['*'],
-                requireMention: true,
-            };
-
-            if (channelId && typeof channelId === 'string' && channelId.trim()) {
-                guildConfig.channels = {
-                    [channelId.trim()]: { allow: true, requireMention: true }
-                };
-            } else {
-                guildConfig.channels = {
-                    '*': { allow: true, requireMention: true }
-                };
-            }
-
-            transformedConfig.guilds = {
-                [guildId.trim()]: guildConfig
-            };
-        }
-    }
-
-    if (channelType === 'telegram') {
-        const { allowedUsers, ...restConfig } = config;
-        transformedConfig = { ...restConfig };
-
-        if (allowedUsers && typeof allowedUsers === 'string') {
-            const users = allowedUsers.split(',')
-                .map(u => u.trim())
-                .filter(u => u.length > 0);
-
-            if (users.length > 0) {
-                transformedConfig.allowFrom = users;
-            }
-        }
-    }
-
     if (channelType === 'feishu' || channelType === 'wecom') {
         const existingDmPolicy = existingAccountConfig.dmPolicy === 'pairing' ? 'open' : existingAccountConfig.dmPolicy;
         transformedConfig.dmPolicy = transformedConfig.dmPolicy ?? existingDmPolicy ?? 'open';
@@ -814,42 +757,12 @@ export async function getChannelConfig(channelType: string, accountId?: string):
     return undefined;
 }
 
-function extractFormValues(channelType: string, saved: ChannelConfigData): Record<string, string> {
+function extractFormValues(_channelType: string, saved: ChannelConfigData): Record<string, string> {
     const values: Record<string, string> = {};
 
-    if (channelType === 'discord') {
-        if (saved.token && typeof saved.token === 'string') {
-            values.token = saved.token;
-        }
-        const guilds = saved.guilds as Record<string, Record<string, unknown>> | undefined;
-        if (guilds) {
-            const guildIds = Object.keys(guilds);
-            if (guildIds.length > 0) {
-                values.guildId = guildIds[0];
-                const guildConfig = guilds[guildIds[0]];
-                const channels = guildConfig?.channels as Record<string, unknown> | undefined;
-                if (channels) {
-                    const channelIds = Object.keys(channels).filter((id) => id !== '*');
-                    if (channelIds.length > 0) {
-                        values.channelId = channelIds[0];
-                    }
-                }
-            }
-        }
-    } else if (channelType === 'telegram') {
-        if (Array.isArray(saved.allowFrom)) {
-            values.allowedUsers = saved.allowFrom.join(', ');
-        }
-        for (const [key, value] of Object.entries(saved)) {
-            if (typeof value === 'string' && key !== 'enabled') {
-                values[key] = value;
-            }
-        }
-    } else {
-        for (const [key, value] of Object.entries(saved)) {
-            if (typeof value === 'string' && key !== 'enabled') {
-                values[key] = value;
-            }
+    for (const [key, value] of Object.entries(saved)) {
+        if (typeof value === 'string' && key !== 'enabled') {
+            values[key] = value;
         }
     }
 
@@ -1178,7 +1091,7 @@ export async function setChannelEnabled(channelType: string, enabled: boolean): 
                 if (!currentConfig.plugins.entries) currentConfig.plugins.entries = {};
                 if (!currentConfig.plugins.entries[resolvedChannelType]) currentConfig.plugins.entries[resolvedChannelType] = {};
             }
-            currentConfig.plugins.entries[resolvedChannelType].enabled = enabled;
+            currentConfig.plugins!.entries![resolvedChannelType]!.enabled = enabled;
             syncBuiltinChannelsWithPluginAllowlist(currentConfig);
             await writeOpenClawConfig(currentConfig);
             console.log(`Set plugin channel ${resolvedChannelType} enabled: ${enabled}`);
@@ -1296,118 +1209,8 @@ export async function validateChannelCredentials(
     config: Record<string, string>
 ): Promise<CredentialValidationResult> {
     switch (resolveStoredChannelType(channelType)) {
-        case 'discord':
-            return validateDiscordCredentials(config);
-        case 'telegram':
-            return validateTelegramCredentials(config);
         default:
             return { valid: true, errors: [], warnings: ['No online validation available for this channel type.'] };
-    }
-}
-
-async function validateDiscordCredentials(
-    config: Record<string, string>
-): Promise<CredentialValidationResult> {
-    const result: CredentialValidationResult = { valid: true, errors: [], warnings: [], details: {} };
-    const token = config.token?.trim();
-
-    if (!token) {
-        return { valid: false, errors: ['Bot token is required'], warnings: [] };
-    }
-
-    try {
-        const meResponse = await fetch('https://discord.com/api/v10/users/@me', {
-            headers: { Authorization: `Bot ${token}` },
-        });
-        if (!meResponse.ok) {
-            if (meResponse.status === 401) {
-                return { valid: false, errors: ['Invalid bot token. Please check and try again.'], warnings: [] };
-            }
-            const errorData = await meResponse.json().catch(() => ({}));
-            const msg = (errorData as { message?: string }).message || `Discord API error: ${meResponse.status}`;
-            return { valid: false, errors: [msg], warnings: [] };
-        }
-        const meData = (await meResponse.json()) as { username?: string; id?: string; bot?: boolean };
-        if (!meData.bot) {
-            return { valid: false, errors: ['The provided token belongs to a user account, not a bot. Please use a bot token.'], warnings: [] };
-        }
-        result.details!.botUsername = meData.username || 'Unknown';
-        result.details!.botId = meData.id || '';
-    } catch (error) {
-        return { valid: false, errors: [`Connection error when validating bot token: ${error instanceof Error ? error.message : String(error)}`], warnings: [] };
-    }
-
-    const guildId = config.guildId?.trim();
-    if (guildId) {
-        try {
-            const guildResponse = await fetch(`https://discord.com/api/v10/guilds/${guildId}`, {
-                headers: { Authorization: `Bot ${token}` },
-            });
-            if (!guildResponse.ok) {
-                if (guildResponse.status === 403 || guildResponse.status === 404) {
-                    result.errors.push(`Cannot access guild (server) with ID "${guildId}". Make sure the bot has been invited to this server.`);
-                    result.valid = false;
-                } else {
-                    result.errors.push(`Failed to verify guild ID: Discord API returned ${guildResponse.status}`);
-                    result.valid = false;
-                }
-            } else {
-                const guildData = (await guildResponse.json()) as { name?: string };
-                result.details!.guildName = guildData.name || 'Unknown';
-            }
-        } catch (error) {
-            result.warnings.push(`Could not verify guild ID: ${error instanceof Error ? error.message : String(error)}`);
-        }
-    }
-
-    const channelId = config.channelId?.trim();
-    if (channelId) {
-        try {
-            const channelResponse = await fetch(`https://discord.com/api/v10/channels/${channelId}`, {
-                headers: { Authorization: `Bot ${token}` },
-            });
-            if (!channelResponse.ok) {
-                if (channelResponse.status === 403 || channelResponse.status === 404) {
-                    result.errors.push(`Cannot access channel with ID "${channelId}". Make sure the bot has permission to view this channel.`);
-                    result.valid = false;
-                } else {
-                    result.errors.push(`Failed to verify channel ID: Discord API returned ${channelResponse.status}`);
-                    result.valid = false;
-                }
-            } else {
-                const channelData = (await channelResponse.json()) as { name?: string; guild_id?: string };
-                result.details!.channelName = channelData.name || 'Unknown';
-                if (guildId && channelData.guild_id && channelData.guild_id !== guildId) {
-                    result.errors.push(`Channel "${channelData.name}" does not belong to the specified guild. It belongs to a different server.`);
-                    result.valid = false;
-                }
-            }
-        } catch (error) {
-            result.warnings.push(`Could not verify channel ID: ${error instanceof Error ? error.message : String(error)}`);
-        }
-    }
-
-    return result;
-}
-
-async function validateTelegramCredentials(
-    config: Record<string, string>
-): Promise<CredentialValidationResult> {
-    const botToken = config.botToken?.trim();
-    const allowedUsers = config.allowedUsers?.trim();
-
-    if (!botToken) return { valid: false, errors: ['Bot token is required'], warnings: [] };
-    if (!allowedUsers) return { valid: false, errors: ['At least one allowed user ID is required'], warnings: [] };
-
-    try {
-        const response = await proxyAwareFetch(`https://api.telegram.org/bot${botToken}/getMe`);
-        const data = (await response.json()) as { ok?: boolean; description?: string; result?: { username?: string } };
-        if (data.ok) {
-            return { valid: true, errors: [], warnings: [], details: { botUsername: data.result?.username || 'Unknown' } };
-        }
-        return { valid: false, errors: [data.description || 'Invalid bot token'], warnings: [] };
-    } catch (error) {
-        return { valid: false, errors: [`Connection error: ${error instanceof Error ? error.message : String(error)}`], warnings: [] };
     }
 }
 
@@ -1420,8 +1223,6 @@ export async function validateChannelConfig(channelType: string): Promise<Valida
     try {
         const openclawPath = getOpenClawResolvedDir();
 
-        // Run openclaw doctor command to validate config (async to avoid
-        // blocking the main thread).
         const runDoctor = async (command: string): Promise<string> =>
             await new Promise<string>((resolve, reject) => {
                 exec(
@@ -1467,26 +1268,6 @@ export async function validateChannelConfig(channelType: string): Promise<Valida
         } else if (config.channels[resolvedChannelType].enabled === false) {
             result.warnings.push(`Channel ${resolvedChannelType} is disabled`);
         }
-
-        if (resolvedChannelType === 'discord') {
-            const discordConfig = savedChannelConfig;
-            if (!discordConfig?.token) {
-                result.errors.push('Discord: Bot token is required');
-                result.valid = false;
-            }
-        } else if (resolvedChannelType === 'telegram') {
-            const telegramConfig = savedChannelConfig;
-            if (!telegramConfig?.botToken) {
-                result.errors.push('Telegram: Bot token is required');
-                result.valid = false;
-            }
-            const allowedUsers = telegramConfig?.allowFrom as string[] | undefined;
-            if (!allowedUsers || allowedUsers.length === 0) {
-                result.errors.push('Telegram: Allowed User IDs are required');
-                result.valid = false;
-            }
-        }
-
         if (result.errors.length === 0 && result.warnings.length === 0) {
             result.valid = true;
         }
