@@ -74,12 +74,6 @@ async function saveBoxImAccountsAndSyncAgents(accounts: Record<string, any>): Pr
     const agents = cfg.agents as Record<string, unknown> | undefined;
     const oldList = (agents?.list as Array<Record<string, unknown>>) ?? [];
     
-    // 获取有效的 agentId 列表（来自 accounts 的 key）
-    const validAgentIds = new Set(Object.keys(accounts));
-    // 保留 main 和 dev 这两个系统 agent
-    validAgentIds.add('main');
-    validAgentIds.add('dev');
-    
     // 构建现有 agent 的 map
     const existingAgentMap = new Map<string, Record<string, unknown>>();
     for (const agent of oldList) {
@@ -89,23 +83,19 @@ async function saveBoxImAccountsAndSyncAgents(accounts: Record<string, any>): Pr
     // 为每个 account 确保有对应的 agent
     const newList: Array<Record<string, unknown>> = [];
     const accountIds = Object.keys(accounts);
+    const processedIds = new Set<string>();
     
-    for (const agentId of validAgentIds) {
-      if (agentId === 'main' || agentId === 'dev') {
-        // 保留系统 agent
-        const existing = existingAgentMap.get(agentId);
-        if (existing) {
-          newList.push(existing);
-        }
-        continue;
-      }
-      
+    // 首先处理所有 box-im accounts 对应的 agents
+    for (const agentId of accountIds) {
+      processedIds.add(agentId);
       const account = accounts[agentId];
       const existing = existingAgentMap.get(agentId);
       
       if (existing) {
-        // 更新现有 agent 的名称
-        existing.name = account.botName || agentId;
+        // 更新现有 agent 的名称（如果botName有变化）
+        if (account.botName && existing.name !== account.botName) {
+          existing.name = account.botName;
+        }
         newList.push(existing);
       } else {
         // 创建新的 agent
@@ -117,6 +107,14 @@ async function saveBoxImAccountsAndSyncAgents(accounts: Record<string, any>): Pr
           agentDir: `${homeDir}/.openclaw/agents/${agentId}/agent`,
         });
         console.log('[box-im] Created new agent:', agentId);
+      }
+    }
+    
+    // 保留其他非 box-im 的 agents（如果它们不在 accounts 中）
+    for (const agent of oldList) {
+      const agentId = agent.id as string;
+      if (!processedIds.has(agentId)) {
+        newList.push(agent);
       }
     }
     
@@ -209,7 +207,7 @@ async function fetchBotsFromApi(apiUrl: string, tokenKey: string): Promise<BotIn
     userName: b.userName ?? '',
     nickName: b.nickName ?? '',
     headImage: b.headImage ?? '',
-    openclawAgentId: b.openclawAgentId ?? b.agentId ?? b.userName ?? '',
+    openclawAgentId: b.openclawAgentId || b.agentId || b.userName || '',
     accessToken: b.accessToken ?? null,
     model: b.model ?? undefined,
     deviceNodeId: b.deviceNodeId ?? b.nodeId ?? undefined,

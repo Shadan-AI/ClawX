@@ -31,8 +31,12 @@ function applySnapshot(snapshot: AgentsSnapshot | undefined, digitalEmployees: D
     if (e.openclawAgentId) {
       agentMap.set(e.openclawAgentId, e);
     }
-    agentMap.set(e.nickName, e);
-    agentMap.set(e.userName, e);
+    if (e.nickName) {
+      agentMap.set(e.nickName, e);
+    }
+    if (e.userName) {
+      agentMap.set(e.userName, e);
+    }
   }
   
   console.log('[agents] applySnapshot:', {
@@ -76,92 +80,31 @@ export const useAgentsStore = create<AgentsState>((set, get) => ({
     set({ loading: true, error: null });
     try {
       console.log('[agents] fetchAgents: starting...');
-      // 必须先拉 /plugins/box-im/bots：内部会 saveBoxImAccountsAndSyncAgents 写入 agents/bindings。
-      // 若与 /api/agents 并行，快照会在写入前返回，误判「缺 agent」→ 重复 POST /api/agents →
-      // 多次 debouncedReload，在 Windows 上每次 reload 都会整进程重启 Gateway，表现为断联循环。
+      // /plugins/box-im/bots 内部已经通过 saveBoxImAccountsAndSyncAgents 完成了 agent 创建和绑定
+      // 只需要拉取一次，无需前端再次创建 agent，避免重复触发 Gateway 重载
       let botsRes: { bots?: DigitalEmployee[]; success?: boolean } = { bots: [] };
       try {
         botsRes = await hostApiFetch<{ bots?: DigitalEmployee[]; success?: boolean }>('/plugins/box-im/bots');
       } catch (err) {
         console.warn('[agents] Failed to fetch bots:', err);
       }
+      
+      // 等待一小段时间确保 saveBoxImAccountsAndSyncAgents 完成写入
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
       const snapshot = await hostApiFetch<AgentsSnapshot & { success?: boolean }>('/api/agents');
       
       console.log('[agents] API responses:', {
         agentsCount: snapshot.agents?.length,
-        botsResKeys: Object.keys(botsRes),
         botsCount: botsRes.bots?.length,
-        botsRaw: botsRes,
       });
       
-      let digitalEmployees = botsRes.bots || [];
-      const existingAgents = snapshot.agents ?? [];
-      const agentIds = new Set(existingAgents.map(a => a.id));
-      const agentNames = new Set(existingAgents.map(a => a.name));
+      const digitalEmployees = botsRes.bots || [];
       
-      console.log('[agents] fetchAgents initial:', {
-        agents: existingAgents.map(a => ({ id: a.id, name: a.name })),
-        bots: digitalEmployees.map(b => ({ id: b.id, openclawAgentId: b.openclawAgentId, nickName: b.nickName })),
+      set({
+        ...applySnapshot(snapshot, digitalEmployees),
+        loading: false,
       });
-      
-      const botsNeedingAgent: DigitalEmployee[] = [];
-      
-      for (const bot of digitalEmployees) {
-        const hasMatchingId = bot.openclawAgentId && agentIds.has(bot.openclawAgentId);
-        const hasMatchingName = agentNames.has(bot.nickName);
-        
-        if (!hasMatchingId && !hasMatchingName) {
-          botsNeedingAgent.push(bot);
-        }
-      }
-      
-      for (const bot of botsNeedingAgent) {
-        try {
-          console.log('[agents] Creating agent for bot:', bot.openclawAgentId || bot.nickName);
-          await hostApiFetch('/api/agents', {
-            method: 'POST',
-            body: JSON.stringify({ name: bot.nickName || bot.openclawAgentId || `bot-${bot.id}` }),
-          });
-        } catch (createErr) {
-          console.warn('[agents] Failed to create agent for bot:', bot.openclawAgentId || bot.nickName, createErr);
-        }
-      }
-      
-      if (botsNeedingAgent.length > 0) {
-        const newSnapshot = await hostApiFetch<AgentsSnapshot & { success?: boolean }>('/api/agents');
-        const newAgents = newSnapshot.agents ?? [];
-        const newAgentIds = new Set(newAgents.map(a => a.id));
-        
-        for (const bot of digitalEmployees) {
-          const agentId = bot.openclawAgentId || bot.nickName;
-          if (agentId && newAgentIds.has(agentId)) {
-            const agent = newAgents.find(a => a.id === agentId || a.name === bot.nickName);
-            if (agent && !agent.channelTypes?.includes('box-im')) {
-              try {
-                console.log('[agents] Binding box-im channel for agent:', agent.id);
-                await hostApiFetch(`/api/agents/${encodeURIComponent(agent.id)}/channels/box-im`, {
-                  method: 'PUT',
-                });
-              } catch (bindErr) {
-                console.warn('[agents] Failed to bind box-im channel for agent:', agent.id, bindErr);
-              }
-            }
-          }
-        }
-        
-        const finalSnapshot = await hostApiFetch<AgentsSnapshot & { success?: boolean }>('/api/agents');
-        const finalBotsRes = await hostApiFetch<{ bots?: DigitalEmployee[]; success?: boolean }>('/plugins/box-im/bots').catch(() => ({ bots: [] }));
-        digitalEmployees = finalBotsRes.bots || [];
-        set({
-          ...applySnapshot(finalSnapshot, digitalEmployees),
-          loading: false,
-        });
-      } else {
-        set({
-          ...applySnapshot(snapshot, digitalEmployees),
-          loading: false,
-        });
-      }
     } catch (error) {
       set({ loading: false, error: String(error) });
     }
