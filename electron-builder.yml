@@ -118,7 +118,9 @@ win:
   icon: resources/icons/icon.ico
   target:
     - target: nsis
-      arch: x64
+      arch:
+        - x64
+        - arm64
 
 nsis:
   oneClick: false
