@@ -242,6 +242,48 @@ function mergeMissingKeysDeep(target: Record<string, unknown>, source: Record<st
   return changed;
 }
 
+function isLikelyDevLanOpenAiBaseUrl(url: unknown): boolean {
+  if (typeof url !== 'string') return false;
+  const u = url.trim();
+  return /^https?:\/\/(192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|127\.0\.0\.1|localhost)(?::\d+)?/i.test(u);
+}
+
+/**
+ * When models.providers.* already exists (so needsModelsFromTemplate is false), still align
+ * baseUrl/api from the bundled template if the on-disk values look like a dev LAN endpoint
+ * while the template points at production — fixes drift from an older npm-seeded template.
+ */
+function mergeModelsProviderScalarsFromTemplate(config: Record<string, unknown>, template: Record<string, unknown>): boolean {
+  const tModels = template.models;
+  const cModels = config.models;
+  if (!tModels || typeof tModels !== 'object' || !cModels || typeof cModels !== 'object') {
+    return false;
+  }
+  const tProviders = (tModels as Record<string, unknown>).providers;
+  const cProviders = (cModels as Record<string, unknown>).providers;
+  if (!tProviders || typeof tProviders !== 'object' || !cProviders || typeof cProviders !== 'object') {
+    return false;
+  }
+  let changed = false;
+  for (const [key, tEntry] of Object.entries(tProviders)) {
+    if (!tEntry || typeof tEntry !== 'object' || Array.isArray(tEntry)) continue;
+    const cur = (cProviders as Record<string, unknown>)[key];
+    if (!cur || typeof cur !== 'object' || Array.isArray(cur)) continue;
+    const curRec = cur as Record<string, unknown>;
+    const tRec = tEntry as Record<string, unknown>;
+    const tBase = typeof tRec.baseUrl === 'string' ? tRec.baseUrl : undefined;
+    const cBase = typeof curRec.baseUrl === 'string' ? curRec.baseUrl : undefined;
+    if (!tBase || !cBase || cBase === tBase) continue;
+    if (!isLikelyDevLanOpenAiBaseUrl(cBase)) continue;
+    curRec.baseUrl = tBase;
+    if (typeof tRec.api === 'string') {
+      curRec.api = tRec.api;
+    }
+    changed = true;
+  }
+  return changed;
+}
+
 function needsModelsFromTemplate(config: Record<string, unknown>): boolean {
   const models = config.models;
   if (!models || typeof models !== 'object') {
@@ -354,11 +396,44 @@ export async function mergeOpenClawJsonFromTemplateForMissingSections(): Promise
       modified = true;
     }
 
+    if (mergeModelsProviderScalarsFromTemplate(config, template)) {
+      modified = true;
+    }
+
     if (modified) {
       await writeOpenClawJson(config);
       await resetOpenClawConfigHealthBaselineBestEffort();
       console.log('[openclaw] Merged missing sections from gateway template into openclaw.json');
     }
+  });
+}
+
+/**
+ * Re-apply bundled `models.providers.*` baseUrl/api when the Gateway (or extensions)
+ * later overwrite `~/.openclaw/openclaw.json` with a dev-LAN endpoint from internal
+ * state. Used by startOpenClawConfigLanReconciliationWatcher; idempotent when
+ * disk already matches the template.
+ */
+export async function reconcileOpenClawModelsProvidersFromBundledTemplate(): Promise<boolean> {
+  return withConfigLock(async () => {
+    const templatePath = getOpenClawDefaultConfigTemplatePath();
+    if (!templatePath || !(await fileExists(OPENCLAW_CONFIG_PATH))) {
+      return false;
+    }
+    let template: Record<string, unknown>;
+    try {
+      template = JSON.parse(await readFile(templatePath, 'utf-8')) as Record<string, unknown>;
+    } catch {
+      return false;
+    }
+    const config = await readOpenClawJson();
+    if (!mergeModelsProviderScalarsFromTemplate(config, template)) {
+      return false;
+    }
+    await writeOpenClawJson(config);
+    await resetOpenClawConfigHealthBaselineBestEffort();
+    console.log('[openclaw] Reconciled models.providers baseUrl/api from bundled template (post-Gateway drift)');
+    return true;
   });
 }
 

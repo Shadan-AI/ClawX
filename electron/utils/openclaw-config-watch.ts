@@ -41,6 +41,7 @@ export function startOpenClawConfigLanReconciliationWatcher(): void {
       scheduleReconcile();
     });
     w.on('error', (err) => {
+      watcherStarted = false;
       logger.warn('[openclaw-watch] fs.watch error:', err);
     });
     logger.debug('[openclaw-watch] watching ~/.openclaw for openclaw.json drift');
