@@ -1,7 +1,7 @@
 appId: app.clawx.desktop
 productName: ClawX
 copyright: Copyright © 2026 ClawX
-compression: store
+compression: normal
 artifactName: ${productName}-${version}-${os}-${arch}.${ext}
 
 directories:

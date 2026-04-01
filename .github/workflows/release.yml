@@ -31,6 +31,10 @@ jobs:
             platform: mac
           - os: windows-latest
             platform: win
+            arch: x64
+          - os: windows-latest
+            platform: win
+            arch: arm64
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
@@ -102,7 +106,7 @@ jobs:
         if: matrix.platform == 'win'
         env:
           NODE_OPTIONS: --max-old-space-size=4096
-        run: pnpm run package:win
+        run: pnpm run package:win:${{ matrix.arch }}
 
       # # Detect release channel from tag to skip code signing for alpha/beta builds
       # - name: Detect Windows release channel
@@ -254,7 +258,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v5
         with:
-          name: release-${{ matrix.platform }}
+          name: release-${{ matrix.platform }}${{ matrix.arch && format('-{0}', matrix.arch) || '' }}
           path: |
             release/*.dmg
             release/*.zip
