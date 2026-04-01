@@ -1,15 +1,27 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import { existsSync } from 'node:fs';
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { PORTS } from '../../utils/config';
+import {
+  readOpenClawConfig,
+  writeOpenClawConfig,
+  type OpenClawConfig,
+} from '../../utils/channel-config';
+import { withConfigLock } from '../../utils/config-mutex';
 import { buildGatewayPluginUrl, buildOpenClawControlUiUrl } from '../../utils/openclaw-control-ui';
 import { getGatewayTlsEnabledFromOpenClawConfig } from '../../utils/openclaw-gateway-tls';
 import { getSetting } from '../../utils/store';
 import { proxyAwareFetch, proxyAwareFetchWithTls } from '../../utils/proxy-fetch';
 import type { HostApiContext } from '../context';
 import { parseJsonBody, sendJson } from '../route-utils';
+
+/** Compare config without top-level meta (avoids pointless rewrites that trigger Gateway reload). */
+function openClawJsonComparable(cfg: Record<string, unknown>): string {
+  const { meta: _m, ...rest } = cfg;
+  return JSON.stringify(rest);
+}
 
 interface BotInfo {
   id: number;
@@ -53,10 +65,10 @@ async function getBoxImConfig(): Promise<{
 
 async function saveBoxImAccountsAndSyncAgents(accounts: Record<string, any>): Promise<void> {
   try {
-    const configPath = join(homedir(), '.openclaw', 'openclaw.json');
     console.log('[box-im] saveBoxImAccountsAndSyncAgents: accounts=', Object.keys(accounts));
-    const raw = await readFile(configPath, 'utf-8');
-    const cfg = JSON.parse(raw) as Record<string, unknown>;
+    await withConfigLock(async () => {
+    const cfg = (await readOpenClawConfig()) as unknown as Record<string, unknown>;
+    const beforeComparable = openClawJsonComparable(cfg);
     const channels = cfg.channels as Record<string, unknown> | undefined;
     const boxIm = channels?.['box-im'] as Record<string, unknown> | undefined;
     const agents = cfg.agents as Record<string, unknown> | undefined;
@@ -170,8 +182,14 @@ async function saveBoxImAccountsAndSyncAgents(accounts: Record<string, any>): Pr
     cfg.bindings = newBindings;
     delete cfg.enabledChannels;
 
-    await writeFile(configPath, JSON.stringify(cfg, null, 2), 'utf-8');
+    if (openClawJsonComparable(cfg) === beforeComparable) {
+      console.log('[box-im] openclaw.json unchanged (box-im/agents/bindings), skipping write');
+      return;
+    }
+
+    await writeOpenClawConfig(cfg as OpenClawConfig);
     console.log('[box-im] Saved accounts, agents, bindings successfully');
+    });
   } catch (err) {
     console.error('[box-im] Failed to save accounts:', err);
   }
