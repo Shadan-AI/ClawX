@@ -347,13 +347,10 @@ pnpm run comms:compare    # 将回放指标与基线阈值对比
 pnpm run build:vite       # 仅构建前端
 pnpm build                # 完整生产构建（含打包资源）
 pnpm package              # 为当前平台打包（包含预装技能资源）
-pnpm package:mac          # 为 macOS 打包（macOS 11/12 默认仅输出 zip）
-pnpm package:mac:dmg      # 在 macOS 上强制输出 dmg + zip
+pnpm package:mac          # 为 macOS 打包
 pnpm package:win          # 为 Windows 打包
 pnpm package:linux        # 为 Linux 打包
 ```
-
-在 macOS 11 和 12 上，`pnpm package:mac` 会默认跳过 DMG 目标，因为 `electron-builder` 当前内置的 `dmgbuild` 运行时依赖 `mkfifoat`，而该符号仅在 macOS 13+ 可用。如果你已经准备了兼容的自定义 `dmgbuild`，仍可通过 `pnpm package:mac:dmg`（或设置 `CLAWX_FORCE_DMG=1`）强制生成 DMG。
 
 ### 通信回归检查
 

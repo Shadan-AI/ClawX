@@ -64,17 +64,6 @@ fs.mkdirSync(OUTPUT, { recursive: true });
 echo`   Copying openclaw package...`;
 fs.cpSync(openclawReal, OUTPUT, { recursive: true, dereference: true });
 
-// 3b. npm 包内的 gateway.json 可能带内网/开发 baseUrl；与 openme / resources 模板对齐，保证安装目录 resources/openclaw/gateway.json 一致。
-const gatewayOverwriteCandidates = [
-  path.join(ROOT, '..', 'openme', 'gateway.json'),
-  path.join(ROOT, 'resources', 'openclaw-default.json'),
-];
-const gatewayOverwrite = gatewayOverwriteCandidates.find((p) => fs.existsSync(p));
-if (gatewayOverwrite) {
-  fs.copyFileSync(gatewayOverwrite, path.join(OUTPUT, 'gateway.json'));
-  echo`   Patched bundled gateway.json <- ${gatewayOverwrite}`;
-}
-
 // 4. Recursively collect ALL transitive dependencies via pnpm virtual store BFS
 //
 // pnpm structure example:
@@ -90,18 +79,8 @@ if (gatewayOverwrite) {
 // We BFS from openclaw's virtual store node_modules, following each symlink
 // to discover the target's own virtual store node_modules and its deps.
 
-const collected = new Map(); // realPath -> metadata (for deduplication)
-const packageVersions = new Map(); // packageName -> Set<version>
+const collected = new Map(); // realPath -> packageName (for deduplication)
 const queue = []; // BFS queue of virtual-store node_modules dirs to visit
-
-function readPackageVersion(realPkgPath) {
-  try {
-    const pkg = JSON.parse(fs.readFileSync(path.join(realPkgPath, 'package.json'), 'utf8'));
-    return typeof pkg.version === 'string' ? pkg.version : '0.0.0';
-  } catch {
-    return '0.0.0';
-  }
-}
 
 /**
  * Given a real path of a package, find the containing virtual-store node_modules.
@@ -151,7 +130,6 @@ function listPackages(nodeModulesDir) {
       result.push({ name: entry, fullPath: entryPath });
     }
   }
-  result.sort((a, b) => a.name.localeCompare(b.name));
   return result;
 }
 
@@ -199,21 +177,10 @@ while (queue.length > 0) {
     }
 
     if (collected.has(realPath)) continue; // already visited
-    const version = readPackageVersion(realPath);
-    const metadata = {
-      name,
-      version,
-      realPath,
-      virtualStoreDir: getVirtualStoreNodeModules(realPath),
-    };
-    collected.set(realPath, metadata);
-    if (!packageVersions.has(name)) {
-      packageVersions.set(name, new Set());
-    }
-    packageVersions.get(name).add(version);
+    collected.set(realPath, name);
 
     // Find this package's own virtual store node_modules to discover ITS deps
-    const depVirtualNM = metadata.virtualStoreDir;
+    const depVirtualNM = getVirtualStoreNodeModules(realPath);
     if (depVirtualNM && depVirtualNM !== nodeModulesDir) {
       // Determine the package's "self name" in its own virtual store
       // For scoped: @clack/core -> skip "@clack/core" when scanning
@@ -248,12 +215,7 @@ for (const pkgName of EXTRA_BUNDLED_PACKAGES) {
   try { pkgReal = fs.realpathSync(pkgLink); } catch { continue; }
 
   if (!collected.has(pkgReal)) {
-    collected.set(pkgReal, {
-      name: pkgName,
-      version: readPackageVersion(pkgReal),
-      realPath: pkgReal,
-      virtualStoreDir: getVirtualStoreNodeModules(pkgReal),
-    });
+    collected.set(pkgReal, pkgName);
     extraCount++;
 
     // BFS this package's own transitive deps
@@ -269,12 +231,7 @@ for (const pkgName of EXTRA_BUNDLED_PACKAGES) {
           let realPath;
           try { realPath = fs.realpathSync(fullPath); } catch { continue; }
           if (collected.has(realPath)) continue;
-          collected.set(realPath, {
-            name,
-            version: readPackageVersion(realPath),
-            realPath,
-            virtualStoreDir: getVirtualStoreNodeModules(realPath),
-          });
+          collected.set(realPath, name);
           extraCount++;
           const innerVirtualNM = getVirtualStoreNodeModules(realPath);
           if (innerVirtualNM && innerVirtualNM !== nodeModulesDir) {
@@ -301,17 +258,10 @@ const outputNodeModules = path.join(OUTPUT, 'node_modules');
 fs.mkdirSync(outputNodeModules, { recursive: true });
 
 const copiedNames = new Set(); // Track package names already copied
-const copiedPackages = new Map(); // packageName -> { realPath, dest, virtualStoreDir }
-const conflictPackageNames = new Set(
-  [...packageVersions.entries()]
-    .filter(([, versions]) => versions.size > 1)
-    .map(([name]) => name)
-);
 let copiedCount = 0;
 let skippedDupes = 0;
 
-for (const [realPath, metadata] of collected) {
-  const pkgName = metadata.name;
+for (const [realPath, pkgName] of collected) {
   if (copiedNames.has(pkgName)) {
     skippedDupes++;
     continue; // Keep the first version (closer to openclaw in dep tree)
@@ -323,51 +273,10 @@ for (const [realPath, metadata] of collected) {
   try {
     fs.mkdirSync(normWin(path.dirname(dest)), { recursive: true });
     fs.cpSync(normWin(realPath), normWin(dest), { recursive: true, dereference: true });
-    copiedPackages.set(pkgName, {
-      name: pkgName,
-      realPath,
-      dest,
-      virtualStoreDir: metadata.virtualStoreDir,
-    });
     copiedCount++;
   } catch (err) {
     echo`   ⚠️  Skipped ${pkgName}: ${err.message}`;
   }
-}
-
-// 5.1 When multiple versions of the same package exist in the dependency tree,
-// keep the flattened "winner" for the common case, but restore exact per-package
-// nested deps for conflict names so runtime resolution remains correct on all OSes.
-let restoredConflictDeps = 0;
-for (const { name, dest, virtualStoreDir } of copiedPackages.values()) {
-  if (!virtualStoreDir) continue;
-
-  for (const dep of listPackages(virtualStoreDir)) {
-    if (dep.name === name) continue;
-    if (!conflictPackageNames.has(dep.name)) continue;
-
-    let depRealPath;
-    try {
-      depRealPath = fs.realpathSync(dep.fullPath);
-    } catch {
-      continue;
-    }
-
-    const nestedDest = path.join(dest, 'node_modules', dep.name);
-    if (fs.existsSync(nestedDest)) continue;
-
-    try {
-      fs.mkdirSync(normWin(path.dirname(nestedDest)), { recursive: true });
-      fs.cpSync(normWin(depRealPath), normWin(nestedDest), { recursive: true, dereference: true });
-      restoredConflictDeps++;
-    } catch (err) {
-      echo`   ⚠️  Failed to restore nested dep ${dep.name} for ${path.basename(dest)}: ${err.message}`;
-    }
-  }
-}
-
-if (restoredConflictDeps > 0) {
-  echo`   Restored ${restoredConflictDeps} nested dependency copies for version conflicts`;
 }
 
 // 6. Clean up the bundle to reduce package size
@@ -933,44 +842,9 @@ function patchBundledRuntime(outputDir) {
 patchBrokenModules(outputNodeModules);
 patchBundledRuntime(OUTPUT);
 
-
-// 8. Verify the bundle (paths follow bundled package.json — upstream may use
-// dist/index.js and/or dist/entry.js; bin may stay openclaw.mjs)
-let bundledPkg;
-try {
-  bundledPkg = JSON.parse(fs.readFileSync(path.join(OUTPUT, 'package.json'), 'utf8'));
-} catch {
-  echo`❌ Bundle verification failed: missing ${path.join(OUTPUT, 'package.json')}`;
-  process.exit(1);
-}
-
-function resolveBundledBinRel(pkg) {
-  if (typeof pkg.bin === 'string' && pkg.bin) return pkg.bin;
-  if (typeof pkg.bin === 'object' && pkg.bin) {
-    const b = pkg.bin;
-    if (typeof b.openclaw === 'string') return b.openclaw;
-    if (typeof b.openme === 'string') return b.openme;
-    const first = Object.values(b).find((v) => typeof v === 'string');
-    if (first) return first;
-  }
-  return 'openclaw.mjs';
-}
-
-function bundledGatewayCandidates(pkg) {
-  const out = [];
-  if (typeof pkg.main === 'string' && pkg.main) {
-    out.push(path.join(OUTPUT, pkg.main));
-  }
-  out.push(path.join(OUTPUT, 'dist', 'index.js'));
-  out.push(path.join(OUTPUT, 'dist', 'entry.js'));
-  return [...new Set(out)];
-}
-
-const binRel = resolveBundledBinRel(bundledPkg);
-const cliPath = path.join(OUTPUT, binRel);
-const cliExists = fs.existsSync(normWin(cliPath));
-const gatewayPaths = bundledGatewayCandidates(bundledPkg);
-const gatewayExists = gatewayPaths.some((p) => fs.existsSync(normWin(p)));
+// 8. Verify the bundle
+const entryExists = fs.existsSync(path.join(OUTPUT, 'openclaw.mjs'));
+const distExists = fs.existsSync(path.join(OUTPUT, 'dist', 'entry.js'));
 
 echo``;
 echo`✅ Bundle complete: ${OUTPUT}`;
@@ -978,20 +852,10 @@ echo`   Unique packages copied: ${copiedCount}`;
 echo`   Dev-only packages skipped: ${skippedDevCount}`;
 echo`   Duplicate versions skipped: ${skippedDupes}`;
 echo`   Total discovered: ${collected.size}`;
-echo`   CLI (${binRel}): ${cliExists ? '✓' : '✗'}`;
-echo`   Gateway (package.json main or dist/index.js or dist/entry.js): ${gatewayExists ? '✓' : '✗'}`;
+echo`   openclaw.mjs: ${entryExists ? '✓' : '✗'}`;
+echo`   dist/entry.js: ${distExists ? '✓' : '✗'}`;
 
-if (!cliExists || !gatewayExists) {
+if (!entryExists || !distExists) {
   echo`❌ Bundle verification failed!`;
-  if (!cliExists) {
-    echo`   Missing CLI at: ${cliPath}`;
-  }
-  if (!gatewayExists) {
-    echo`   Tried gateway paths:`;
-    for (const p of gatewayPaths) {
-      echo`     - ${p} ${fs.existsSync(normWin(p)) ? '✓' : '✗'}`;
-    }
-  }
-  echo`   Hint: ensure @shadanai/openclaw is installed (pnpm install) and dist/ exists in the package`;
   process.exit(1);
 }

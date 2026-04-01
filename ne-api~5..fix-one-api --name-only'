@@ -1,0 +1,10 @@
+[33m5131029[m[33m ([m[1;36mHEAD -> [m[1;32mfix-one-api[m[33m, [m[1;33mtag: v0.4.6[m[33m, [m[1;33mtag: v0.4.5[m[33m, [m[1;33mtag: 0.4.6[m[33m, [m[1;33mtag: 0.4.5[m[33m, [m[1;31morigin/fix-one-api[m[33m)[m feat(config-sync): implement LAN reconciliation watcher for openclaw.json
+[33m920763d[m[33m ([m[1;33mtag: v0.4.4[m[33m, [m[1;33mtag: 0.4.4[m[33m)[m feat(provider-service): refresh provider baseUrl from openclaw.json and align gateway.json for consistency
+[33m492a78a[m[33m ([m[1;33mtag: v0.4.3[m[33m, [m[1;33mtag: 0.4.3[m[33m, [m[1;31morigin/fix-pid[m[33m, [m[1;32mfix-pid[m[33m)[m feat(gateway): add WebSocket probing for existing Gateway processes
+[33md96bfde[m[33m ([m[1;33mtag: v0.4.2[m[33m, [m[1;33mtag: 0.4.2[m[33m, [m[1;31morigin/fix-auto-update-npm[m[33m)[m ci(workflows): update @shadanai/openclaw to latest version and streamline workflows
+[33mdb5030b[m[33m ([m[1;33mtag: 0.4.1[m[33m, [m[1;33mtag: 0.3.22[m[33m, [m[1;31morigin/12[m[33m)[m ci(workflows): update JavaScript actions to Node 24 and upgrade upload-artifact action
+[33mf5d5f9c[m[33m ([m[1;33mtag: 0.3.21[m[33m, [m[1;31morigin/11[m[33m)[m ci(workflows): update openclaw dependency management and remove legacy scripts
+[33m04c0b0d[m[33m ([m[1;33mtag: 0.3.20[m[33m, [m[1;31morigin/10[m[33m)[m ci(workflows): enhance openme cloning script with token support
+[33m0f0b22c[m[33m ([m[1;33mtag: 0.3.19[m[33m, [m[1;31morigin/9[m[33m)[m ci(workflows): refine openme cloning script for improved flexibility
+[33m4c54d4e[m ci(workflows): enhance openme cloning process for path dependencies
+[33m5b2a543[m[33m ([m[1;33mtag: 0.3.17[m[33m, [m[1;31morigin/7[m[33m)[m ci(workflows): add build script for openme as a path dependency

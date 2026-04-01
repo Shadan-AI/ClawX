@@ -14,7 +14,8 @@
         ],
         "overrides": {
             "isbinaryfile": "^5.0.0",
-            "https-proxy-agent": "7.0.6"
+            "https-proxy-agent": "7.0.6",
+            "@slack/web-api": "7.15.0"
         },
         "supportedArchitectures": {
             "os": [
@@ -35,7 +36,7 @@
         "init": "pnpm install && pnpm run uv:download",
         "predev": "zx scripts/prepare-preinstalled-skills-dev.mjs",
         "dev": "vite",
-        "build": "vite build && zx scripts/bundle-openclaw.mjs && zx scripts/bundle-openclaw-plugins.mjs && zx scripts/bundle-box-im.mjs && zx scripts/bundle-preinstalled-skills.mjs && zx scripts/copy-openclaw-default-config.mjs && zx scripts/copy-mkcert.mjs && electron-builder",
+        "build": "vite build && zx scripts/bundle-openclaw.mjs && zx scripts/bundle-openclaw-plugins.mjs && zx scripts/bundle-box-im.mjs && zx scripts/bundle-preinstalled-skills.mjs && zx scripts/copy-openclaw-default-config.mjs && zx scripts/copy-mkcert.mjs",
         "build:vite": "vite build",
         "bundle:openclaw-plugins": "zx scripts/bundle-openclaw-plugins.mjs",
         "bundle:preinstalled-skills": "zx scripts/bundle-preinstalled-skills.mjs",
@@ -119,7 +120,7 @@
         "i18next": "^25.8.11",
         "jsdom": "^28.1.0",
         "lucide-react": "^0.563.0",
-        "@shadanai/openclaw": "file:../../openme/openme",
+        "@shadanai/openclaw": "latest",
         "png2icons": "^2.0.1",
         "postcss": "^8.5.6",
         "react": "^19.2.4",

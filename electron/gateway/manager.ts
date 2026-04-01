@@ -239,7 +239,8 @@ export class GatewayManager extends EventEmitter {
           this.lifecycleController.assert(startEpoch, phase);
         },
         findExistingGateway: async (port, _ownedPid) => {
-          return await findExistingGatewayProcess({ port, ownedPid: this.process?.pid });
+          const tls = await getGatewayTlsEnabledFromOpenClawConfig();
+          return await findExistingGatewayProcess({ port, ownedPid: this.process?.pid, tls });
         },
         connect: async (port, externalToken) => {
           await this.connect(port, externalToken);

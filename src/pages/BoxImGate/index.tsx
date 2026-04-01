@@ -335,7 +335,6 @@ export function BoxImGate() {
               {t('skip')}
             </Button>
           </div>
-          </div>
         </div>
       </div>
     </div>

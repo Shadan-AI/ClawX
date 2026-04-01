@@ -2,7 +2,7 @@
 
 /**
  * Bundles openme's mkcert.exe into ClawX resources for Windows packaged builds.
- * Source: @shadanai/openclaw package (npm) or ../openme/mkcert.exe when developing.
+ * Source: ../openme/mkcert.exe (relative to ClawX repo root).
  */
 
 import 'zx/globals';
@@ -12,15 +12,11 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
-const SRC_CANDIDATES = [
-  path.join(ROOT, 'node_modules', '@shadanai', 'openclaw', 'mkcert.exe'),
-  path.join(ROOT, '..', 'openme', 'mkcert.exe'),
-];
-const SRC = SRC_CANDIDATES.find((p) => fs.existsSync(p));
+const SRC = path.join(ROOT, '..', 'openme', 'mkcert.exe');
 const DEST = path.join(ROOT, 'resources', 'tools', 'mkcert.exe');
 
-if (!SRC) {
-  echo`⚠️  mkcert.exe not found (tried npm package and ../openme/) — skip resources/tools/mkcert.exe`;
+if (!fs.existsSync(SRC)) {
+  echo`⚠️  mkcert not found: ${SRC} — skip resources/tools/mkcert.exe (Windows TLS auto-gen will look for dev path)`;
   process.exit(0);
 }
 

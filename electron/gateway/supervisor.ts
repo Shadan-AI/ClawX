@@ -234,35 +234,37 @@ async function terminateOrphanedProcessIds(port: number, pids: string[]): Promis
   }
 }
 
-/**
- * Returns true if something on `port` accepts a WebSocket connection to /ws.
- * Used to detect a live Gateway without relying on PID matching.
- */
-function probeGatewayWebSocketListening(port: number, timeoutMs: number): Promise<boolean> {
-  return new Promise<boolean>((resolve) => {
-    const testWs = new WebSocket(`ws://localhost:${port}/ws`);
-    const timeout = setTimeout(() => {
+async function probeGatewayWebSocketListening(port: number, timeoutMs: number, tls: boolean): Promise<boolean> {
+  const proto = tls ? 'wss' : 'ws';
+  const url = `${proto}://localhost:${port}/ws`;
+  const wsOpts = tls ? { rejectUnauthorized: false } : undefined;
+
+  return await new Promise<boolean>((resolve) => {
+    const testWs = wsOpts ? new WebSocket(url, wsOpts) : new WebSocket(url);
+    let settled = false;
+
+    const resolveOnce = (value: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
       try {
         testWs.close();
       } catch {
         // ignore
       }
-      resolve(false);
+      resolve(value);
+    };
+
+    const timeout = setTimeout(() => {
+      resolveOnce(false);
     }, timeoutMs);
 
     testWs.on('open', () => {
-      clearTimeout(timeout);
-      try {
-        testWs.close();
-      } catch {
-        // ignore
-      }
-      resolve(true);
+      resolveOnce(true);
     });
 
     testWs.on('error', () => {
-      clearTimeout(timeout);
-      resolve(false);
+      resolveOnce(false);
     });
   });
 }
@@ -270,40 +272,41 @@ function probeGatewayWebSocketListening(port: number, timeoutMs: number): Promis
 export async function findExistingGatewayProcess(options: {
   port: number;
   ownedPid?: number;
+  tls?: boolean;
 }): Promise<{ port: number; externalToken?: string } | null> {
-  const { port, ownedPid } = options;
+  const { port, ownedPid, tls = false } = options;
 
   try {
-    try {
-      const pids = await getListeningProcessIds(port);
-      const pidMatchesOwned = ownedPid != null && pids.includes(String(ownedPid));
+    const pids = await getListeningProcessIds(port);
+    if (pids.length > 0 && (!ownedPid || !pids.includes(String(ownedPid)))) {
+      logger.debug(
+        `Port ${port} has listening PIDs (${pids.join(', ')}) but ownedPid=${ownedPid ?? 'none'} not in list. ` +
+        'Probing WebSocket before deciding to terminate...'
+      );
 
-      if (pids.length > 0 && !pidMatchesOwned) {
-        // On Windows, Electron utilityProcess.pid often differs from the PID that
-        // `netstat` attributes to the listening socket (same ClawX gateway). Killing
-        // based on PID mismatch alone destroys a healthy Gateway and causes restart loops
-        // (e.g. after QR login when the main process reconnects while the socket owner PID
-        // does not match `child.pid`).
-        const gatewayResponds = await probeGatewayWebSocketListening(port, 5000);
-        if (gatewayResponds) {
-          logger.debug(
-            `Port ${port} in use by PID(s) ${pids.join(', ')} (ownedPid=${ownedPid ?? 'none'}); WebSocket responds — using existing Gateway`,
-          );
-          return { port };
-        }
-
-        await terminateOrphanedProcessIds(port, pids);
-        if (process.platform === 'win32') {
-          await waitForPortFree(port, 10000);
-        }
-        return null;
+      const isAlive = await probeGatewayWebSocketListening(port, 5000, tls);
+      if (isAlive) {
+        logger.debug(
+          `WebSocket probe succeeded on port ${port} — existing Gateway is healthy, ` +
+          'reusing instead of terminating (Windows PID mismatch workaround).'
+        );
+        return { port };
       }
-    } catch (err) {
-      logger.warn('Error checking for existing process on port:', err);
+
+      logger.info(
+        `WebSocket probe failed on port ${port} — treating as orphaned process and terminating.`
+      );
+      await terminateOrphanedProcessIds(port, pids);
+      if (process.platform === 'win32') {
+        await waitForPortFree(port, 10000);
+      }
+      return null;
     }
 
+    const proto = tls ? 'wss' : 'ws';
     return await new Promise<{ port: number; externalToken?: string } | null>((resolve) => {
-      const testWs = new WebSocket(`ws://localhost:${port}/ws`);
+      const wsOpts = tls ? { rejectUnauthorized: false } : undefined;
+      const testWs = wsOpts ? new WebSocket(`${proto}://localhost:${port}/ws`, wsOpts) : new WebSocket(`${proto}://localhost:${port}/ws`);
       const timeout = setTimeout(() => {
         testWs.close();
         resolve(null);

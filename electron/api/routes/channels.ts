@@ -61,8 +61,6 @@ import {
   normalizeSlackMessagingTarget,
   normalizeWhatsAppMessagingTarget,
 } from '../../utils/openclaw-sdk';
-import type { HostApiContext } from '../context';
-import { parseJsonBody, sendJson } from '../route-utils';
 
 // listWhatsAppDirectory*FromConfig were removed from openclaw's public exports
 // in 2026.3.23-1.  No-op stubs; WhatsApp target picker uses session discovery.
@@ -70,6 +68,8 @@ import { parseJsonBody, sendJson } from '../route-utils';
 async function listWhatsAppDirectoryGroupsFromConfig(_params: any): Promise<any[]> { return []; }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function listWhatsAppDirectoryPeersFromConfig(_params: any): Promise<any[]> { return []; }
+import type { HostApiContext } from '../context';
+import { parseJsonBody, sendJson } from '../route-utils';
 
 const WECHAT_QR_TIMEOUT_MS = 8 * 60 * 1000;
 const activeQrLogins = new Map<string, string>();

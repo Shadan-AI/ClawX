@@ -11,29 +11,6 @@ function isMainProcessExternal(id: string): boolean {
   return true;
 }
 
-// Banner injected at the top of the main process bundle to ensure
-// openclaw subpath imports (e.g. openclaw/plugin-sdk/minimax-portal-auth)
-// resolve correctly in packaged builds where openclaw lives in
-// process.resourcesPath instead of node_modules.
-const mainProcessBanner = `
-if (typeof process !== 'undefined' && process.resourcesPath) {
-  try {
-    var _Module = require('module');
-    var _path = require('path');
-    var _openclawDir = _path.join(process.resourcesPath, 'openclaw');
-    if (require('fs').existsSync(_openclawDir)) {
-      var _prevPaths = _Module.globalPaths || [];
-      var _nmPath = _path.join(_openclawDir, 'node_modules');
-      if (_prevPaths.indexOf(_openclawDir) === -1) _Module.globalPaths.unshift(_openclawDir);
-      if (_prevPaths.indexOf(_nmPath) === -1) _Module.globalPaths.unshift(_nmPath);
-      // Also register openclaw itself so require('openclaw/...') resolves
-      var _parentNM = _path.dirname(_openclawDir);
-      if (_prevPaths.indexOf(_parentNM) === -1) _Module.globalPaths.unshift(_parentNM);
-    }
-  } catch(e) {}
-}
-`;
-
 // https://vitejs.dev/config/
 export default defineConfig({
   // Required for Electron: all asset URLs must be relative because the renderer
@@ -55,9 +32,6 @@ export default defineConfig({
             outDir: 'dist-electron/main',
             rollupOptions: {
               external: isMainProcessExternal,
-              output: {
-                banner: mainProcessBanner,
-              },
             },
           },
         },

@@ -5,7 +5,7 @@
  * On first launch, ClawX seeds ~/.openclaw/openclaw.json from this file so packaged
  * builds match your local openme configuration (models, agents, channels, plugins).
  *
- * Source: @shadanai/openclaw package (npm) or ../openme/gateway.json when developing.
+ * Source: ../openme/gateway.json (relative to ClawX repo root).
  */
 
 import 'zx/globals';
@@ -15,20 +15,12 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
-// Prefer monorepo fork + committed canonical template over npm package: the published
-// @shadanai/openclaw may carry a dev gateway.json (e.g. LAN baseUrl) that must not
-// seed end-user ~/.openclaw/openclaw.json or drift from openme/gateway.json.
-const SRC_CANDIDATES = [
-  path.join(ROOT, '..', 'openme', 'gateway.json'),
-  path.join(ROOT, 'resources', 'openclaw-default.json'),
-  path.join(ROOT, 'node_modules', '@shadanai', 'openclaw', 'gateway.json'),
-];
-const SRC = SRC_CANDIDATES.find((p) => fs.existsSync(p));
+const SRC = path.join(ROOT, '..', 'openme', 'gateway.json');
 const DEST = path.join(ROOT, 'resources', 'openclaw-default.json');
 
-if (!SRC) {
-  echo`⚠️  gateway template missing (tried npm @shadanai/openclaw and ../openme/gateway.json)`;
-  echo`   Skipping resources/openclaw-default.json`;
+if (!fs.existsSync(SRC)) {
+  echo`⚠️  openme gateway template missing: ${SRC}`;
+  echo`   Skipping resources/openclaw-default.json — first-run seed will fall back to ../openme/gateway.json when running from source.`;
   process.exit(0);
 }
 

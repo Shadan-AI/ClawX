@@ -29,7 +29,6 @@ import {
   seedOpenClawJsonFromTemplateIfMissing,
   mergeOpenClawJsonFromTemplateForMissingSections,
 } from '../utils/openclaw-auth';
-import { startOpenClawConfigLanReconciliationWatcher } from '../utils/openclaw-config-watch';
 import { buildProxyEnv, resolveProxySettings } from '../utils/proxy';
 import { syncProxyConfigToOpenClaw } from '../utils/openclaw-proxy';
 import { logger } from '../utils/logger';
@@ -252,10 +251,6 @@ export async function syncGatewayConfigBeforeLaunch(
   } catch (err) {
     logger.warn('Failed to sync session idle minutes to openclaw.json:', err);
   }
-
-  // Gateway may overwrite models.providers.*.baseUrl with a dev-LAN URL after startup;
-  // keep reconciling from the bundled template whenever openclaw.json changes on disk.
-  startOpenClawConfigLanReconciliationWatcher();
 }
 
 async function loadProviderEnv(): Promise<{ providerEnv: Record<string, string>; loadedProviderKeyCount: number }> {
