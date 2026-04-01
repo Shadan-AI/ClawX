@@ -102,10 +102,22 @@ export function getResourcesDir(): string {
 }
 
 /**
- * Path to the default `openclaw.json` template (copied from `openme/gateway.json` at build).
- * Used to seed `~/.openclaw/openclaw.json` on first launch when the file does not exist.
+ * Path to the default `openclaw.json` template.
+ * Priority:
+ *   1. resources/openclaw/gateway.json  — bundled openclaw package (packaged & dev)
+ *   2. resources/openclaw-default.json  — legacy copy from openme/gateway.json at build time
+ *   3. ../openme/gateway.json           — dev monorepo sibling (fallback)
  */
 export function getOpenClawDefaultConfigTemplatePath(): string | null {
+  // 1. Prefer the gateway.json shipped inside the bundled openclaw package.
+  //    Packaged: <resourcesPath>/openclaw/gateway.json
+  //    Dev:      node_modules/@shadanai/openclaw/gateway.json (or openclaw/)
+  const openclawGateway = join(getOpenClawDir(), 'gateway.json');
+  if (existsSync(openclawGateway)) {
+    return openclawGateway;
+  }
+
+  // 2. Legacy: openclaw-default.json copied at build time from openme/gateway.json
   try {
     if (getElectronApp().isPackaged) {
       const packaged = join(process.resourcesPath, 'resources', 'openclaw-default.json');
@@ -120,6 +132,8 @@ export function getOpenClawDefaultConfigTemplatePath(): string | null {
   if (existsSync(resCopy)) {
     return resCopy;
   }
+
+  // 3. Dev monorepo: ../openme/gateway.json
   const clawxRoot = join(__dirname, '../..');
   const openmeGateway = join(clawxRoot, '..', 'openme', 'gateway.json');
   if (existsSync(openmeGateway)) {
