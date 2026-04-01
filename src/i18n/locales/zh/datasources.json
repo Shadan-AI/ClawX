@@ -9,8 +9,8 @@
     },
     "connectors": {
         "wechat": {
-            "name": "微信",
-            "description": "微信相关能力所需的应用凭证。"
+            "name": "微信公众号",
+            "description": "微信公众号相关能力所需的应用凭证。"
         },
         "zhipu": {
             "name": "智谱",
