@@ -6,6 +6,7 @@ import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
 import { Component, useEffect, useRef } from 'react';
 import type { ErrorInfo, ReactNode } from 'react';
 import { Toaster } from 'sonner';
+import { ContextMenu } from '@/components/common/ContextMenu';
 import i18n from './i18n';
 import { MainLayout } from './components/layout/MainLayout';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -230,10 +231,12 @@ function App() {
         </Routes>
 
         {/* Global toast notifications */}
+        {/* Global context menu */}
+        <ContextMenu />
         <Toaster
-          position="bottom-right"
+          position="top-center"
           richColors
-          closeButton
+          duration={1500}
           style={{ zIndex: 99999 }}
         />
       </TooltipProvider>

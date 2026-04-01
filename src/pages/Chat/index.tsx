@@ -141,7 +141,7 @@ export function Chat() {
     <div className={cn("relative flex flex-col -m-6 transition-colors duration-500 dark:bg-background")} style={{ height: 'calc(100vh - 2.5rem)' }}>
       {/* Messages Area */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-4 pb-40">
-        <div ref={contentRef} className="max-w-4xl mx-auto space-y-4">
+        <div ref={contentRef} className="max-w-4xl mx-auto space-y-5">
           {isEmpty ? (
             <WelcomeScreen />
           ) : (
@@ -245,15 +245,20 @@ function WelcomeScreen() {
 
   return (
     <div className="flex flex-col items-center justify-center text-center h-[60vh]">
-      <h1 className="text-4xl md:text-5xl font-serif text-foreground/80 mb-8 font-normal tracking-tight" style={{ fontFamily: 'Georgia, Cambria, "Times New Roman", Times, serif' }}>
+      <div className="mb-6 animate-in fade-in-0 zoom-in-90 duration-700 ease-out">
+        <div className="h-16 w-16 mx-auto rounded-full bg-gradient-to-br from-violet-500/20 to-blue-500/20 flex items-center justify-center">
+          <Sparkles className="h-8 w-8 text-foreground/40" />
+        </div>
+      </div>
+      <h1 className="text-4xl md:text-5xl font-serif text-foreground/80 mb-8 font-normal tracking-tight animate-in fade-in-0 duration-700 ease-out delay-200" style={{ fontFamily: 'Georgia, Cambria, "Times New Roman", Times, serif' }}>
         {t('welcome.subtitle')}
       </h1>
 
-      <div className="flex flex-wrap items-center justify-center gap-2.5 max-w-lg w-full">
+      <div className="flex flex-wrap items-center justify-center gap-2.5 max-w-lg w-full animate-in fade-in-0 duration-700 ease-out delay-400">
         {quickActions.map(({ key, label }) => (
           <button 
             key={key}
-            className="px-4 py-1.5 rounded-full border border-black/10 dark:border-white/10 text-[13px] font-medium text-foreground/70 hover:bg-black/5 dark:hover:bg-white/5 transition-colors bg-black/[0.02]"
+            className="px-4 py-1.5 rounded-full border border-black/10 dark:border-white/10 text-[13px] font-medium text-foreground/70 hover:bg-black/5 dark:hover:bg-white/5 hover:scale-105 active:scale-95 transition-all duration-200 bg-black/[0.02]"
           >
             {label}
           </button>

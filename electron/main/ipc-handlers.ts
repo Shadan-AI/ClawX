@@ -128,6 +128,17 @@ export function registerIpcHandlers(
   // Box-IM config handlers (direct file access for tokenKey)
   registerBoxImConfigHandlers();
 
+  // Context menu clipboard actions
+  ipcMain.handle('context-menu-action', (event, cmd: string) => {
+    const wc = event.sender;
+    switch (cmd) {
+      case 'cut': wc.cut(); break;
+      case 'copy': wc.copy(); break;
+      case 'paste': wc.paste(); break;
+      case 'selectAll': wc.selectAll(); break;
+    }
+  });
+
   // Cron task handlers (proxy to Gateway RPC)
   registerCronHandlers(gatewayManager);
 

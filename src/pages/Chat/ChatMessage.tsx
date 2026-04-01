@@ -66,14 +66,14 @@ export const ChatMessage = memo(function ChatMessage({
   return (
     <div
       className={cn(
-        'flex gap-3 group',
+        'flex gap-3 group animate-in fade-in-0 slide-in-from-bottom-2 duration-300',
         isUser ? 'flex-row-reverse' : 'flex-row',
       )}
     >
       {/* Avatar */}
       {!isUser && (
-        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full mt-1 bg-black/5 dark:bg-white/5 text-foreground">
-          <Sparkles className="h-4 w-4" />
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full mt-1 bg-gradient-to-br from-violet-500/20 to-blue-500/20 dark:from-violet-500/30 dark:to-blue-500/30 text-foreground shadow-sm">
+          <Sparkles className="h-4.5 w-4.5" />
         </div>
       )}
 
@@ -337,12 +337,12 @@ function MessageBubble({
         'relative rounded-2xl px-4 py-3',
         !isUser && 'w-full',
         isUser
-          ? 'bg-[#0a84ff] text-white shadow-sm'
+          ? 'bg-gradient-to-br from-[#0a84ff] to-[#0070e0] text-white shadow-md'
           : 'bg-black/5 dark:bg-white/5 text-foreground',
       )}
     >
       {isUser ? (
-        <p className="whitespace-pre-wrap break-words break-all text-sm">{text}</p>
+        <p className="whitespace-pre-wrap break-words break-all text-[15px] leading-relaxed">{text}</p>
       ) : (
         <div className="prose prose-sm dark:prose-invert max-w-none break-words break-all">
           <ReactMarkdown
@@ -378,7 +378,7 @@ function MessageBubble({
             {text}
           </ReactMarkdown>
           {isStreaming && (
-            <span className="inline-block w-2 h-4 bg-foreground/50 animate-pulse ml-0.5" />
+            <span className="inline-block w-[2px] h-[18px] bg-foreground/70 animate-[blink_1s_steps(2)_infinite] ml-0.5 -mb-0.5 rounded-full" />
           )}
         </div>
       )}
