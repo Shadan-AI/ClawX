@@ -33,6 +33,7 @@ export function Models() {
     : DEFAULT_USAGE_FETCH_MAX_ATTEMPTS;
 
   const [usageGroupBy, setUsageGroupBy] = useState<UsageGroupBy>('model');
+  const [quota, setQuota] = useState<{ totalQuota: number; usedQuota: number; remainQuota: number } | null>(null);
   const [usageWindow, setUsageWindow] = useState<UsageWindow>('7d');
   const [usagePage, setUsagePage] = useState(1);
   const [selectedUsageEntry, setSelectedUsageEntry] = useState<UsageHistoryEntry | null>(null);
@@ -64,6 +65,14 @@ export function Models() {
 
   const usageFetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const usageFetchGenerationRef = useRef(0);
+
+  // Fetch OneAPI quota
+  useEffect(() => {
+    if (!isGatewayRunning) return;
+    hostApiFetch<{ totalQuota: number; usedQuota: number; remainQuota: number }>('/plugins/box-im/quota')
+      .then(setQuota)
+      .catch(() => {});
+  }, [isGatewayRunning]);
 
   useEffect(() => {
     trackUiEvent('models.page_viewed');
@@ -208,6 +217,24 @@ export function Models() {
         </div>
 
         {/* Content Area */}
+
+        {/* Quota Card */}
+        {quota && (
+          <div className="mb-8 grid grid-cols-3 gap-4 shrink-0">
+            <div className="rounded-2xl border border-black/10 dark:border-white/10 p-4 bg-gradient-to-br from-blue-500/5 to-transparent">
+              <p className="text-[12px] text-muted-foreground mb-1">总额度</p>
+              <p className="text-2xl font-semibold text-foreground">${quota.totalQuota.toFixed(2)}</p>
+            </div>
+            <div className="rounded-2xl border border-black/10 dark:border-white/10 p-4 bg-gradient-to-br from-amber-500/5 to-transparent">
+              <p className="text-[12px] text-muted-foreground mb-1">已使用</p>
+              <p className="text-2xl font-semibold text-foreground">${quota.usedQuota.toFixed(2)}</p>
+            </div>
+            <div className="rounded-2xl border border-black/10 dark:border-white/10 p-4 bg-gradient-to-br from-green-500/5 to-transparent">
+              <p className="text-[12px] text-muted-foreground mb-1">剩余</p>
+              <p className="text-2xl font-semibold text-foreground">${quota.remainQuota.toFixed(2)}</p>
+            </div>
+          </div>
+        )}
         <div className="flex-1 overflow-y-auto pr-2 pb-10 min-h-0 -mr-2 space-y-12">
           
           {/* AI Providers Section */}
@@ -340,9 +367,7 @@ export function Models() {
                           {entry.cacheWriteTokens > 0 && (
                             <span className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-amber-500"></div>{t('dashboard:recentTokenHistory.cacheWrite', { value: formatTokenCount(entry.cacheWriteTokens) })}</span>
                           )}
-                          {typeof entry.costUsd === 'number' && Number.isFinite(entry.costUsd) && (
-                            <span className="flex items-center gap-1.5 ml-auto text-foreground/80 bg-black/5 dark:bg-white/5 px-2 py-0.5 rounded-md">{t('dashboard:recentTokenHistory.cost', { amount: entry.costUsd.toFixed(4) })}</span>
-                          )}
+
                           {devModeUnlocked && entry.content && (
                             <Button
                               variant="outline"

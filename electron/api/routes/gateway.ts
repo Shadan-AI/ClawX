@@ -122,6 +122,30 @@ export async function handleGatewayRoutes(
     return true;
   }
 
+  // ── Box-IM quota (OneAPI billing) ─────────────────────────────
+
+  if (url.pathname === '/plugins/box-im/quota' && req.method === 'GET') {
+    try {
+      const { tokenKey } = await getBoxImConfig();
+      if (!tokenKey) { sendJson(res, 401, { error: '未绑定用户' }); return true; }
+      const { getOneApiBaseUrl } = await import('../../utils/box-im-sync');
+      const oneApiBase = await getOneApiBaseUrl();
+      const headers = { Authorization: `Bearer ${tokenKey}` };
+      const [subRes, usageRes] = await Promise.all([
+        fetch(`${oneApiBase}/v1/dashboard/billing/subscription`, { headers, signal: AbortSignal.timeout(10000) }),
+        fetch(`${oneApiBase}/v1/dashboard/billing/usage`, { headers, signal: AbortSignal.timeout(10000) }),
+      ]);
+      if (!subRes.ok || !usageRes.ok) { sendJson(res, 502, { error: 'OneAPI billing query failed' }); return true; }
+      const sub = await subRes.json() as any;
+      const usg = await usageRes.json() as any;
+      const totalQuota = sub.hard_limit_usd || 0;
+      const usedQuota = (usg.total_usage || 0) / 100;
+      sendJson(res, 200, { totalQuota, usedQuota, remainQuota: totalQuota - usedQuota });
+    } catch (error) {
+      sendJson(res, 500, { error: String(error) });
+    }
+    return true;
+  }
   // ── Box-IM bot sync ──────────────────────────────────────────
 
   if (url.pathname === '/plugins/box-im/bots' && req.method === 'GET') {
