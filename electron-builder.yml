@@ -132,7 +132,7 @@ nsis:
   warningsAsErrors: false
   allowToChangeInstallationDirectory: true
   deleteAppDataOnUninstall: false
-  differentialPackage: true
+  differentialPackage: false
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: OpenMe
