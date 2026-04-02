@@ -232,9 +232,22 @@ export class AppUpdater extends EventEmitter {
    * the window cleanly while ShipIt runs independently to replace the app.
    */
   quitAndInstall(): void {
-    logger.info('[Updater] quitAndInstall called');
+    logger.info('[Updater] quitAndInstall called — stopping gateway before install');
     setQuitting();
-    autoUpdater.quitAndInstall();
+
+    // Stop the gateway process before handing off to the NSIS installer.
+    // Without this, the installer's uninstaller step fails because the gateway
+    // child process still holds file locks in the install directory.
+    import('./index').then(({ gatewayManager }) => {
+        const stopPromise = gatewayManager
+          ? gatewayManager.stop().catch(() => {})
+          : Promise.resolve();
+        const timeout = new Promise<void>((r) => setTimeout(r, 4000));
+        return Promise.race([stopPromise, timeout]);
+      }).catch(() => {}).finally(() => {
+      logger.info('[Updater] gateway stopped (or timed out), proceeding with quitAndInstall');
+      autoUpdater.quitAndInstall();
+    });
   }
 
   /**

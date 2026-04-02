@@ -23,7 +23,10 @@
 
   ${if} $R0 == 0
     ${if} ${isUpdated}
-      # allow app to exit without explicit kill
+      # For auto-updates: forcefully kill the process and wait for it to exit
+      ${nsProcess::KillProcess} "${APP_EXECUTABLE_FILENAME}" $R0
+      Sleep 2000
+      ${nsProcess::KillProcess} "${APP_EXECUTABLE_FILENAME}" $R0
       Sleep 1000
       Goto doStopProcess
     ${endIf}
@@ -64,7 +67,7 @@
 
       # App likely running with elevated permissions.
       # Ask user to close it manually
-      ${if} $R1 > 1
+      ${if} $R1 > 3
         MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(appCannotBeClosed)" /SD IDCANCEL IDRETRY loop
         Quit
       ${else}
