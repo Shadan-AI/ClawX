@@ -19,63 +19,14 @@
   DetailPrint "Preparing installation..."
   DetailPrint "Extracting ClawX runtime files. This can take a few minutes on slower disks or while antivirus scanning is active."
 
-  ${nsProcess::FindProcess} "${APP_EXECUTABLE_FILENAME}" $R0
-
-  ${if} $R0 == 0
-    ${if} ${isUpdated}
-      # For auto-updates: forcefully kill the process and wait for it to exit
-      ${nsProcess::KillProcess} "${APP_EXECUTABLE_FILENAME}" $R0
-      Sleep 2000
-      ${nsProcess::KillProcess} "${APP_EXECUTABLE_FILENAME}" $R0
-      Sleep 1000
-      Goto doStopProcess
-    ${endIf}
-    MessageBox MB_OKCANCEL|MB_ICONEXCLAMATION "$(appRunning)" /SD IDOK IDOK doStopProcess
-    Quit
-
-    doStopProcess:
-    DetailPrint `Closing running "${PRODUCT_NAME}"...`
-
-    # Silently kill the process using nsProcess instead of taskkill / cmd.exe
-    ${nsProcess::KillProcess} "${APP_EXECUTABLE_FILENAME}" $R0
-    
-    # to ensure that files are not "in-use"
-    Sleep 300
-
-    # Retry counter
-    StrCpy $R1 0
-
-    loop:
-      IntOp $R1 $R1 + 1
-
-      ${nsProcess::FindProcess} "${APP_EXECUTABLE_FILENAME}" $R0
-      ${if} $R0 == 0
-        # wait to give a chance to exit gracefully
-        Sleep 1000
-        ${nsProcess::KillProcess} "${APP_EXECUTABLE_FILENAME}" $R0
-        
-        ${nsProcess::FindProcess} "${APP_EXECUTABLE_FILENAME}" $R0
-        ${If} $R0 == 0
-          DetailPrint `Waiting for "${PRODUCT_NAME}" to close.`
-          Sleep 2000
-        ${else}
-          Goto not_running
-        ${endIf}
-      ${else}
-        Goto not_running
-      ${endIf}
-
-      # App likely running with elevated permissions.
-      # Ask user to close it manually
-      ${if} $R1 > 3
-        MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(appCannotBeClosed)" /SD IDCANCEL IDRETRY loop
-        Quit
-      ${else}
-        Goto loop
-      ${endIf}
-    not_running:
-      ${nsProcess::Unload}
-  ${endIf}
+  ; Always force-kill the app process before installing, regardless of state.
+  DetailPrint `Force-closing "${PRODUCT_NAME}" if running...`
+  ${nsProcess::KillProcess} "${APP_EXECUTABLE_FILENAME}" $R0
+  Sleep 1000
+  ${nsProcess::KillProcess} "${APP_EXECUTABLE_FILENAME}" $R0
+  Sleep 1000
+  ${nsProcess::Unload}
+  DetailPrint `"${PRODUCT_NAME}" process terminated (or was not running).`
 !macroend
 
 !macro customInstall
