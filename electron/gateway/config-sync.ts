@@ -365,8 +365,17 @@ export async function prepareGatewayLaunchContext(port: number): Promise<Gateway
   const baseEnvPatched = binPathExists
     ? prependPathEntry(baseEnvRecord, binPath).env
     : baseEnvRecord;
+  // On Windows, child processes (PowerShell/cmd) default to the system code page
+  // (e.g. GBK/CP936 on Chinese systems). OpenClaw decodes stdout with UTF-8,
+  // causing garbled Chinese text in file cards. Force UTF-8 via env vars.
+  const utf8Env: Record<string, string> = process.platform === 'win32' ? {
+    PYTHONIOENCODING: 'utf-8',
+    PYTHONUTF8: '1',
+    LANG: 'en_US.UTF-8',
+  } : {};
   const forkEnv: Record<string, string | undefined> = {
     ...baseEnvPatched,
+    ...utf8Env,
     ...providerEnv,
     ...uvEnv,
     ...proxyEnv,

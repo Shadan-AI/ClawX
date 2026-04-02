@@ -543,166 +543,206 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
             </div>
           )}
 
-          <div className={cn("flex items-center gap-2", !isExpanded && "gap-1")}>
-            <Button
-              variant="ghost"
-              size="icon"
-              className={cn(
-                "shrink-0 rounded-full text-muted-foreground hover:bg-black/5 dark:hover:bg-white/10 hover:text-foreground transition-all duration-300",
-                isExpanded ? "h-10 w-10" : "h-9 w-9"
-              )}
-              onClick={pickFiles}
-              disabled={disabled || sending}
-              title={t('composer.attachFiles')}
-            >
-              <Paperclip className={cn("h-4 w-4", isExpanded && "h-5 w-5")} />
-            </Button>
+          {/* Collapsed layout: single row with buttons + textarea + send */}
+          {!isExpanded && (
+            <div className="flex items-center gap-1">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="shrink-0 h-9 w-9 rounded-full text-muted-foreground hover:bg-black/5 dark:hover:bg-white/10 hover:text-foreground"
+                onClick={pickFiles}
+                disabled={disabled || sending}
+                title={t('composer.attachFiles')}
+              >
+                <Paperclip className="h-4 w-4" />
+              </Button>
 
-            {showAgentPicker && (
-              <div ref={pickerRef} className={cn("relative shrink-0 transition-all duration-300", !isExpanded && "opacity-0 w-0 overflow-hidden")}>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className={cn(
-                    'rounded-full text-muted-foreground hover:bg-black/5 dark:hover:bg-white/10 hover:text-foreground transition-colors',
-                    isExpanded ? "h-10 w-10" : "h-9 w-9",
-                    (pickerOpen || selectedTarget) && 'bg-primary/10 text-primary hover:bg-primary/20'
-                  )}
-                  onClick={() => setPickerOpen((open) => !open)}
-                  disabled={disabled || sending}
-                  title={t('composer.pickAgent')}
-                >
-                  <AtSign className={cn("h-3.5 w-3.5", isExpanded && "h-4 w-4")} />
-                </Button>
-                {pickerOpen && (
-                  <div className="absolute left-0 bottom-full z-20 mb-2 w-72 overflow-hidden rounded-2xl border border-black/10 bg-white p-1.5 shadow-xl dark:border-white/10 dark:bg-card">
-                    <div className="px-3 py-2 text-[11px] font-medium text-muted-foreground/80">
-                      {t('composer.agentPickerTitle', { currentAgent: currentAgentName })}
-                    </div>
-                    <div className="max-h-64 overflow-y-auto">
-                      {mentionableAgents.map((agent) => (
-                        <AgentPickerItem
-                          key={agent.id}
-                          agent={agent}
-                          selected={agent.id === targetAgentId}
-                          onSelect={() => {
-                            setTargetAgentId(agent.id);
-                            setPickerOpen(false);
-                            textareaRef.current?.focus();
-                          }}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                )}
+              <div className="flex-1 relative">
+                <Textarea
+                  ref={textareaRef}
+                  value={input}
+                  onChange={handleInputChange}
+                  onKeyDown={handleKeyDown}
+                  onCompositionStart={() => { isComposingRef.current = true; }}
+                  onCompositionEnd={() => { isComposingRef.current = false; }}
+                  onPaste={handlePaste}
+                  onFocus={() => onFocusChange?.(true)}
+                  onBlur={() => onFocusChange?.(false)}
+                  placeholder={disabled ? t('composer.gatewayDisconnectedPlaceholder') : ''}
+                  disabled={disabled}
+                  className="resize-none border-0 focus-visible:ring-0 focus-visible:ring-offset-0 shadow-none bg-transparent px-1 placeholder:text-muted-foreground/60 !min-h-[48px] h-[48px] overflow-hidden !py-[13px] text-base leading-normal"
+                  rows={1}
+                />
               </div>
-            )}
 
-            <div className="flex-1 relative">
-              <Textarea
-                ref={textareaRef}
-                value={input}
-                onChange={handleInputChange}
-                onKeyDown={handleKeyDown}
-                onCompositionStart={() => {
-                  isComposingRef.current = true;
-                }}
-                onCompositionEnd={() => {
-                  isComposingRef.current = false;
-                }}
-                onPaste={handlePaste}
-                onFocus={() => onFocusChange?.(true)}
-                onBlur={() => onFocusChange?.(false)}
-                placeholder={disabled ? t('composer.gatewayDisconnectedPlaceholder') : ''}
-                disabled={disabled}
+              <Button
+                onClick={sending ? handleStop : handleSend}
+                disabled={sending ? !canStop : !canSend}
+                size="icon"
                 className={cn(
-                  "resize-none border-0 focus-visible:ring-0 focus-visible:ring-offset-0 shadow-none bg-transparent px-1 placeholder:text-muted-foreground/60",
-                  isExpanded 
-                    ? "min-h-[90px] max-h-[90px] py-3.5 text-base leading-normal" 
-                    : "!min-h-[48px] h-[48px] overflow-hidden !py-[13px] text-base leading-normal"
+                  "shrink-0 h-9 w-9 rounded-full transition-all duration-300 active:scale-90",
+                  (sending || canSend)
+                    ? 'bg-black/5 dark:bg-white/10 text-foreground hover:bg-black/10 dark:hover:bg-white/20'
+                    : 'text-muted-foreground/50 hover:bg-transparent bg-transparent',
                 )}
-                rows={isExpanded ? 2 : 1}
-              />
+                variant="ghost"
+                title={sending ? t('composer.stop') : t('composer.send')}
+              >
+                {sending
+                  ? <Square className="h-4 w-4" fill="currentColor" />
+                  : <SendHorizontal className="h-4 w-4" strokeWidth={2} />}
+              </Button>
             </div>
+          )}
 
-            {models.length > 0 && isExpanded && (
-              <div ref={modelMenuRef} className="relative shrink-0 self-end pb-1">
-                <button
-                  type="button"
-                  aria-haspopup="listbox"
-                  aria-expanded={modelMenuOpen}
-                  onClick={() => setModelMenuOpen((open) => !open)}
-                  className={cn(
-                    'flex items-center gap-1 rounded-full border border-black/10 bg-black/5 dark:bg-white/10 px-3 py-2 text-[12px] font-medium text-foreground/80 dark:border-white/10',
-                    'focus:outline-none focus:ring-1 focus:ring-ring/50',
-                    'transition-all duration-200',
-                    modelMenuOpen && 'ring-1 ring-ring/50'
-                  )}
-                >
-                  <span className="truncate max-w-[100px]">
-                    {currentModel?.name || currentModelId || t('selectModel')}
-                  </span>
-                  <ChevronDown className={cn('h-3.5 w-3.5 text-muted-foreground shrink-0 transition-transform duration-200', modelMenuOpen && 'rotate-180')} />
-                </button>
-
-                {modelMenuOpen && (
-                  <div
-                    role="listbox"
-                    className={cn(
-                      'absolute z-50 right-0 bottom-full mb-2 min-w-[160px] rounded-lg border border-border bg-popover shadow-lg',
-                      'animate-in fade-in-0 zoom-in-95 duration-150',
-                      'max-h-48 overflow-auto py-1'
-                    )}
-                  >
-                    {models.map((model) => {
-                      const isSelected = model.id === currentModelId;
-                      return (
-                        <button
-                          key={model.id}
-                          type="button"
-                          role="option"
-                          aria-selected={isSelected}
-                          onClick={() => {
-                            setCurrentModel(model.id);
-                            setModelMenuOpen(false);
-                          }}
-                          className={cn(
-                            'w-full px-3 py-2 text-left text-[12px] flex items-center justify-between gap-2',
-                            'hover:bg-accent transition-colors duration-150',
-                            isSelected && 'bg-accent/60'
-                          )}
-                        >
-                          <span className="truncate">{model.name || model.id}</span>
-                          {isSelected && <Check className="h-3.5 w-3.5 text-primary shrink-0" />}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
+          {/* Expanded layout: textarea on top, buttons on bottom row */}
+          {isExpanded && (
+            <div className="flex flex-col">
+              {/* Textarea — full width, taller */}
+              <div className="relative px-2 pt-2">
+                <Textarea
+                  ref={textareaRef}
+                  value={input}
+                  onChange={handleInputChange}
+                  onKeyDown={handleKeyDown}
+                  onCompositionStart={() => { isComposingRef.current = true; }}
+                  onCompositionEnd={() => { isComposingRef.current = false; }}
+                  onPaste={handlePaste}
+                  onFocus={() => onFocusChange?.(true)}
+                  onBlur={() => onFocusChange?.(false)}
+                  placeholder={disabled ? t('composer.gatewayDisconnectedPlaceholder') : ''}
+                  disabled={disabled}
+                  className="resize-none border-0 focus-visible:ring-0 focus-visible:ring-offset-0 shadow-none bg-transparent px-1 placeholder:text-muted-foreground/60 min-h-[36px] max-h-[200px] py-1.5 text-base leading-relaxed w-full"
+                  rows={1}
+                />
               </div>
-            )}
 
-            <Button
-              onClick={sending ? handleStop : handleSend}
-              disabled={sending ? !canStop : !canSend}
-              size="icon"
-              className={cn(
-                "shrink-0 rounded-full transition-all duration-300 active:scale-90",
-                (sending || canSend)
-                  ? 'bg-black/5 dark:bg-white/10 text-foreground hover:bg-black/10 dark:hover:bg-white/20'
-                  : 'text-muted-foreground/50 hover:bg-transparent bg-transparent',
-                isExpanded ? "h-10 w-10" : "h-9 w-9"
-              )}
-              variant="ghost"
-              title={sending ? t('composer.stop') : t('composer.send')}
-            >
-              {sending ? (
-                <Square className={cn("h-4 w-4", isExpanded && "h-4.5 w-4.5")} fill="currentColor" />
-              ) : (
-                <SendHorizontal className={cn("h-4 w-4", isExpanded && "h-4.5 w-4.5")} strokeWidth={2} />
-              )}
-            </Button>
-          </div>
+              {/* Bottom row: left buttons + right send/model */}
+              <div className="flex items-center justify-between px-1 pb-1">
+                {/* Left: attach + @ */}
+                <div className="flex items-center gap-0.5">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-9 w-9 rounded-full text-muted-foreground hover:bg-black/5 dark:hover:bg-white/10 hover:text-foreground"
+                    onClick={pickFiles}
+                    disabled={disabled || sending}
+                    title={t('composer.attachFiles')}
+                  >
+                    <Paperclip className="h-5 w-5" />
+                  </Button>
+
+                  {showAgentPicker && (
+                    <div ref={pickerRef} className="relative">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className={cn(
+                          'h-9 w-9 rounded-full text-muted-foreground hover:bg-black/5 dark:hover:bg-white/10 hover:text-foreground transition-colors',
+                          (pickerOpen || selectedTarget) && 'bg-primary/10 text-primary hover:bg-primary/20'
+                        )}
+                        onClick={() => setPickerOpen((open) => !open)}
+                        disabled={disabled || sending}
+                        title={t('composer.pickAgent')}
+                      >
+                        <AtSign className="h-4 w-4" />
+                      </Button>
+                      {pickerOpen && (
+                        <div className="absolute left-0 bottom-full z-20 mb-2 w-72 overflow-hidden rounded-2xl border border-black/10 bg-white p-1.5 shadow-xl dark:border-white/10 dark:bg-card">
+                          <div className="px-3 py-2 text-[11px] font-medium text-muted-foreground/80">
+                            {t('composer.agentPickerTitle', { currentAgent: currentAgentName })}
+                          </div>
+                          <div className="max-h-64 overflow-y-auto">
+                            {mentionableAgents.map((agent) => (
+                              <AgentPickerItem
+                                key={agent.id}
+                                agent={agent}
+                                selected={agent.id === targetAgentId}
+                                onSelect={() => {
+                                  setTargetAgentId(agent.id);
+                                  setPickerOpen(false);
+                                  textareaRef.current?.focus();
+                                }}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Right: model picker + send */}
+                <div className="flex items-center gap-1.5">
+                  {models.length > 0 && (
+                    <div ref={modelMenuRef} className="relative">
+                      <button
+                        type="button"
+                        aria-haspopup="listbox"
+                        aria-expanded={modelMenuOpen}
+                        onClick={() => setModelMenuOpen((open) => !open)}
+                        className={cn(
+                          'flex items-center gap-1 rounded-full border border-black/10 bg-black/5 dark:bg-white/10 px-3 py-2 text-[12px] font-medium text-foreground/80 dark:border-white/10',
+                          'focus:outline-none focus:ring-1 focus:ring-ring/50 transition-all duration-200',
+                          modelMenuOpen && 'ring-1 ring-ring/50'
+                        )}
+                      >
+                        <span className="truncate max-w-[100px]">
+                          {currentModel?.name || currentModelId || t('selectModel')}
+                        </span>
+                        <ChevronDown className={cn('h-3.5 w-3.5 text-muted-foreground shrink-0 transition-transform duration-200', modelMenuOpen && 'rotate-180')} />
+                      </button>
+                      {modelMenuOpen && (
+                        <div
+                          role="listbox"
+                          className="absolute z-50 right-0 bottom-full mb-2 min-w-[160px] rounded-lg border border-border bg-popover shadow-lg animate-in fade-in-0 zoom-in-95 duration-150 max-h-48 overflow-auto py-1"
+                        >
+                          {models.map((model) => {
+                            const isSelected = model.id === currentModelId;
+                            return (
+                              <button
+                                key={model.id}
+                                type="button"
+                                role="option"
+                                aria-selected={isSelected}
+                                onClick={() => { setCurrentModel(model.id); setModelMenuOpen(false); }}
+                                className={cn(
+                                  'w-full px-3 py-2 text-left text-[12px] flex items-center justify-between gap-2',
+                                  'hover:bg-accent transition-colors duration-150',
+                                  isSelected && 'bg-accent/60'
+                                )}
+                              >
+                                <span className="truncate">{model.name || model.id}</span>
+                                {isSelected && <Check className="h-3.5 w-3.5 text-primary shrink-0" />}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  <Button
+                    onClick={sending ? handleStop : handleSend}
+                    disabled={sending ? !canStop : !canSend}
+                    size="icon"
+                    className={cn(
+                      "h-9 w-9 shrink-0 rounded-full transition-all duration-300 active:scale-90",
+                      (sending || canSend)
+                        ? 'bg-black/5 dark:bg-white/10 text-foreground hover:bg-black/10 dark:hover:bg-white/20'
+                        : 'text-muted-foreground/50 hover:bg-transparent bg-transparent',
+                    )}
+                    variant="ghost"
+                    title={sending ? t('composer.stop') : t('composer.send')}
+                  >
+                    {sending
+                      ? <Square className="h-4 w-4" fill="currentColor" />
+                      : <SendHorizontal className="h-4 w-4" strokeWidth={2} />}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 

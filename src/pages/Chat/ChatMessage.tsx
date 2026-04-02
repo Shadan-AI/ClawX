@@ -63,8 +63,19 @@ export const ChatMessage = memo(function ChatMessage({
   const hasStreamingToolStatus = isStreaming && streamingTools.length > 0;
   if (!hasText && !visibleThinking && images.length === 0 && visibleTools.length === 0 && attachedFiles.length === 0 && !hasStreamingToolStatus) return null;
 
+  const handleCopy = useCallback((e: React.ClipboardEvent) => {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed) return;
+    const selected = selection.toString();
+    // Trim leading/trailing newlines added by block elements, collapse 3+ newlines to 2
+    const cleaned = selected.replace(/\n{3,}/g, '\n\n').trim();
+    e.preventDefault();
+    e.clipboardData.setData('text/plain', cleaned);
+  }, []);
+
   return (
     <div
+      onCopy={handleCopy}
       className={cn(
         'flex gap-3 group animate-in fade-in-0 slide-in-from-bottom-2 duration-300',
         isUser ? 'flex-row-reverse' : 'flex-row',

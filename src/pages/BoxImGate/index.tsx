@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { TitleBar } from '@/components/layout/TitleBar';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { useSettingsStore } from '@/stores/settings';
 import { useGatewayStore } from '@/stores/gateway';
 import { useModelsStore } from '@/stores/models';
@@ -61,8 +62,17 @@ export function BoxImGate() {
   const [qrScene, setQrScene] = useState<QrScene | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [status, setStatus] = useState<'idle' | 'scanning' | 'success' | 'expired'>('idle');
+  const [status, setStatus] = useState<'idle' | 'scanning' | 'scanned' | 'success' | 'expired' | 'need_phone'>('idle');
   const [nickname, setNickname] = useState<string | null>(null);
+  const [pendingOpenid, setPendingOpenid] = useState<string | null>(null);
+  const [pendingNickname, setPendingNickname] = useState<string | null>(null);
+  const [phone, setPhone] = useState('');
+  const [smsCode, setSmsCode] = useState('');
+  const [smsLoading, setSmsLoading] = useState(false);
+  const [bindLoading, setBindLoading] = useState(false);
+  const [smsError, setSmsError] = useState<string | null>(null);
+  const [countdown, setCountdown] = useState(0);
+  const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const attemptsRef = useRef(0);
 
@@ -112,7 +122,7 @@ export function BoxImGate() {
 
   const pollScanResult = useCallback(async (sceneId: string) => {
     try {
-      const data = await httpProxy<{ status: string; nickname?: string }>(
+      const data = await httpProxy<{ status: string; nickname?: string; openid?: string }>(
         `/plugins/box-im/auth/wx/poll/${sceneId}`,
         'GET',
       );
@@ -130,6 +140,17 @@ export function BoxImGate() {
           console.log('[BoxImGate] markBoxImGateComplete called');
           window.location.reload();
         }, 1500);
+      } else if (data.status === 'scanned') {
+        setStatus('scanned');
+        if (data.nickname) setNickname(data.nickname);
+      } else if (data.status === 'need_phone') {
+        if (pollRef.current) {
+          clearInterval(pollRef.current);
+          pollRef.current = null;
+        }
+        setPendingOpenid(data.openid || null);
+        setPendingNickname(data.nickname || null);
+        setStatus('need_phone');
       }
     } catch {
       // Ignore polling errors
@@ -146,7 +167,8 @@ export function BoxImGate() {
   }, [gatewayStatus.state, fetchQrCode]);
 
   useEffect(() => {
-    if (status !== 'scanning' || !qrScene) return;
+    if ((status !== 'scanning' && status !== 'scanned') || !qrScene) return;
+    if (pollRef.current) return;
 
     pollRef.current = setInterval(() => {
       attemptsRef.current++;
@@ -171,6 +193,64 @@ export function BoxImGate() {
 
   const handleRefresh = () => {
     fetchQrCode();
+  };
+
+  const startCountdown = () => {
+    setCountdown(60);
+    if (countdownRef.current) clearInterval(countdownRef.current);
+    countdownRef.current = setInterval(() => {
+      setCountdown((c) => {
+        if (c <= 1) {
+          clearInterval(countdownRef.current!);
+          countdownRef.current = null;
+          return 0;
+        }
+        return c - 1;
+      });
+    }, 1000);
+  };
+
+  const handleSendSms = async () => {
+    const phoneRegex = /^1[3-9]\d{9}$/;
+    if (!phoneRegex.test(phone)) {
+      setSmsError('请输入正确的手机号格式');
+      return;
+    }
+    setSmsLoading(true);
+    setSmsError(null);
+    try {
+      await httpProxy('/auth/wx/send-sms', 'POST', { phone });
+      startCountdown();
+    } catch (err) {
+      setSmsError(err instanceof Error ? err.message : '验证码发送失败');
+    } finally {
+      setSmsLoading(false);
+    }
+  };
+
+  const handleBindPhone = async () => {
+    if (!phone || !smsCode || !pendingOpenid) return;
+    setBindLoading(true);
+    setSmsError(null);
+    try {
+      const data = await httpProxy<{ success: boolean; nickname?: string; gatewayToken?: string }>(
+        '/auth/wx/bind-phone',
+        'POST',
+        { openid: pendingOpenid, phone, code: smsCode, nickname: pendingNickname },
+      );
+      if (data.success) {
+        setStatus('success');
+        setNickname(data.nickname || pendingNickname);
+        setTimeout(() => {
+          markBoxImGateComplete();
+          window.location.reload();
+        }, 1500);
+      }
+    } catch (err) {
+      setSmsError(err instanceof Error ? err.message : '绑定失败，请重试');
+    } finally {
+      setBindLoading(false);
+    }
   };
 
   const handleSkip = () => {
@@ -265,11 +345,33 @@ export function BoxImGate() {
                   />
                 </div>
               </div>
-              <p className="text-muted-foreground">{t('scanToLogin')}</p>
+              <div className="flex items-center justify-center gap-2 text-muted-foreground">
+                <span>{t('scanToLogin')}</span>
+              </div>
               <Button variant="ghost" size="sm" onClick={handleRefresh}>
                 <RefreshCw className="h-4 w-4 mr-2" />
                 {t('refreshQrCode')}
               </Button>
+            </motion.div>
+          )}
+
+          {status === 'scanned' && (
+            <motion.div
+              key="scanned"
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0 }}
+              className="text-center space-y-4"
+            >
+              <div className="flex justify-center">
+                <div className="relative">
+                  <CheckCircle2 className="h-14 w-14 text-green-400" />
+                  <Loader2 className="absolute -bottom-1 -right-1 h-5 w-5 animate-spin text-primary bg-background rounded-full" />
+                </div>
+              </div>
+              <h2 className="text-xl font-semibold">扫码成功</h2>
+              {nickname && <p className="text-muted-foreground text-sm">你好，{nickname}</p>}
+              <p className="text-muted-foreground text-sm">请在手机上确认登录...</p>
             </motion.div>
           )}
 
@@ -310,6 +412,58 @@ export function BoxImGate() {
               </Button>
             </motion.div>
           )}
+
+          {status === 'need_phone' && (
+            <motion.div
+              key="need_phone"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="space-y-4"
+            >
+              <div className="text-center">
+                <h2 className="text-xl font-semibold mb-1">绑定手机号</h2>
+                <p className="text-muted-foreground text-sm">首次登录，请绑定手机号完成注册</p>
+              </div>
+              <div className="space-y-3">
+                <Input
+                  placeholder="请输入手机号"
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  maxLength={11}
+                />
+                <div className="flex gap-2">
+                  <Input
+                    placeholder="请输入验证码"
+                    value={smsCode}
+                    onChange={(e) => setSmsCode(e.target.value)}
+                    maxLength={6}
+                    className="flex-1"
+                  />
+                  <Button
+                    variant="outline"
+                    onClick={() => void handleSendSms()}
+                    disabled={smsLoading || countdown > 0}
+                    className="shrink-0 min-w-[100px]"
+                  >
+                    {smsLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : countdown > 0 ? `${countdown}s后重发` : '发送验证码'}
+                  </Button>
+                </div>
+                {smsError && <p className="text-sm text-red-400">{smsError}</p>}
+                <Button
+                  className="w-full"
+                  onClick={() => void handleBindPhone()}
+                  disabled={bindLoading || !phone || !smsCode}
+                >
+                  {bindLoading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                  确认绑定
+                </Button>
+                <Button variant="ghost" size="sm" className="w-full" onClick={handleRefresh}>
+                  重新扫码
+                </Button>
+              </div>
+            </motion.div>
+          )}
         </AnimatePresence>
       </div>
     );
@@ -329,12 +483,6 @@ export function BoxImGate() {
           </div>
 
           {renderContent()}
-
-          <div className="mt-8 text-center">
-            <Button variant="link" className="text-muted-foreground" onClick={handleSkip}>
-              {t('skip')}
-            </Button>
-          </div>
         </div>
       </div>
     </div>

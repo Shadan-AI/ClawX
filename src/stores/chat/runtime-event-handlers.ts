@@ -5,6 +5,7 @@ import {
   extractImagesAsAttachedFiles,
   extractMediaRefs,
   extractRawFilePaths,
+  fileNameFromPath,
   getMessageText,
   getToolCallFilePath,
   hasErrorRecoveryTimer,
@@ -76,6 +77,7 @@ export function handleRuntimeEventState(
           if (get().error) set({ error: null });
           // Message complete - add to history and clear streaming
           const finalMsg = event.message as RawMessage | undefined;
+          console.log('[FileCard Debug] final event, role:', finalMsg?.role, 'isToolResult:', finalMsg ? isToolResultRole(finalMsg.role) : false);
           if (finalMsg) {
             const updates = collectToolUpdates(finalMsg, resolvedState);
             if (isToolResultRole(finalMsg.role)) {
@@ -93,17 +95,45 @@ export function handleRuntimeEventState(
                 for (const f of toolFiles) {
                   if (!f.filePath) {
                     f.filePath = matchedPath;
-                    f.fileName = matchedPath.split(/[\\/]/).pop() || 'image';
+                    f.fileName = fileNameFromPath(matchedPath, 'image');
                   }
                 }
               }
               const text = getMessageText(finalMsg.content);
+              console.log('[FileCard Debug] tool_result text:', JSON.stringify(text?.substring(0, 500)));
+              console.log('[FileCard Debug] tool_result content:', JSON.stringify(finalMsg.content)?.substring(0, 500));
               if (text) {
                 const mediaRefs = extractMediaRefs(text);
                 const mediaRefPaths = new Set(mediaRefs.map(r => r.filePath));
                 for (const ref of mediaRefs) toolFiles.push(makeAttachedFile(ref));
-                for (const ref of extractRawFilePaths(text)) {
+                const rawRefs = extractRawFilePaths(text);
+                console.log('[FileCard Debug] extractRawFilePaths result:', rawRefs);
+                for (const ref of rawRefs) {
                   if (!mediaRefPaths.has(ref.filePath)) toolFiles.push(makeAttachedFile(ref));
+                }
+              }
+              // Also extract paths from the matching tool_use args (e.g. `command` script)
+              if (finalMsg.toolCallId && currentStreamForPath) {
+                const seenPaths = new Set(toolFiles.map(f => f.filePath).filter(Boolean));
+                const content = currentStreamForPath.content;
+                if (Array.isArray(content)) {
+                  for (const block of content as import('./types').ContentBlock[]) {
+                    if ((block.type === 'tool_use' || block.type === 'toolCall') && block.id === finalMsg.toolCallId) {
+                      const args = (block.input ?? block.arguments) as Record<string, unknown> | undefined;
+                      if (args) {
+                        for (const val of Object.values(args)) {
+                          if (typeof val === 'string') {
+                            for (const ref of extractRawFilePaths(val)) {
+                              if (!seenPaths.has(ref.filePath)) {
+                                seenPaths.add(ref.filePath);
+                                toolFiles.push(makeAttachedFile(ref));
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
                 }
               }
               set((s) => {

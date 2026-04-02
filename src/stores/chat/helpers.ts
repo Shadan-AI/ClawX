@@ -1,6 +1,17 @@
 import { invokeIpc } from '@/lib/api-client';
 import type { AttachedFileMeta, ChatSession, ContentBlock, RawMessage, ToolStatus } from './types';
 
+/** Extract and decode a file name from a path string. Handles URL-encoded names. */
+export function fileNameFromPath(filePath: string, fallback = 'file'): string {
+  const raw = filePath.split(/[\\/]/).pop() || fallback;
+  try {
+    const decoded = decodeURIComponent(raw);
+    return decoded !== raw ? decoded : raw;
+  } catch {
+    return raw;
+  }
+}
+
 // Module-level timestamp tracking the last chat event received.
 // Used by the safety timeout to avoid false-positive "no response" errors
 // during tool-use conversations where streamingMessage is temporarily cleared
@@ -231,7 +242,7 @@ function extractImagesAsAttachedFiles(content: unknown): AttachedFileMeta[] {
 function makeAttachedFile(ref: { filePath: string; mimeType: string }): AttachedFileMeta {
   const cached = _imageCache.get(ref.filePath);
   if (cached) return { ...cached, filePath: ref.filePath };
-  const fileName = ref.filePath.split(/[\\/]/).pop() || 'file';
+  const fileName = fileNameFromPath(ref.filePath);
   return { fileName, mimeType: ref.mimeType, fileSize: 0, preview: null, filePath: ref.filePath };
 }
 
@@ -278,18 +289,36 @@ function getToolCallFilePath(msg: RawMessage, toolCallId: string): string | unde
 }
 
 /**
- * Collect all tool call file paths from a message into a Map<toolCallId, filePath>.
+ * Collect all tool call file paths from a message into a Map<toolCallId, filePath[]>.
+ * Also scans string args (e.g. `command`) for embedded file paths.
  */
 function collectToolCallPaths(msg: RawMessage, paths: Map<string, string>): void {
+  const extractFromArgs = (id: string, args: Record<string, unknown>) => {
+    // Direct file path args
+    const fp = args.file_path ?? args.filePath ?? args.path ?? args.file;
+    if (typeof fp === 'string') {
+      paths.set(id, fp);
+      return;
+    }
+    // Scan all string args (e.g. `command`) for embedded absolute paths
+    for (const val of Object.values(args)) {
+      if (typeof val === 'string') {
+        const refs = extractRawFilePaths(val);
+        if (refs.length > 0) {
+          // store first match; multiple paths handled via pendingToolArgPaths below
+          paths.set(id, refs[0]!.filePath);
+          return;
+        }
+      }
+    }
+  };
+
   const content = msg.content;
   if (Array.isArray(content)) {
     for (const block of content as ContentBlock[]) {
       if ((block.type === 'tool_use' || block.type === 'toolCall') && block.id) {
         const args = (block.input ?? block.arguments) as Record<string, unknown> | undefined;
-        if (args) {
-          const fp = args.file_path ?? args.filePath ?? args.path ?? args.file;
-          if (typeof fp === 'string') paths.set(block.id, fp);
-        }
+        if (args) extractFromArgs(block.id, args);
       }
     }
   }
@@ -304,12 +333,54 @@ function collectToolCallPaths(msg: RawMessage, paths: Map<string, string>): void
       try {
         args = typeof fn.arguments === 'string' ? JSON.parse(fn.arguments) : (fn.arguments ?? fn.input) as Record<string, unknown>;
       } catch { /* ignore */ }
-      if (args) {
-        const fp = args.file_path ?? args.filePath ?? args.path ?? args.file;
-        if (typeof fp === 'string') paths.set(id, fp);
+      if (args) extractFromArgs(id, args);
+    }
+  }
+}
+
+/**
+ * Collect ALL file paths from tool_use args (not just the first one).
+ * Used to surface multiple files from a single tool call (e.g. exec with a script listing files).
+ */
+function collectAllToolArgPaths(msg: RawMessage): AttachedFileMeta[] {
+  const files: AttachedFileMeta[] = [];
+  const seen = new Set<string>();
+
+  const extractFromArgs = (args: Record<string, unknown>) => {
+    for (const val of Object.values(args)) {
+      if (typeof val === 'string') {
+        for (const ref of extractRawFilePaths(val)) {
+          if (!seen.has(ref.filePath)) {
+            seen.add(ref.filePath);
+            files.push(makeAttachedFile(ref));
+          }
+        }
+      }
+    }
+  };
+
+  const content = msg.content;
+  if (Array.isArray(content)) {
+    for (const block of content as ContentBlock[]) {
+      if ((block.type === 'tool_use' || block.type === 'toolCall')) {
+        const args = (block.input ?? block.arguments) as Record<string, unknown> | undefined;
+        if (args) extractFromArgs(args);
       }
     }
   }
+  const msgAny = msg as unknown as Record<string, unknown>;
+  const toolCalls = msgAny.tool_calls ?? msgAny.toolCalls;
+  if (Array.isArray(toolCalls)) {
+    for (const tc of toolCalls as Array<Record<string, unknown>>) {
+      const fn = (tc.function ?? tc) as Record<string, unknown>;
+      let args: Record<string, unknown> | undefined;
+      try {
+        args = typeof fn.arguments === 'string' ? JSON.parse(fn.arguments) : (fn.arguments ?? fn.input) as Record<string, unknown>;
+      } catch { /* ignore */ }
+      if (args) extractFromArgs(args);
+    }
+  }
+  return files;
 }
 
 /**
@@ -324,13 +395,24 @@ function collectToolCallPaths(msg: RawMessage, paths: Map<string, string>): void
 function enrichWithToolResultFiles(messages: RawMessage[]): RawMessage[] {
   const pending: AttachedFileMeta[] = [];
   const toolCallPaths = new Map<string, string>();
+  // Store all tool_use args by toolCallId for multi-path extraction
+  const toolCallArgs = new Map<string, Record<string, unknown>>();
 
   return messages.map((msg) => {
     // Track file paths from assistant tool call arguments for later matching
     if (msg.role === 'assistant') {
       collectToolCallPaths(msg, toolCallPaths);
+      // Also store full args for multi-path extraction
+      const content = msg.content;
+      if (Array.isArray(content)) {
+        for (const block of content as ContentBlock[]) {
+          if ((block.type === 'tool_use' || block.type === 'toolCall') && block.id) {
+            const args = (block.input ?? block.arguments) as Record<string, unknown> | undefined;
+            if (args) toolCallArgs.set(block.id, args);
+          }
+        }
+      }
     }
-
     if (isToolResultRole(msg.role)) {
       // Resolve file path from the matching tool call
       const matchedPath = msg.toolCallId ? toolCallPaths.get(msg.toolCallId) : undefined;
@@ -341,7 +423,7 @@ function enrichWithToolResultFiles(messages: RawMessage[]): RawMessage[] {
         for (const f of imageFiles) {
           if (!f.filePath) {
             f.filePath = matchedPath;
-            f.fileName = matchedPath.split(/[\\/]/).pop() || 'image';
+            f.fileName = fileNameFromPath(matchedPath, 'image');
           }
         }
       }
@@ -349,16 +431,36 @@ function enrichWithToolResultFiles(messages: RawMessage[]): RawMessage[] {
 
       // 2. [media attached: ...] patterns in tool result text output
       const text = getMessageText(msg.content);
+      const seenPaths = new Set<string>();
       if (text) {
         const mediaRefs = extractMediaRefs(text);
         const mediaRefPaths = new Set(mediaRefs.map(r => r.filePath));
         for (const ref of mediaRefs) {
+          seenPaths.add(ref.filePath);
           pending.push(makeAttachedFile(ref));
         }
         // 3. Raw file paths in tool result text (documents, audio, video, etc.)
         for (const ref of extractRawFilePaths(text)) {
           if (!mediaRefPaths.has(ref.filePath)) {
+            seenPaths.add(ref.filePath);
             pending.push(makeAttachedFile(ref));
+          }
+        }
+      }
+
+      // 4. Extract paths from the matching tool_use args (e.g. `command` script with paths)
+      if (msg.toolCallId) {
+        const args = toolCallArgs.get(msg.toolCallId);
+        if (args) {
+          for (const val of Object.values(args)) {
+            if (typeof val === 'string') {
+              for (const ref of extractRawFilePaths(val)) {
+                if (!seenPaths.has(ref.filePath)) {
+                  seenPaths.add(ref.filePath);
+                  pending.push(makeAttachedFile(ref));
+                }
+              }
+            }
           }
         }
       }
@@ -436,7 +538,7 @@ function enrichWithCachedImages(messages: RawMessage[]): RawMessage[] {
     const files: AttachedFileMeta[] = allRefs.map(ref => {
       const cached = _imageCache.get(ref.filePath);
       if (cached) return { ...cached, filePath: ref.filePath };
-      const fileName = ref.filePath.split(/[\\/]/).pop() || 'file';
+      const fileName = fileNameFromPath(ref.filePath);
       return { fileName, mimeType: ref.mimeType, fileSize: 0, preview: null, filePath: ref.filePath };
     });
     return { ...msg, _attachedFiles: files };

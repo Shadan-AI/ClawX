@@ -19,6 +19,7 @@ import {
   Trash2,
   Cpu,
   Database,
+  Loader2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useSettingsStore } from '@/stores/settings';
@@ -334,6 +335,39 @@ export function Sidebar() {
 
       {/* Footer */}
       <div className="p-2 mt-auto">
+        {/* Gateway Status */}
+        <div className={cn(
+          'flex items-center gap-2.5 rounded-lg px-2.5 py-2 mb-1 text-[13px]',
+          sidebarCollapsed ? 'justify-center px-0' : '',
+        )}>
+          {gatewayStatus.state === 'running' && (
+            <>
+              <div className="relative flex shrink-0 items-center justify-center">
+                <span className="h-2 w-2 rounded-full bg-green-500" />
+                <span className="absolute h-2 w-2 rounded-full bg-green-500 animate-ping opacity-60" />
+              </div>
+              {!sidebarCollapsed && <span className="text-green-600 dark:text-green-500 font-medium">{t('sidebar.gatewayRunning')}</span>}
+            </>
+          )}
+          {(gatewayStatus.state === 'starting' || gatewayStatus.state === 'reconnecting') && (
+            <>
+              <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-yellow-500" />
+              {!sidebarCollapsed && <span className="text-yellow-600 dark:text-yellow-400 font-medium">{t('sidebar.gatewayStarting')}</span>}
+            </>
+          )}
+          {gatewayStatus.state === 'error' && (
+            <>
+              <span className="h-2 w-2 rounded-full bg-red-500 shrink-0" />
+              {!sidebarCollapsed && <span className="text-red-600 dark:text-red-400 font-medium">{t('sidebar.gatewayError')}</span>}
+            </>
+          )}
+          {(gatewayStatus.state === 'stopped' || gatewayStatus.state === 'idle' || (!gatewayStatus.state)) && (
+            <>
+              <span className="h-2 w-2 rounded-full bg-muted-foreground/40 shrink-0" />
+              {!sidebarCollapsed && <span className="text-muted-foreground font-medium">{t('sidebar.gatewayStopped')}</span>}
+            </>
+          )}
+        </div>
         <NavLink
             to="/settings"
             className={({ isActive }) =>

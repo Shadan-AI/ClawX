@@ -1,0 +1,309 @@
+[33mcommit 86db9e12794cc9adc7afa0b7dafbecb25d5b3e3e[m[33m ([m[1;36mHEAD -> [m[1;32mneice1.0[m[33m, [m[1;31morigin/neice1.0[m[33m)[m
+Author: gaom <gaom@user.local>
+Date:   Wed Apr 1 17:19:07 2026 +0800
+
+    feat: rename to OpenMe, delete bot, login check, datasources redesign, confirm dialog restyle
+
+[1mdiff --git a/package.json b/package.json[m
+[1mindex 82a553d..5a63210 100644[m
+[1m--- a/package.json[m
+[1m+++ b/package.json[m
+[36m@@ -1,149 +1,149 @@[m
+[31m-{[m
+[31m-    "name": "clawx",[m
+[31m-    "version": "0.3.1-alpha.0",[m
+[31m-    "pnpm": {[m
+[31m-        "onlyBuiltDependencies": [[m
+[31m-            "@discordjs/opus",[m
+[31m-            "@whiskeysockets/baileys",[m
+[31m-            "electron",[m
+[31m-            "esbuild",[m
+[31m-            "koffi",[m
+[31m-            "node-llama-cpp",[m
+[31m-            "protobufjs",[m
+[31m-            "sharp"[m
+[31m-        ],[m
+[31m-        "overrides": {[m
+[31m-            "isbinaryfile": "^5.0.0",[m
+[31m-            "https-proxy-agent": "7.0.6",[m
+[31m-            "@slack/web-api": "7.15.0"[m
+[31m-        },[m
+[31m-        "supportedArchitectures": {[m
+[31m-            "os": [[m
+[31m-                "current"[m
+[31m-            ],[m
+[31m-            "cpu": [[m
+[31m-                "x64",[m
+[31m-                "arm64"[m
+[31m-            ][m
+[31m-        }[m
+[31m-    },[m
+[31m-    "description": "ClawX - Graphical AI Assistant based on OpenClaw",[m
+[31m-    "main": "dist-electron/main/index.js",[m
+[31m-    "author": "ClawX Team",[m
+[31m-    "license": "MIT",[m
+[31m-    "private": true,[m
+[31m-    "scripts": {[m
+[31m-        "init": "pnpm install && pnpm run uv:download",[m
+[31m-        "predev": "zx scripts/prepare-preinstalled-skills-dev.mjs",[m
+[31m-        "dev": "vite",[m
+[31m-        "build": "vite build && zx scripts/bundle-openclaw.mjs && zx scripts/bundle-openclaw-plugins.mjs && zx scripts/bundle-box-im.mjs && zx scripts/bundle-preinstalled-skills.mjs && zx scripts/copy-openclaw-default-config.mjs && zx scripts/copy-mkcert.mjs",[m
+[31m-        "build:vite": "vite build",[m
+[31m-        "bundle:openclaw-plugins": "zx scripts/bundle-openclaw-plugins.mjs",[m
+[31m-        "bundle:preinstalled-skills": "zx scripts/bundle-preinstalled-skills.mjs",[m
+[31m-        "lint": "eslint . --fix",[m
+[31m-        "typecheck": "tsc --noEmit",[m
+[31m-        "test": "vitest run",[m
+[31m-        "comms:replay": "node scripts/comms/replay.mjs",[m
+[31m-        "comms:baseline": "node scripts/comms/baseline.mjs",[m
+[31m-        "comms:compare": "node scripts/comms/compare.mjs",[m
+[31m-        "uv:download": "zx scripts/download-bundled-uv.mjs",[m
+[31m-        "uv:download:mac": "zx scripts/download-bundled-uv.mjs --platform=mac",[m
+[31m-        "uv:download:win": "zx scripts/download-bundled-uv.mjs --platform=win",[m
+[31m-        "uv:download:linux": "zx scripts/download-bundled-uv.mjs --platform=linux",[m
+[31m-        "uv:download:all": "zx scripts/download-bundled-uv.mjs --all",[m
+[31m-        "node:download:win": "zx scripts/download-bundled-node.mjs --platform=win",[m
+[31m-        "prep:win-binaries": "pnpm run uv:download:win && pnpm run node:download:win",[m
+[31m-        "icons": "zx scripts/generate-icons.mjs",[m
+[31m-        "package": "vite build && zx scripts/bundle-openclaw.mjs && zx scripts/bundle-openclaw-plugins.mjs && zx scripts/bundle-box-im.mjs && zx scripts/bundle-preinstalled-skills.mjs && zx scripts/copy-openclaw-default-config.mjs && zx scripts/copy-mkcert.mjs",[m
+[31m-        "package:mac": "node scripts/package-mac.mjs",[m
+[31m-        "package:mac:dmg": "CLAWX_FORCE_DMG=1 node scripts/package-mac.mjs",[m
+[31m-        "package:mac:local": "SKIP_PREINSTALLED_SKILLS=1 node scripts/package-mac.mjs",[m
+[31m-        "package:mac:local:dmg": "SKIP_PREINSTALLED_SKILLS=1 CLAWX_FORCE_DMG=1 node scripts/package-mac.mjs",[m
+[31m-        "package:win": "pnpm run prep:win-binaries && pnpm run package && electron-builder --win --publish never",[m
+[31m-        "package:win:x64": "pnpm run prep:win-binaries && pnpm run package && electron-builder --win --x64 --publish never",[m
+[31m-        "package:win:arm64": "pnpm run prep:win-binaries && pnpm run package && electron-builder --win --arm64 --publish never",[m
+[31m-        "package:linux": "pnpm run package && electron-builder --linux --publish never",[m
+[31m-        "release": "pnpm run uv:download && pnpm run package && electron-builder --publish always",[m
+[31m-        "version:patch": "pnpm version patch",[m
+[31m-        "version:minor": "pnpm version minor",[m
+[31m-        "version:major": "pnpm version major",[m
+[31m-        "postversion": "git push && git push --tags",[m
+[31m-        "deps:openclaw:latest": "pnpm update @shadanai/openclaw --latest"[m
+[31m-    },[m
+[31m-    "dependencies": {[m
+[31m-        "clawhub": "^0.5.0",[m
+[31m-        "electron-store": "^11.0.2",[m
+[31m-        "electron-updater": "^6.8.3",[m
+[31m-        "lru-cache": "^11.2.6",[m
+[31m-        "ms": "^2.1.3",[m
+[31m-        "node-machine-id": "^1.1.12",[m
+[31m-        "posthog-node": "^5.28.0",[m
+[31m-        "ws": "^8.19.0"[m
+[31m-    },[m
+[31m-    "devDependencies": {[m
+[31m-        "@eslint/js": "^10.0.1",[m
+[31m-        "@larksuite/openclaw-lark": "2026.3.25",[m
+[31m-        "@radix-ui/react-dialog": "^1.1.15",[m
+[31m-        "@radix-ui/react-dropdown-menu": "^2.1.16",[m
+[31m-        "@radix-ui/react-label": "^2.1.8",[m
+[31m-        "@radix-ui/react-progress": "^1.1.8",[m
+[31m-        "@radix-ui/react-radio-group": "^1.3.8",[m
+[31m-        "@radix-ui/react-select": "^2.2.6",[m
+[31m-        "@radix-ui/react-separator": "^1.1.8",[m
+[31m-        "@radix-ui/react-slot": "^1.2.4",[m
+[31m-        "@radix-ui/react-switch": "^1.2.6",[m
+[31m-        "@radix-ui/react-tabs": "^1.1.13",[m
+[31m-        "@radix-ui/react-toast": "^1.2.15",[m
+[31m-        "@radix-ui/react-tooltip": "^1.2.8",[m
+[31m-        "@soimy/dingtalk": "^3.4.2",[m
+[31m-        "@tencent-connect/openclaw-qqbot": "^1.6.5",[m
+[31m-        "@tencent-weixin/openclaw-weixin": "^2.0.1",[m
+[31m-        "@testing-library/jest-dom": "^6.9.1",[m
+[31m-        "@testing-library/react": "^16.3.2",[m
+[31m-        "@types/node": "^25.3.0",[m
+[31m-        "@types/react": "^19.2.14",[m
+[31m-        "@types/react-dom": "^19.2.3",[m
+[31m-        "@types/ws": "^8.18.1",[m
+[31m-        "@typescript-eslint/eslint-plugin": "^8.56.0",[m
+[31m-        "@typescript-eslint/parser": "^8.56.0",[m
+[31m-        "@vitejs/plugin-react": "^5.1.4",[m
+[31m-        "@wecom/wecom-openclaw-plugin": "^2026.3.24",[m
+[31m-        "@whiskeysockets/baileys": "7.0.0-rc.9",[m
+[31m-        "autoprefixer": "^10.4.24",[m
+[31m-        "class-variance-authority": "^0.7.1",[m
+[31m-        "clsx": "^2.1.1",[m
+[31m-        "electron": "^40.6.0",[m
+[31m-        "electron-builder": "^26.8.1",[m
+[31m-        "eslint": "^10.0.0",[m
+[31m-        "eslint-plugin-react-hooks": "^7.0.1",[m
+[31m-        "eslint-plugin-react-refresh": "^0.5.0",[m
+[31m-        "framer-motion": "^12.34.2",[m
+[31m-        "globals": "^17.3.0",[m
+[31m-        "i18next": "^25.8.11",[m
+[31m-        "jsdom": "^28.1.0",[m
+[31m-        "lucide-react": "^0.563.0",[m
+[31m-        "@shadanai/openclaw": "latest",[m
+[31m-        "png2icons": "^2.0.1",[m
+[31m-        "postcss": "^8.5.6",[m
+[31m-        "react": "^19.2.4",[m
+[31m-        "react-dom": "^19.2.4",[m
+[31m-        "react-i18next": "^16.5.4",[m
+[31m-        "react-markdown": "^10.1.0",[m
+[31m-        "react-router-dom": "^7.13.0",[m
+[31m-        "remark-gfm": "^4.0.1",[m
+[31m-        "sharp": "^0.34.5",[m
+[31m-        "sonner": "^2.0.7",[m
+[31m-        "tailwind-merge": "^3.5.0",[m
+[31m-        "tailwindcss": "^3.4.19",[m
+[31m-        "tailwindcss-animate": "^1.0.7",[m
+[31m-        "typescript": "^5.9.3",[m
+[31m-        "use-stick-to-bottom": "^1.1.3",[m
+[31m-        "vite": "^7.3.1",[m
+[31m-        "vite-plugin-electron": "^0.29.0",[m
+[31m-        "vite-plugin-electron-renderer": "^0.14.6",[m
+[31m-        "vitest": "^4.0.18",[m
+[31m-        "zustand": "^5.0.11",[m
+[31m-        "zx": "^8.8.5"[m
+[31m-    },[m
+[31m-    "packageManager": "pnpm@10.31.0+sha512.e3927388bfaa8078ceb79b748ffc1e8274e84d75163e67bc22e06c0d3aed43dd153151cbf11d7f8301ff4acb98c68bdc5cadf6989532801ffafe3b3e4a63c268"[m
+[31m-}[m
+[32m+[m[32m{[m
+[32m+[m[32m    "name": "clawx",[m
+[32m+[m[32m    "version": "0.3.1-alpha.0",[m
+[32m+[m[32m    "pnpm": {[m
+[32m+[m[32m        "onlyBuiltDependencies": [[m
+[32m+[m[32m            "@discordjs/opus",[m
+[32m+[m[32m            "@whiskeysockets/baileys",[m
+[32m+[m[32m            "electron",[m
+[32m+[m[32m            "esbuild",[m
+[32m+[m[32m            "koffi",[m
+[32m+[m[32m            "node-llama-cpp",[m
+[32m+[m[32m            "protobufjs",[m
+[32m+[m[32m            "sharp"[m
+[32m+[m[32m        ],[m
+[32m+[m[32m        "overrides": {[m
+[32m+[m[32m            "isbinaryfile": "^5.0.0",[m
+[32m+[m[32m            "https-proxy-agent": "7.0.6",[m
+[32m+[m[32m            "@slack/web-api": "7.15.0"[m
+[32m+[m[32m        },[m
+[32m+[m[32m        "supportedArchitectures": {[m
+[32m+[m[32m            "os": [[m
+[32m+[m[32m                "current"[m
+[32m+[m[32m            ],[m
+[32m+[m[32m            "cpu": [[m
+[32m+[m[32m                "x64",[m
+[32m+[m[32m                "arm64"[m
+[32m+[m[32m            ][m
+[32m+[m[32m        }[m
+[32m+[m[32m    },[m
+[32m+[m[32m    "description": "ClawX - Graphical AI Assistant based on OpenClaw",[m
+[32m+[m[32m    "main": "dist-electron/main/index.js",[m
+[32m+[m[32m    "author": "ClawX Team",[m
+[32m+[m[32m    "license": "MIT",[m
+[32m+[m[32m    "private": true,[m
+[32m+[m[32m    "scripts": {[m
+[32m+[m[32m        "init": "pnpm install && pnpm run uv:download",[m
+[32m+[m[32m        "predev": "zx scripts/prepare-preinstalled-skills-dev.mjs",[m
+[32m+[m[32m        "dev": "vite",[m
+[32m+[m[32m        "build": "vite build && zx scripts/bundle-openclaw.mjs && zx scripts/bundle-openclaw-plugins.mjs && zx scripts/bundle-box-im.mjs && zx scripts/bundle-preinstalled-skills.mjs && zx scripts/copy-openclaw-default-config.mjs && zx scripts/copy-mkcert.mjs",[m
+[32m+[m[32m        "build:vite": "vite build",[m
+[32m+[m[32m        "bundle:openclaw-plugins": "zx scripts/bundle-openclaw-plugins.mjs",[m
+[32m+[m[32m        "bundle:preinstalled-skills": "zx scripts/bundle-preinstalled-skills.mjs",[m
+[32m+[m[32m        "lint": "eslint . --fix",[m
+[32m+[m[32m        "typecheck": "tsc --noEmit",[m
+[32m+[m[32m        "test": "vitest run",[m
+[32m+[m[32m        "comms:replay": "node scripts/comms/replay.mjs",[m
+[32m+[m[32m        "comms:baseline": "node scripts/comms/baseline.mjs",[m
+[32m+[m[32m        "comms:compare": "node scripts/comms/compare.mjs",[m
+[32m+[m[32m        "uv:download": "zx scripts/download-bundled-uv.mjs",[m
+[32m+[m[32m        "uv:download:mac": "zx scripts/download-bundled-uv.mjs --platform=mac",[m
+[32m+[m[32m        "uv:download:win": "zx scripts/download-bundled-uv.mjs --platform=win",[m
+[32m+[m[32m        "uv:download:linux": "zx scripts/download-bundled-uv.mjs --platform=linux",[m
+[32m+[m[32m        "uv:download:all": "zx scripts/download-bundled-uv.mjs --all",[m
+[32m+[m[32m        "node:download:win": "zx scripts/download-bundled-node.mjs --platform=win",[m
+[32m+[m[32m        "prep:win-binaries": "pnpm run uv:download:win && pnpm run node:download:win",[m
+[32m+[m[32m        "icons": "zx scripts/generate-icons.mjs",[m
+[32m+[m[32m        "package": "vite build && zx scripts/bundle-openclaw.mjs && zx scripts/bundle-openclaw-plugins.mjs && zx scripts/bundle-box-im.mjs && zx scripts/bundle-preinstalled-skills.mjs && zx scripts/copy-openclaw-default-config.mjs && zx scripts/copy-mkcert.mjs",[m
+[32m+[m[32m        "package:mac": "node scripts/package-mac.mjs",[m
+[32m+[m[32m        "package:mac:dmg": "CLAWX_FORCE_DMG=1 node scripts/package-mac.mjs",[m
+[32m+[m[32m        "package:mac:local": "SKIP_PREINSTALLED_SKILLS=1 node scripts/package-mac.mjs",[m
+[32m+[m[32m        "package:mac:local:dmg": "SKIP_PREINSTALLED_SKILLS=1 CLAWX_FORCE_DMG=1 node scripts/package-mac.mjs",[m
+[32m+[m[32m        "package:win": "pnpm run prep:win-binaries && pnpm run package && electron-builder --win --publish never",[m
+[32m+[m[32m        "package:win:x64": "pnpm run prep:win-binaries && pnpm run package && electron-builder --win --x64 --publish never",[m
+[32m+[m[32m        "package:win:arm64": "pnpm run prep:win-binaries && pnpm run package && electron-builder --win --arm64 --publish never",[m
+[32m+[m[32m        "package:linux": "pnpm run package && electron-builder --linux --publish never",[m
+[32m+[m[32m        "release": "pnpm run uv:download && pnpm run package && electron-builder --publish always",[m
+[32m+[m[32m        "version:patch": "pnpm version patch",[m
+[32m+[m[32m        "version:minor": "pnpm version minor",[m
+[32m+[m[32m        "version:major": "pnpm version major",[m
+[32m+[m[32m        "postversion": "git push && git push --tags",[m
+[32m+[m[32m        "deps:openclaw:latest": "pnpm update @shadanai/openclaw --latest"[m
+[32m+[m[32m    },[m
+[32m+[m[32m    "dependencies": {[m
+[32m+[m[32m        "clawhub": "^0.5.0",[m
+[32m+[m[32m        "electron-store": "^11.0.2",[m
+[32m+[m[32m        "electron-updater": "^6.8.3",[m
+[32m+[m[32m        "lru-cache": "^11.2.7",[m
+[32m+[m[32m        "ms": "^2.1.3",[m
+[32m+[m[32m        "node-machine-id": "^1.1.12",[m
+[32m+[m[32m        "posthog-node": "^5.28.9",[m
+[32m+[m[32m        "ws": "^8.20.0"[m
+[32m+[m[32m    },[m
+[32m+[m[32m    "devDependencies": {[m
+[32m+[m[32m        "@eslint/js": "^10.0.1",[m
+[32m+[m[32m        "@larksuite/openclaw-lark": "2026.3.25",[m
+[32m+[m[32m        "@radix-ui/react-dialog": "^1.1.15",[m
+[32m+[m[32m        "@radix-ui/react-dropdown-menu": "^2.1.16",[m
+[32m+[m[32m        "@radix-ui/react-label": "^2.1.8",[m
+[32m+[m[32m        "@radix-ui/react-progress": "^1.1.8",[m
+[32m+[m[32m        "@radix-ui/react-radio-group": "^1.3.8",[m
+[32m+[m[32m        "@radix-ui/react-select": "^2.2.6",[m
+[32m+[m[32m        "@radix-ui/react-separator": "^1.1.8",[m
+[32m+[m[32m        "@radix-ui/react-slot": "^1.2.4",[m
+[32m+[m[32m        "@radix-ui/react-switch": "^1.2.6",[m
+[32m+[m[32m        "@radix-ui/react-tabs": "^1.1.13",[m
+[32m+[m[32m        "@radix-ui/react-toast": "^1.2.15",[m
+[32m+[m[32m        "@radix-ui/react-tooltip": "^1.2.8",[m
+[32m+[m[32m        "@shadanai/openclaw": "latest",[m
+[32m+[m[32m        "@soimy/dingtalk": "^3.5.1",[m
+[32m+[m[32m        "@tencent-connect/openclaw-qqbot": "^1.6.7",[m
+[32m+[m[32m        "@tencent-weixin/openclaw-weixin": "^2.1.1",[m
+[32m+[m[32m        "@testing-library/jest-dom": "^6.9.1",[m
+[32m+[m[32m        "@testing-library/react": "^16.3.2",[m
+[32m+[m[32m        "@types/node": "^25.5.0",[m
+[32m+[m[32m        "@types/react": "^19.2.14",[m
+[32m+[m[32m        "@types/react-dom": "^19.2.3",[m
+[32m+[m[32m        "@types/ws": "^8.18.1",[m
+[32m+[m[32m        "@typescript-eslint/eslint-plugin": "^8.58.0",[m
+[32m+[m[32m        "@typescript-eslint/parser": "^8.58.0",[m
+[32m+[m[32m        "@vitejs/plugin-react": "^5.2.0",[m
+[32m+[m[32m        "@wecom/wecom-openclaw-plugin": "^2026.4.1",[m
+[32m+[m[32m        "@whiskeysockets/baileys": "7.0.0-rc.9",[m
+[32m+[m[32m        "autoprefixer": "^10.4.27",[m
+[32m+[m[32m        "class-variance-authority": "^0.7.1",[m
+[32m+[m[32m        "clsx": "^2.1.1",[m
+[32m+[m[32m        "electron": "^40.8.5",[m
+[32m+[m[32m        "electron-builder": "^26.8.1",[m
+[32m+[m[32m        "eslint": "^10.1.0",[m
+[32m+[m[32m        "eslint-plugin-react-hooks": "^7.0.1",[m
+[32m+[m[32m        "eslint-plugin-react-refresh": "^0.5.2",[m
+[32m+[m[32m        "framer-motion": "^12.38.0",[m
+[32m+[m[32m        "globals": "^17.4.0",[m
+[32m+[m[32m        "i18next": "^25.10.10",[m
+[32m+[m[32m        "jsdom": "^28.1.0",[m
+[32m+[m[32m        "lucide-react": "^0.563.0",[m
+[32m+[m[32m        "png2icons": "^2.0.1",[m
+[32m+[m[32m        "postcss": "^8.5.8",[m
+[32m+[m[32m        "react": "^19.2.4",[m
+[32m+[m[32m        "react-dom": "^19.2.4",[m
+[32m+[m[32m        "react-i18next": "^16.6.6",[m
+[32m+[m[32m        "react-markdown": "^10.1.0",[m
+[32m+[m[32m        "react-router-dom": "^7.13.2",[m
+[32m+[m[32m        "remark-gfm": "^4.0.1",[m
+[32m+[m[32m        "sharp": "^0.34.5",[m
+[32m+[m[32m        "sonner": "^2.0.7",[m
+[32m+[m[32m        "tailwind-merge": "^3.5.0",[m
+[32m+[m[32m        "tailwindcss": "^3.4.19",[m
+[32m+[m[32m        "tailwindcss-animate": "^1.0.7",[m
+[32m+[m[32m        "typescript": "^5.9.3",[m
+[32m+[m[32m        "use-stick-to-bottom": "^1.1.3",[m
+[32m+[m[32m        "vite": "^7.3.1",[m
+[32m+[m[32m        "vite-plugin-electron": "^0.29.1",[m
+[32m+[m[32m        "vite-plugin-electron-renderer": "^0.14.6",[m
+[32m+[m[32m        "vitest": "^4.1.2",[m
+[32m+[m[32m        "zustand": "^5.0.12",[m
+[32m+[m[32m        "zx": "^8.8.5"[m
+[32m+[m[32m    },[m
+[32m+[m[32m    "packageManager": "pnpm@10.31.0+sha512.e3927388bfaa8078ceb79b748ffc1e8274e84d75163e67bc22e06c0d3aed43dd153151cbf11d7f8301ff4acb98c68bdc5cadf6989532801ffafe3b3e4a63c268"[m
+[32m+[m[32m}[m

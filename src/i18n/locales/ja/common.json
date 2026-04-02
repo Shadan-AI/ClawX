@@ -12,7 +12,11 @@
         "devConsole": "開発者コンソール",
         "models": "モデル",
         "deleteSessionConfirm": "セッション \"{{label}}\" を削除してもよろしいですか？",
-        "openClawPage": "OpenClaw ページ"
+        "openClawPage": "OpenClaw ページ",
+        "gatewayRunning": "ゲートウェイ稼働中",
+        "gatewayStarting": "ゲートウェイ起動中...",
+        "gatewayError": "ゲートウェイエラー",
+        "gatewayStopped": "ゲートウェイ停止中"
     },
     "actions": {
         "save": "保存",

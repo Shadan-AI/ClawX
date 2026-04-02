@@ -391,21 +391,65 @@ function collectToolCallPaths(msg: RawMessage, paths: Map<string, string>): void
  *   - [media attached: path (mime) | path] text patterns in tool result output
  *   - Raw file paths in tool result text
  */
+function extractFileNamesOnly(text: string): Array<{ fileName: string; mimeType: string }> {
+  const refs: Array<{ fileName: string; mimeType: string }> = [];
+  const seen = new Set<string>();
+  const exts = 'png|jpe?g|gif|webp|bmp|avif|svg|pdf|docx?|xlsx?|pptx?|txt|csv|md|rtf|epub|zip|tar|gz|rar|7z|mp3|wav|ogg|aac|flac|m4a|mp4|mov|avi|mkv|webm|m4v';
+  // Match bare filenames (no path separator) with known extensions
+  const regex = new RegExp(`(?<![\\w./\\\\:])([^\\s\\n"'()\\[\\],<>/\\\\]+\\.(?:${exts}))(?![\\w])`, 'gi');
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    const name = match[1];
+    if (name && !seen.has(name)) {
+      seen.add(name);
+      refs.push({ fileName: name, mimeType: mimeFromExtension(name) });
+    }
+  }
+  return refs;
+}
+
+function extractDirPathsFromCommand(command: string): string[] {
+  const dirs: string[] = [];
+  const seen = new Set<string>();
+  // Windows absolute directory paths (C:\... or C:/...)
+  const winDirRegex = /(?<![\\w])([A-Za-z]:[\\\/][^\s\n"'()[\],]*)/g;
+  let match;
+  while ((match = winDirRegex.exec(command)) !== null) {
+    let p = match[1].replace(/\//g, '\\');
+    // Strip trailing backslash
+    p = p.replace(/\\+$/, '');
+    if (p && !seen.has(p)) {
+      seen.add(p);
+      dirs.push(p);
+    }
+  }
+  return dirs;
+}
+
 function enrichWithToolResultFiles(messages: RawMessage[]): RawMessage[] {
   const pending: AttachedFileMeta[] = [];
   const toolCallPaths = new Map<string, string>();
+  const toolCallArgsMap = new Map<string, Record<string, unknown>>();
 
   return messages.map((msg) => {
-    // Track file paths from assistant tool call arguments for later matching
     if (msg.role === 'assistant') {
       collectToolCallPaths(msg, toolCallPaths);
+      const content = msg.content;
+      if (Array.isArray(content)) {
+        for (const block of content as ContentBlock[]) {
+          if ((block.type === 'tool_use' || block.type === 'toolCall') && block.id) {
+            const args = (block.input ?? block.arguments) as Record<string, unknown> | undefined;
+            if (args) toolCallArgsMap.set(block.id, args);
+          }
+        }
+      }
     }
 
     if (isToolResultRole(msg.role)) {
-      // Resolve file path from the matching tool call
       const matchedPath = msg.toolCallId ? toolCallPaths.get(msg.toolCallId) : undefined;
+      const toolArgs = msg.toolCallId ? toolCallArgsMap.get(msg.toolCallId) : undefined;
 
-      // 1. Image/file content blocks in the structured content array
+      // 1. Image/file content blocks
       const imageFiles = extractImagesAsAttachedFiles(msg.content);
       if (matchedPath) {
         for (const f of imageFiles) {
@@ -417,37 +461,63 @@ function enrichWithToolResultFiles(messages: RawMessage[]): RawMessage[] {
       }
       pending.push(...imageFiles);
 
-      // 2. [media attached: ...] patterns in tool result text output
+      const seenPaths = new Set(pending.map(f => f.filePath).filter(Boolean));
+
+      // 2. [media attached: ...] and raw absolute paths in tool result text
       const text = getMessageText(msg.content);
       if (text) {
         const mediaRefs = extractMediaRefs(text);
         const mediaRefPaths = new Set(mediaRefs.map(r => r.filePath));
         for (const ref of mediaRefs) {
-          pending.push(makeAttachedFile(ref));
+          if (!seenPaths.has(ref.filePath)) { seenPaths.add(ref.filePath); pending.push(makeAttachedFile(ref)); }
         }
-        // 3. Raw file paths in tool result text (documents, audio, video, etc.)
         for (const ref of extractRawFilePaths(text)) {
-          if (!mediaRefPaths.has(ref.filePath)) {
+          if (!mediaRefPaths.has(ref.filePath) && !seenPaths.has(ref.filePath)) {
+            seenPaths.add(ref.filePath);
             pending.push(makeAttachedFile(ref));
+          }
+        }
+
+        // 3. Bare filenames in tool result text + dir paths from tool_use command args
+        if (toolArgs) {
+          const dirPaths: string[] = [];
+          for (const val of Object.values(toolArgs)) {
+            if (typeof val === 'string') {
+              dirPaths.push(...extractDirPathsFromCommand(val));
+              // Also try absolute paths directly in args
+              for (const ref of extractRawFilePaths(val)) {
+                if (!seenPaths.has(ref.filePath)) {
+                  seenPaths.add(ref.filePath);
+                  pending.push(makeAttachedFile(ref));
+                }
+              }
+            }
+          }
+          if (dirPaths.length > 0) {
+            for (const { fileName, mimeType } of extractFileNamesOnly(text)) {
+              for (const dir of dirPaths) {
+                const fullPath = `${dir}\\${fileName}`;
+                if (!seenPaths.has(fullPath)) {
+                  seenPaths.add(fullPath);
+                  pending.push({ fileName, mimeType, fileSize: 0, preview: null, filePath: fullPath });
+                }
+              }
+            }
           }
         }
       }
 
-      return msg; // will be filtered later
+      return msg;
     }
 
     if (msg.role === 'assistant' && pending.length > 0) {
       const toAttach = pending.splice(0);
-      // Deduplicate against files already on the assistant message
       const existingPaths = new Set(
         (msg._attachedFiles || []).map(f => f.filePath).filter(Boolean),
       );
       const newFiles = toAttach.filter(f => !f.filePath || !existingPaths.has(f.filePath));
       if (newFiles.length === 0) return msg;
-      return {
-        ...msg,
-        _attachedFiles: [...(msg._attachedFiles || []), ...newFiles],
-      };
+      return { ...msg, _attachedFiles: [...(msg._attachedFiles || []), ...newFiles] };
     }
 
     return msg;
@@ -1094,10 +1164,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
           if (sessionsToLabel.length > 0) {
             void Promise.all(
               sessionsToLabel.map(async (session) => {
+                // Skip if we already have a label for this session
+                if (get().sessionLabels[session.key]) return;
                 try {
                   const r = await useGatewayStore.getState().rpc<Record<string, unknown>>(
                     'chat.history',
-                    { sessionKey: session.key, limit: 1000 },
+                    { sessionKey: session.key, limit: 5 },
                   );
                   const msgs = Array.isArray(r.messages) ? r.messages as RawMessage[] : [];
                   const firstUser = msgs.find((m) => m.role === 'user');
@@ -1313,6 +1385,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (get().currentSessionKey !== currentSessionKey) return;
 
       // Before filtering: attach images/files from tool_result messages to the next assistant message
+      console.log('[FileCard Debug] loadHistory rawMessages:', rawMessages.length, rawMessages.map(m => ({ role: m.role, id: (m as any).id })));
       const messagesWithToolImages = enrichWithToolResultFiles(rawMessages);
       const filteredMessages = messagesWithToolImages.filter((msg) => !isToolResultRole(msg.role));
       // Restore file attachments for user/assistant messages (from cache + text patterns)

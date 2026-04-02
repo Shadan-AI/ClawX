@@ -7,6 +7,10 @@ export function createRuntimeEventActions(set: ChatSet, get: ChatGet): Pick<Runt
     handleChatEvent: (event: Record<string, unknown>) => {
       const runId = String(event.runId || '');
       const eventState = String(event.state || '');
+      const msg = event.message as Record<string, unknown> | undefined;
+      if (msg?.role) {
+        console.log('[FileCard Debug] handleChatEvent state:', eventState, 'role:', msg.role);
+      }
       const eventSessionKey = event.sessionKey != null ? String(event.sessionKey) : null;
       const { activeRunId, currentSessionKey } = get();
 
@@ -15,7 +19,6 @@ export function createRuntimeEventActions(set: ChatSet, get: ChatGet): Pick<Runt
 
       // Only process events for the active run (or if no active run set)
       if (activeRunId && runId && runId !== activeRunId) return;
-
       setLastChatEventAt(Date.now());
 
       // Defensive: if state is missing but we have a message, try to infer state.

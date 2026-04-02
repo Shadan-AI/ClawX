@@ -46,7 +46,7 @@ export function Chat() {
 
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [isInputFocused, setIsInputFocused] = useState(false);
-  const isInputExpanded = isAtBottom;
+  const isInputExpanded = isAtBottom || isInputFocused;
 
   const scrollToBottom = useCallback(() => {
     if (scrollRef.current) {
@@ -189,26 +189,25 @@ export function Chat() {
         </div>
       </div>
 
-      {/* Error bar */}
-      {error && (
-        <div className="px-4 py-2 bg-destructive/10 border-t border-destructive/20">
-          <div className="max-w-4xl mx-auto flex items-center justify-between">
-            <p className="text-sm text-destructive flex items-center gap-2">
-              <AlertCircle className="h-4 w-4" />
-              {error}
-            </p>
-            <button
-              onClick={clearError}
-              className="text-xs text-destructive/60 hover:text-destructive underline"
-            >
-              {t('common:actions.dismiss')}
-            </button>
-          </div>
-        </div>
-      )}
-
       {/* Input Area - Floating */}
       <div className="absolute bottom-0 left-0 right-0 z-10 pointer-events-none">
+        {/* Error bar */}
+        {error && (
+          <div className="pointer-events-auto px-4 py-2 bg-destructive/10 border-y border-destructive/20">
+            <div className="max-w-4xl mx-auto flex items-center justify-between">
+              <p className="text-sm text-destructive flex items-center gap-2">
+                <AlertCircle className="h-4 w-4" />
+                {error}
+              </p>
+              <button
+                onClick={clearError}
+                className="text-xs text-destructive/60 hover:text-destructive underline"
+              >
+                {t('common:actions.dismiss')}
+              </button>
+            </div>
+          </div>
+        )}
         <div className="pointer-events-auto">
           <ChatInput
             onSend={sendMessage}
