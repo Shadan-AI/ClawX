@@ -106,7 +106,10 @@ jobs:
         if: matrix.platform == 'win'
         env:
           NODE_OPTIONS: --max-old-space-size=4096
-        run: pnpm run package:win:${{ matrix.arch }}
+        run: |
+          pnpm run prep:win-binaries
+          pnpm run package
+          electron-builder --win --${{ matrix.arch }} --config.win.target='[{"target":"nsis","arch":["${{ matrix.arch }}"]}]' --publish never
 
       # # Detect release channel from tag to skip code signing for alpha/beta builds
       # - name: Detect Windows release channel
