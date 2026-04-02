@@ -315,8 +315,8 @@ jobs:
             release-artifacts/**/*.rpm
             release-artifacts/**/*.yml
           draft: false
-          prerelease: true
-          make_latest: false
+          prerelease: false
+          make_latest: true
           generate_release_notes: true
           body: |
             ## 🚀 ClawX ${{ github.event_name == 'workflow_dispatch' && format('v{0}', github.event.inputs.version) || github.ref_name }}
