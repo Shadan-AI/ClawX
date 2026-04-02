@@ -1,6 +1,6 @@
 {
     "name": "clawx",
-    "version": "0.4.28",
+    "version": "0.4.29",
     "pnpm": {
         "onlyBuiltDependencies": [
             "@discordjs/opus",
@@ -36,7 +36,7 @@
         "init": "pnpm install && pnpm run uv:download",
         "predev": "zx scripts/prepare-preinstalled-skills-dev.mjs",
         "dev": "vite",
-        "build": "vite build && zx scripts/bundle-openclaw.mjs && zx scripts/bundle-openclaw-plugins.mjs && zx scripts/bundle-box-im.mjs && zx scripts/bundle-preinstalled-skills.mjs && zx scripts/copy-openclaw-default-config.mjs && zx scripts/copy-mkcert.mjs",
+        "build": "vite build && zx scripts/bundle-openclaw.mjs && zx scripts/bundle-openclaw-plugins.mjs && zx scripts/bundle-box-im.mjs && zx scripts/bundle-preinstalled-skills.mjs && zx scripts/copy-mkcert.mjs",
         "build:vite": "vite build",
         "bundle:openclaw-plugins": "zx scripts/bundle-openclaw-plugins.mjs",
         "bundle:preinstalled-skills": "zx scripts/bundle-preinstalled-skills.mjs",
@@ -54,7 +54,7 @@
         "node:download:win": "zx scripts/download-bundled-node.mjs --platform=win",
         "prep:win-binaries": "pnpm run uv:download:win && pnpm run node:download:win",
         "icons": "zx scripts/generate-icons.mjs",
-        "package": "vite build && zx scripts/bundle-openclaw.mjs && zx scripts/bundle-openclaw-plugins.mjs && zx scripts/bundle-box-im.mjs && zx scripts/bundle-preinstalled-skills.mjs && zx scripts/copy-openclaw-default-config.mjs && zx scripts/copy-mkcert.mjs",
+        "package": "vite build && zx scripts/bundle-openclaw.mjs && zx scripts/bundle-openclaw-plugins.mjs && zx scripts/bundle-box-im.mjs && zx scripts/bundle-preinstalled-skills.mjs && zx scripts/copy-mkcert.mjs",
         "package:mac": "node scripts/package-mac.mjs",
         "package:mac:dmg": "CLAWX_FORCE_DMG=1 node scripts/package-mac.mjs",
         "package:mac:local": "SKIP_PREINSTALLED_SKILLS=1 node scripts/package-mac.mjs",
