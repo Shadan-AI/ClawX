@@ -413,11 +413,45 @@ jobs:
           mkdir -p staging/${CHANNEL}
           mkdir -p staging/releases/${TAG}
 
-          # Flatten all platform artifacts into staging directories
-          find release-artifacts/ -type f | while read file; do
+          # Copy non-yml files first (binaries are platform-unique, safe to overwrite)
+          find release-artifacts/ -type f ! -name "*.yml" | while read file; do
             filename=$(basename "$file")
             cp "$file" "staging/${CHANNEL}/${filename}"
             cp "$file" "staging/releases/${TAG}/${filename}"
+          done
+
+          # Merge yml files: win x64 and win arm64 both produce latest.yml with
+          # different sha512 hashes. Naively overwriting causes checksum mismatch
+          # errors in electron-updater. Merge their files[] entries instead.
+          find release-artifacts/ -type f -name "*.yml" | sort | while read file; do
+            filename=$(basename "$file")
+            dest="staging/${CHANNEL}/${filename}"
+
+            if [ ! -f "$dest" ]; then
+              cp "$file" "$dest"
+            else
+              python3 - "$file" "$dest" << 'PYEOF'
+          import sys, re
+
+          new_yml = open(sys.argv[1]).read()
+          base_yml = open(sys.argv[2]).read()
+
+          # Extract files[] entries (each starts with "- url:")
+          new_entries = re.findall(r'( {0,4}- url:.*?)(?=\n {0,4}- url:|\npath:|\Z)', new_yml, re.DOTALL)
+          base_urls = re.findall(r'url:\s*(\S+)', base_yml)
+
+          appended = False
+          for entry in new_entries:
+            url_match = re.search(r'url:\s*(\S+)', entry)
+            if url_match and url_match.group(1) not in base_urls:
+              base_yml = re.sub(r'(\npath:)', '\n' + entry.rstrip() + r'\1', base_yml, count=1)
+              appended = True
+
+          open(sys.argv[2], 'w').write(base_yml)
+          print(f"{'Merged new entries from' if appended else 'No new entries in'} {sys.argv[1]}")
+          PYEOF
+            fi
+            cp "staging/${CHANNEL}/${filename}" "staging/releases/${TAG}/${filename}"
           done
 
           echo "=== staging/${CHANNEL}/ ==="
