@@ -54,12 +54,16 @@ npmRebuild: false
 # Primary: Alibaba Cloud OSS (fast for Chinese users, used for auto-update)
 # Fallback: GitHub Releases (backup, used when OSS is unavailable)
 publish:
-  - provider: generic
-    url: https://oss.intelli-spectrum.com/latest
-    useMultipleRangeRequest: false
   - provider: github
-    owner: ValueCell-ai
+    owner: Shadan-AI
     repo: ClawX
+  # OSS primary source (disabled, kept for reference):
+  # - provider: generic
+  #   url: https://oss.intelli-spectrum.com/latest
+  #   useMultipleRangeRequest: false
+  # - provider: github
+  #   owner: ValueCell-ai
+  #   repo: ClawX
 
 # macOS Configuration
 mac:
