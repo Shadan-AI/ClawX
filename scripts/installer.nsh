@@ -19,25 +19,46 @@
   DetailPrint "Preparing installation..."
   DetailPrint "Extracting ClawX runtime files. This can take a few minutes on slower disks or while antivirus scanning is active."
 
+  ; When updating, force-kill twice then skip process check entirely.
+  ; The old uninstaller will be executed by the installer framework immediately
+  ; after this macro returns, which handles cleanup of the previous version.
+  ${if} ${isUpdated}
+    DetailPrint "Update mode: force-killing existing processes..."
+    ${nsProcess::KillProcess} "${APP_EXECUTABLE_FILENAME}" $R0
+    nsExec::ExecToStack 'taskkill /F /IM "${APP_EXECUTABLE_FILENAME}" /T'
+    Pop $0
+    Pop $1
+    Sleep 1000
+    ${nsProcess::KillProcess} "${APP_EXECUTABLE_FILENAME}" $R0
+    nsExec::ExecToStack 'taskkill /F /IM "${APP_EXECUTABLE_FILENAME}" /T'
+    Pop $0
+    Pop $1
+    Sleep 500
+    DetailPrint "Update mode: proceeding to uninstall previous version..."
+    ${nsProcess::Unload}
+    Return
+  ${endIf}
+
   ${nsProcess::FindProcess} "${APP_EXECUTABLE_FILENAME}" $R0
 
   ${if} $R0 == 0
-    ${if} ${isUpdated}
-      # allow app to exit without explicit kill
-      Sleep 1000
-      Goto doStopProcess
-    ${endIf}
     MessageBox MB_OKCANCEL|MB_ICONEXCLAMATION "$(appRunning)" /SD IDOK IDOK doStopProcess
     Quit
 
     doStopProcess:
     DetailPrint `Closing running "${PRODUCT_NAME}"...`
 
-    # Silently kill the process using nsProcess instead of taskkill / cmd.exe
+    # Silently kill the main process using nsProcess
     ${nsProcess::KillProcess} "${APP_EXECUTABLE_FILENAME}" $R0
-    
+
+    # Also force-kill any child/helper processes (gateway, openclaw, etc.)
+    # that may keep the install directory locked after the main process exits.
+    nsExec::ExecToStack 'taskkill /F /IM "${APP_EXECUTABLE_FILENAME}" /T'
+    Pop $0
+    Pop $1
+
     # to ensure that files are not "in-use"
-    Sleep 300
+    Sleep 1000
 
     # Retry counter
     StrCpy $R1 0
@@ -50,7 +71,10 @@
         # wait to give a chance to exit gracefully
         Sleep 1000
         ${nsProcess::KillProcess} "${APP_EXECUTABLE_FILENAME}" $R0
-        
+        nsExec::ExecToStack 'taskkill /F /IM "${APP_EXECUTABLE_FILENAME}" /T'
+        Pop $0
+        Pop $1
+
         ${nsProcess::FindProcess} "${APP_EXECUTABLE_FILENAME}" $R0
         ${If} $R0 == 0
           DetailPrint `Waiting for "${PRODUCT_NAME}" to close.`
@@ -63,8 +87,8 @@
       ${endIf}
 
       # App likely running with elevated permissions.
-      # Ask user to close it manually
-      ${if} $R1 > 1
+      # Ask user to close it manually (only after 3 retries instead of 1)
+      ${if} $R1 > 3
         MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(appCannotBeClosed)" /SD IDCANCEL IDRETRY loop
         Quit
       ${else}
