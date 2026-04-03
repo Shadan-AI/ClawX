@@ -348,10 +348,15 @@ export function BoxImGate() {
               <div className="flex items-center justify-center gap-2 text-muted-foreground">
                 <span>{t('scanToLogin')}</span>
               </div>
-              <Button variant="ghost" size="sm" onClick={handleRefresh}>
-                <RefreshCw className="h-4 w-4 mr-2" />
-                {t('refreshQrCode')}
-              </Button>
+              <div className="flex flex-col items-center gap-2">
+                <Button variant="ghost" size="sm" onClick={handleRefresh}>
+                  <RefreshCw className="h-4 w-4 mr-2" />
+                  {t('refreshQrCode')}
+                </Button>
+                <Button variant="ghost" size="sm" className="text-muted-foreground/60 hover:text-muted-foreground" onClick={handleSkip}>
+                  跳过登录
+                </Button>
+              </div>
             </motion.div>
           )}
 
