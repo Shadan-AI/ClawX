@@ -82,7 +82,7 @@ importers:
         version: 1.2.8(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@shadanai/openclaw':
         specifier: latest
-        version: 2026.3.31-3(@napi-rs/canvas@0.1.97)(encoding@0.1.13)
+        version: 2026.4.3-1(@napi-rs/canvas@0.1.97)(encoding@0.1.13)
       '@soimy/dingtalk':
         specifier: ^3.5.1
         version: 3.5.1(openclaw@2026.3.31(@napi-rs/canvas@0.1.97)(encoding@0.1.13))
@@ -2064,8 +2064,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@shadanai/openclaw@2026.3.31-3':
-    resolution: {integrity: sha512-jSBbM22KRKc9CKvOKuZw2TdJ+It2k2A6ZTQsF2aGbZTlnebQ9BY49CTKdaAF8RhifGvsZ5TZiExYbwDBt+c8Ow==}
+  '@shadanai/openclaw@2026.4.3-1':
+    resolution: {integrity: sha512-3JXdJpqSAuR4heIcOhkzQqtxVutBgK0NYPRpyPEkfhDIX3slCbW6FEhzFDK1esTDMpWfHQORWvNmOWXZLWHuww==}
     engines: {node: '>=22.16.0'}
     hasBin: true
     peerDependencies:
@@ -4172,6 +4172,9 @@ packages:
 
   lodash@4.17.21:
     resolution: {integrity: sha512-v2kDEe57lecTulaDIuNTPy3Ry4gLGJ6Z1O3vE1krgXZNrsQ+LFTGHVxVjcXPs17LhbZVGedAJv8XZ1tvj5FvSg==}
+
+  lodash@4.18.1:
+    resolution: {integrity: sha512-dMInicTPVE8d1e5otfwmmjlxkZoUpiVLwyeTdUsi/Caj/gfzzblBcCE5sRHV/AsjuCmxWrte2TNGSYuCeCq+0Q==}
 
   log-symbols@4.1.0:
     resolution: {integrity: sha512-8XPvpAA8uyhfteu8pIvQxpJZ7SYYdpUivZpGy6sFsBuKRY/7rQGavedeB8aK+Zkyq6upMFVL/9AW6vOYzfRyLg==}
@@ -8237,7 +8240,7 @@ snapshots:
   '@rollup/rollup-win32-x64-msvc@4.60.1':
     optional: true
 
-  '@shadanai/openclaw@2026.3.31-3(@napi-rs/canvas@0.1.97)(encoding@0.1.13)':
+  '@shadanai/openclaw@2026.4.3-1(@napi-rs/canvas@0.1.97)(encoding@0.1.13)':
     dependencies:
       '@agentclientprotocol/sdk': 0.16.1(zod@4.3.6)
       '@anthropic-ai/vertex-sdk': 0.14.4(encoding@0.1.13)(zod@4.3.6)
@@ -9823,7 +9826,7 @@ snapshots:
       '@electron/asar': 3.4.1
       debug: 4.4.3
       fs-extra: 7.0.1
-      lodash: 4.17.21
+      lodash: 4.18.1
       temp: 0.9.4
     optionalDependencies:
       '@electron/windows-sign': 1.2.2
@@ -10837,6 +10840,8 @@ snapshots:
   lodash.pickby@4.6.0: {}
 
   lodash@4.17.21: {}
+
+  lodash@4.18.1: {}
 
   log-symbols@4.1.0:
     dependencies:
