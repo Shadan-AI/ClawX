@@ -1127,7 +1127,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
             // default ghost key (`agent:main:main`) should yield to real history.
             const hasLocalPendingSession = localSessions.some((session) => session.key === nextSessionKey);
             if (!hasLocalPendingSession) {
-              nextSessionKey = dedupedSessions[0].key;
+              // Pick the most recently active session instead of arbitrary [0]
+              const sorted = [...dedupedSessions].sort((a, b) => {
+                const aAt = typeof a.updatedAt === 'number' ? a.updatedAt : 0;
+                const bAt = typeof b.updatedAt === 'number' ? b.updatedAt : 0;
+                return bAt - aAt;
+              });
+              nextSessionKey = sorted[0].key;
             }
           }
 
@@ -1172,12 +1178,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
                     { sessionKey: session.key, limit: 5 },
                   );
                   const msgs = Array.isArray(r.messages) ? r.messages as RawMessage[] : [];
-                  const firstUser = msgs.find((m) => m.role === 'user');
+                  const lastUser = [...msgs].reverse().find((m) => m.role === 'user');
                   const lastMsg = msgs[msgs.length - 1];
                   set((s) => {
                     const next: Partial<typeof s> = {};
-                    if (firstUser) {
-                      const labelText = getMessageText(firstUser.content).trim();
+                    if (lastUser) {
+                      const labelText = getMessageText(lastUser.content).trim();
                       if (labelText) {
                         const truncated = labelText.length > 50 ? `${labelText.slice(0, 50)}…` : labelText;
                         next.sessionLabels = { ...s.sessionLabels, [session.key]: truncated };
@@ -1385,7 +1391,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (get().currentSessionKey !== currentSessionKey) return;
 
       // Before filtering: attach images/files from tool_result messages to the next assistant message
-      console.log('[FileCard Debug] loadHistory rawMessages:', rawMessages.length, rawMessages.map(m => ({ role: m.role, id: (m as any).id })));
       const messagesWithToolImages = enrichWithToolResultFiles(rawMessages);
       const filteredMessages = messagesWithToolImages.filter((msg) => !isToolResultRole(msg.role));
       // Restore file attachments for user/assistant messages (from cache + text patterns)
@@ -1419,9 +1424,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // displayName (e.g. the configured agent name "ClawX") instead.
       const isMainSession = currentSessionKey.endsWith(':main');
       if (!isMainSession) {
-        const firstUserMsg = finalMessages.find((m) => m.role === 'user');
-        if (firstUserMsg) {
-          const labelText = getMessageText(firstUserMsg.content).trim();
+        const lastUserMsg = [...finalMessages].reverse().find((m) => m.role === 'user');
+        if (lastUserMsg) {
+          const labelText = getMessageText(lastUserMsg.content).trim();
           if (labelText) {
             const truncated = labelText.length > 50 ? `${labelText.slice(0, 50)}…` : labelText;
             set((s) => ({
@@ -1586,9 +1591,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }));
 
     // Update session label with first user message text as soon as it's sent
-    const { sessionLabels, messages } = get();
-    const isFirstMessage = !messages.slice(0, -1).some((m) => m.role === 'user');
-    if (!currentSessionKey.endsWith(':main') && isFirstMessage && !sessionLabels[currentSessionKey] && trimmed) {
+    // Update session label with latest user message text
+    if (!currentSessionKey.endsWith(':main') && trimmed) {
       const truncated = trimmed.length > 50 ? `${trimmed.slice(0, 50)}…` : trimmed;
       set((s) => ({ sessionLabels: { ...s.sessionLabels, [currentSessionKey]: truncated } }));
     }

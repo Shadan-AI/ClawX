@@ -42,6 +42,21 @@ export interface ModelState {
   setSessionModel: (sessionKey: string, modelId: string) => void;
 }
 
+const SESSION_MODELS_KEY = 'clawx-session-models';
+
+function loadSessionModels(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(SESSION_MODELS_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch { return {}; }
+}
+
+function saveSessionModels(models: Record<string, string>) {
+  try {
+    localStorage.setItem(SESSION_MODELS_KEY, JSON.stringify(models));
+  } catch { /* ignore */ }
+}
+
 const ONEAPI_BASE_URL = 'https://one-api.shadanai.com';
 
 const MODEL_META: Record<string, { name?: string }> = {
@@ -92,7 +107,7 @@ export const useModelsStore = create<ModelState>((set, get) => ({
   error: null,
   isLoggedIn: null,
   digitalEmployees: [],
-  sessionModels: {},
+  sessionModels: loadSessionModels(),
 
   checkLoginStatus: async () => {
     const tokenKey = await getTokenKey();
@@ -227,6 +242,7 @@ export const useModelsStore = create<ModelState>((set, get) => ({
       });
       
       localStorage.removeItem('clawx-settings');
+      localStorage.removeItem(SESSION_MODELS_KEY);
       console.log('[models] cleared clawx-settings from localStorage');
       
       const { useSettingsStore } = await import('./settings');
@@ -269,8 +285,10 @@ export const useModelsStore = create<ModelState>((set, get) => ({
   },
 
   setSessionModel: (sessionKey: string, modelId: string) => {
-    set((state) => ({
-      sessionModels: { ...state.sessionModels, [sessionKey]: modelId },
-    }));
+    set((state) => {
+      const next = { ...state.sessionModels, [sessionKey]: modelId };
+      saveSessionModels(next);
+      return { sessionModels: next };
+    });
   },
 }));
