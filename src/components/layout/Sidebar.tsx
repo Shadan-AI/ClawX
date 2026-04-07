@@ -30,6 +30,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { hostApiFetch } from '@/lib/host-api';
+import { invokeIpc } from '@/lib/api-client';
 import { useTranslation } from 'react-i18next';
 import logoSvg from '@/assets/logo.svg';
 
@@ -153,6 +154,9 @@ export function Sidebar() {
 
   const openDevConsole = async () => {
     try {
+      // Ensure TLS certs are generated and trusted before opening the HTTPS page
+      await invokeIpc('mkcert:ensureCerts').catch(() => {/* non-fatal */});
+
       const result = await hostApiFetch<{
         success: boolean;
         url?: string;

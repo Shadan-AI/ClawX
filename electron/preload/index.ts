@@ -142,6 +142,7 @@ const electronAPI = {
         'openclaw:getSkillsDir',
         'openclaw:getCliCommand',
         'init:getProgress',
+        'mkcert:ensureCerts',
       ];
 
       if (validChannels.includes(channel)) {

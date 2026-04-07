@@ -2067,6 +2067,22 @@ function registerShellHandlers(): void {
   ipcMain.handle('shell:openPath', async (_, path: string) => {
     return await shell.openPath(path);
   });
+
+  // Regenerate mkcert TLS certs (force-delete old, re-run mkcert -install + cert gen)
+  ipcMain.handle('mkcert:ensureCerts', async () => {
+    if (process.platform !== 'win32') return { ok: true, skipped: true, reason: 'not-windows' };
+    try {
+      const { ensureOpenClawMkcertCertsWindows } = await import('../utils/mkcert-certs');
+      // Force regeneration by temporarily setting env var
+      process.env.CLAWX_REGENERATE_MKCERT = '1';
+      const result = await ensureOpenClawMkcertCertsWindows();
+      delete process.env.CLAWX_REGENERATE_MKCERT;
+      return result;
+    } catch (err) {
+      delete process.env.CLAWX_REGENERATE_MKCERT;
+      return { ok: false, error: String(err) };
+    }
+  });
 }
 
 /**

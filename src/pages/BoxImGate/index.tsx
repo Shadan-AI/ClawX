@@ -114,11 +114,21 @@ export function BoxImGate() {
       }
     } catch (err) {
       console.error('[BoxImGate] fetchQrCode error:', err);
-      setError(err instanceof Error ? err.message : '获取二维码失败');
+      // Silently retry after 2s instead of showing error immediately
+      setTimeout(() => {
+        if (gatewayStatus.state === 'running') {
+          void fetchQrCode();
+        } else {
+          setError(err instanceof Error ? err.message : '获取二维码失败');
+          setLoading(false);
+        }
+      }, 2000);
+      return;
     } finally {
       setLoading(false);
     }
-  }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gatewayStatus.state]);
 
   const pollScanResult = useCallback(async (sceneId: string) => {
     try {
@@ -161,6 +171,10 @@ export function BoxImGate() {
     if (gatewayStatus.state !== 'running') return;
 
     let cancelled = false;
+
+    // Show spinner immediately while waiting for box-im to be ready
+    setLoading(true);
+    setError(null);
 
     // Poll /plugins/box-im/login until it returns 200, then fetch QR code
     const waitAndFetch = async () => {
