@@ -309,6 +309,9 @@ function mergeAllowedOriginsFromTemplate(config: Record<string, unknown>, templa
   }
   const cui = cuiRaw as Record<string, unknown>;
   const tui = tuiRaw as Record<string, unknown>;
+  let changed = false;
+
+  // Merge allowedOrigins (union)
   const cur = Array.isArray(cui.allowedOrigins)
     ? (cui.allowedOrigins as unknown[]).filter((x): x is string => typeof x === 'string')
     : [];
@@ -316,11 +319,20 @@ function mergeAllowedOriginsFromTemplate(config: Record<string, unknown>, templa
     ? (tui.allowedOrigins as unknown[]).filter((x): x is string => typeof x === 'string')
     : [];
   const merged = [...new Set([...fromT, ...cur])];
-  if (merged.length === cur.length && fromT.every((o) => cur.includes(o))) {
-    return false;
+  if (merged.length !== cur.length || !fromT.every((o) => cur.includes(o))) {
+    cui.allowedOrigins = merged;
+    changed = true;
   }
-  cui.allowedOrigins = merged;
-  return true;
+
+  // Merge boolean flags from template if missing in config
+  for (const flag of ['dangerouslyAllowHostHeaderOriginFallback', 'allowInsecureAuth', 'dangerouslyDisableDeviceAuth'] as const) {
+    if (!(flag in cui) && flag in tui) {
+      cui[flag] = tui[flag];
+      changed = true;
+    }
+  }
+
+  return changed;
 }
 
 function mergeGatewayTlsFromTemplate(config: Record<string, unknown>, template: Record<string, unknown>): boolean {
