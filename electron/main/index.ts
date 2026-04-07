@@ -5,8 +5,6 @@
 import { app, BrowserWindow, ipcMain, nativeImage, session, shell } from 'electron';
 import type { Server } from 'node:http';
 import { join } from 'path';
-import { existsSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { GatewayManager } from '../gateway/manager';
 import { registerIpcHandlers } from './ipc-handlers';
 import { createTray } from './tray';
@@ -36,7 +34,7 @@ import {
 } from './quit-lifecycle';
 import { createSignalQuitHandler } from './signal-quit';
 import { acquireProcessInstanceFileLock } from './process-instance-lock';
-import { getSetting } from '../utils/store';
+import { getSetting, setSetting } from '../utils/store';
 import { ensureBuiltinSkillsInstalled, ensurePreinstalledSkillsInstalled } from '../utils/skill-config';
 import { ensureCriticalPluginsInstalled, ensureDeferredPluginsInstalled } from '../utils/plugin-install';
 import { startHostApiServer } from '../api/server';
@@ -298,12 +296,13 @@ async function initialize(): Promise<void> {
   const window = createMainWindow();
   logger.debug('[init] createMainWindow done');
 
-  // Detect first launch: .openclaw directory does not exist yet.
-  // Must be checked HERE, before any background task creates the directory.
-  const openclawDir = join(homedir(), '.openclaw');
-  const isFirstLaunch = !app.isPackaged && process.env.CLAWX_FORCE_FIRST_LAUNCH === '1'
+  // Detect first launch: check persistent store flag (not .openclaw dir existence,
+  // which may already exist from a previous install or dev run).
+  // CLAWX_FORCE_FIRST_LAUNCH=1 overrides for dev testing.
+  const firstLaunchComplete = await getSetting('firstLaunchComplete');
+  const isFirstLaunch = (!app.isPackaged && process.env.CLAWX_FORCE_FIRST_LAUNCH === '1')
     ? true
-    : !existsSync(openclawDir);
+    : !firstLaunchComplete;
 
   // Buffer for progress events that arrive before renderer is ready
   const progressBuffer: Array<{ total: number; current: number; label: string }> = [];
@@ -538,6 +537,8 @@ async function initialize(): Promise<void> {
 
     const signalComplete = () => {
       initDone = true;
+      // Mark first launch as complete so subsequent starts skip the init screen
+      void setSetting('firstLaunchComplete', true).catch(() => {});
       if (!isFirstLaunch || window.isDestroyed()) return;
       if (rendererReady) {
         window.webContents.send('init:complete', {});

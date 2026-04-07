@@ -56,6 +56,9 @@ export interface AppSettings {
   selectedBundles: string[];
   enabledSkills: string[];
   disabledSkills: string[];
+
+  // First launch
+  firstLaunchComplete: boolean;
 }
 
 /**
@@ -107,6 +110,9 @@ function createDefaultSettings(): AppSettings {
     selectedBundles: ['productivity', 'developer'],
     enabledSkills: [],
     disabledSkills: [],
+
+    // First launch
+    firstLaunchComplete: false,
   };
 }
 
