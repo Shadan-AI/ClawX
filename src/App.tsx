@@ -20,11 +20,12 @@ import { Settings } from './pages/Settings';
 import { Setup } from './pages/Setup';
 import { BoxImGate } from './pages/BoxImGate';
 import { Datasources } from './pages/Datasources';
+import { InitProgress } from './pages/InitProgress';
 import { useSettingsStore } from './stores/settings';
 import { useGatewayStore } from './stores/gateway';
 import { useProviderStore } from './stores/providers';
 import { useModelsStore } from './stores/models';
-import { applyGatewayTransportPreference } from './lib/api-client';
+import { applyGatewayTransportPreference, invokeIpc } from './lib/api-client';
 
 
 /**
@@ -107,6 +108,25 @@ function App() {
   const isLoggedIn = useModelsStore((state) => state.isLoggedIn);
   const checkLoginStatus = useModelsStore((state) => state.checkLoginStatus);
   const checkIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const initCheckDone = useRef(false);
+
+  // On first mount, check if this is a first launch and redirect to /init BEFORE
+  // the normal route guard runs. We use a ref to block the guard until we know.
+  useEffect(() => {
+    if (location.pathname === '/init') {
+      initCheckDone.current = true;
+      return;
+    }
+    invokeIpc<{ isFirstLaunch: boolean; events: unknown[] }>('init:getProgress')
+      .then(({ isFirstLaunch }) => {
+        initCheckDone.current = true;
+        if (isFirstLaunch) navigate('/init', { replace: true });
+      })
+      .catch(() => {
+        initCheckDone.current = true;
+      });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     initSettings();
@@ -155,9 +175,11 @@ function App() {
   useEffect(() => {
     const path = location.pathname;
     console.log('[App] route check: path=', path, 'setupComplete=', setupComplete, 'boxImGateComplete=', boxImGateComplete, 'isLoggedIn=', isLoggedIn);
-    if (path.startsWith('/setup') || path === '/box-im-gate') {
+    if (path.startsWith('/setup') || path === '/box-im-gate' || path === '/init') {
       return;
     }
+    // Wait until first-launch check completes before running route guard
+    if (!initCheckDone.current) return;
     if (setupComplete && isLoggedIn === true) {
       return;
     }
@@ -212,6 +234,8 @@ function App() {
     <ErrorBoundary>
       <TooltipProvider delayDuration={300}>
         <Routes>
+          {/* First launch: init progress screen */}
+          <Route path="/init" element={<InitProgress />} />
           {/* First launch: box-im plugin login (before setup) */}
           <Route path="/box-im-gate" element={<BoxImGate />} />
           {/* Setup wizard (shown on first launch) */}

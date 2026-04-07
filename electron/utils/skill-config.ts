@@ -205,6 +205,9 @@ export async function ensureBuiltinSkillsInstalled(): Promise<void> {
     const skillsRoot = join(homedir(), '.openclaw', 'skills');
 
     for (const { slug, sourceExtension } of BUILTIN_SKILLS) {
+        // Yield event loop between each skill so main thread stays responsive
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
         const targetDir = join(skillsRoot, slug);
         const targetManifest = join(targetDir, 'SKILL.md');
 
@@ -335,6 +338,9 @@ export async function ensurePreinstalledSkillsInstalled(): Promise<void> {
     const toEnable: string[] = [];
 
     for (const spec of skills) {
+        // Yield event loop between each skill so main thread stays responsive
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
         const sourceDir = join(sourceRoot, spec.slug);
         const sourceManifest = join(sourceDir, 'SKILL.md');
         if (!existsSync(sourceManifest)) {

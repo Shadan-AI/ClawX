@@ -2,9 +2,11 @@
  * Electron Main Process Entry
  * Manages window creation, system tray, and IPC handlers
  */
-import { app, BrowserWindow, nativeImage, session, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, nativeImage, session, shell } from 'electron';
 import type { Server } from 'node:http';
 import { join } from 'path';
+import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { GatewayManager } from '../gateway/manager';
 import { registerIpcHandlers } from './ipc-handlers';
 import { createTray } from './tray';
@@ -36,7 +38,7 @@ import { createSignalQuitHandler } from './signal-quit';
 import { acquireProcessInstanceFileLock } from './process-instance-lock';
 import { getSetting } from '../utils/store';
 import { ensureBuiltinSkillsInstalled, ensurePreinstalledSkillsInstalled } from '../utils/skill-config';
-import { ensureAllBundledPluginsInstalled } from '../utils/plugin-install';
+import { ensureCriticalPluginsInstalled, ensureDeferredPluginsInstalled } from '../utils/plugin-install';
 import { startHostApiServer } from '../api/server';
 import { HostEventBus } from '../api/event-bus';
 import { deviceOAuthManager } from '../utils/device-oauth';
@@ -290,9 +292,45 @@ async function initialize(): Promise<void> {
 
   // Set application menu
   createMenu();
+  logger.debug('[init] createMenu done');
 
   // Create the main window
   const window = createMainWindow();
+  logger.debug('[init] createMainWindow done');
+
+  // Detect first launch: .openclaw directory does not exist yet.
+  // Must be checked HERE, before any background task creates the directory.
+  const openclawDir = join(homedir(), '.openclaw');
+  const isFirstLaunch = !app.isPackaged && process.env.CLAWX_FORCE_FIRST_LAUNCH === '1'
+    ? true
+    : !existsSync(openclawDir);
+
+  // Buffer for progress events that arrive before renderer is ready
+  const progressBuffer: Array<{ total: number; current: number; label: string }> = [];
+  let rendererReady = false;
+
+  if (isFirstLaunch) {
+    progressBuffer.push({ total: 6, current: 0, label: '正在初始化 .openclaw 目录...' });
+  }
+
+  // Always register the handler (renderer may call before did-finish-load)
+  let initDone = false;
+  ipcMain.handle('init:getProgress', () => {
+    rendererReady = true;
+    // Once init is complete, always return false so re-mounts don't re-trigger /init
+    if (initDone) return { isFirstLaunch: false, events: [] };
+    return { isFirstLaunch, events: [...progressBuffer] };
+  });
+
+  /** Helper: send progress event to renderer, buffering if not yet ready */
+  function sendProgress(current: number, total: number, label: string): void {
+    if (!isFirstLaunch) return;
+    const ev = { total, current, label };
+    progressBuffer.push(ev);
+    if (rendererReady && !window.isDestroyed()) {
+      window.webContents.send('init:progress', ev);
+    }
+  }
 
   // Create system tray
   createTray(window);
@@ -329,6 +367,7 @@ async function initialize(): Promise<void> {
 
   // Register IPC handlers
   registerIpcHandlers(gatewayManager, clawHubService, window);
+  logger.debug('[init] registerIpcHandlers done');
 
   hostApiServer = startHostApiServer({
     gatewayManager,
@@ -336,9 +375,11 @@ async function initialize(): Promise<void> {
     eventBus: hostEventBus,
     mainWindow: window,
   });
+  logger.debug('[init] startHostApiServer done');
 
   // Register update handlers
   registerUpdateHandlers(appUpdater, window);
+  logger.debug('[init] registerUpdateHandlers done');
 
   // Note: Auto-check for updates is driven by the renderer (update store init)
   // so it respects the user's "Auto-check for updates" setting.
@@ -348,25 +389,6 @@ async function initialize(): Promise<void> {
   // previously created the file before the gateway could seed the full template.
   void repairClawXOnlyBootstrapFiles().catch((error) => {
     logger.warn('Failed to repair bootstrap files:', error);
-  });
-
-  // Pre-deploy built-in skills (feishu-doc, feishu-drive, feishu-perm, feishu-wiki)
-  // to ~/.openclaw/skills/ so they are immediately available without manual install.
-  void ensureBuiltinSkillsInstalled().catch((error) => {
-    logger.warn('Failed to install built-in skills:', error);
-  });
-
-  // Pre-deploy bundled third-party skills from resources/preinstalled-skills.
-  // This installs full skill directories (not only SKILL.md) in an idempotent,
-  // non-destructive way and never blocks startup.
-  void ensurePreinstalledSkillsInstalled().catch((error) => {
-    logger.warn('Failed to install preinstalled skills:', error);
-  });
-
-  // Pre-deploy/upgrade bundled OpenClaw plugins (dingtalk, wecom, qqbot, feishu, wechat)
-  // to ~/.openclaw/extensions/ so they are always up-to-date after an app update.
-  void ensureAllBundledPluginsInstalled().catch((error) => {
-    logger.warn('Failed to install/upgrade bundled plugins:', error);
   });
 
   // Bridge gateway and host-side events before any auto-start logic runs, so
@@ -444,54 +466,179 @@ async function initialize(): Promise<void> {
     hostEventBus.emit('channel:whatsapp-error', error);
   });
 
-  // Windows: trusted HTTPS certs for LAN (openme mkcert) → ~/.openclaw/certs before Gateway TLS
-  if (process.platform === 'win32') {
-    try {
-      const mk = ensureOpenClawMkcertCertsWindows();
-      if (mk.ok && !mk.skipped) {
-        logger.info(`[mkcert] Gateway TLS files ready under ${mk.certDir}`);
-      } else if (mk.skipped) {
-        logger.debug(`[mkcert] skipped: ${mk.reason ?? 'unknown'}`);
-      } else if (mk.error) {
-        logger.warn(`[mkcert] ${mk.error}`);
+  // Start Gateway and all background init tasks AFTER renderer has loaded,
+  // so the window is responsive and can show the progress screen first.
+  const runBackgroundInit = async () => {
+    logger.debug('[init] runBackgroundInit started');
+
+    // Windows: trusted HTTPS certs for LAN (openme mkcert) → ~/.openclaw/certs before Gateway TLS
+    if (process.platform === 'win32') {
+      try {
+        const mk = await ensureOpenClawMkcertCertsWindows();
+        if (mk.ok && !mk.skipped) {
+          logger.info(`[mkcert] Gateway TLS files ready under ${mk.certDir}`);
+        } else if (mk.skipped) {
+          logger.debug(`[mkcert] skipped: ${mk.reason ?? 'unknown'}`);
+        } else if (mk.error) {
+          logger.warn(`[mkcert] ${mk.error}`);
+        }
+      } catch (e) {
+        logger.warn('[mkcert] ensure certs failed:', e);
       }
-    } catch (e) {
-      logger.warn('[mkcert] ensure certs failed:', e);
     }
-  }
 
-  // Start Gateway automatically (this seeds missing bootstrap files with full templates)
-  const gatewayAutoStart = await getSetting('gatewayAutoStart');
-  if (gatewayAutoStart) {
-    try {
-      await syncAllProviderAuthToRuntime();
-      logger.debug('Auto-starting Gateway...');
-      await gatewayManager.start();
-      logger.info('Gateway auto-start succeeded');
-    } catch (error) {
-      logger.error('Gateway auto-start failed:', error);
-      mainWindow?.webContents.send('gateway:error', String(error));
+    // Repair bootstrap files
+    void repairClawXOnlyBootstrapFiles().catch((error) => {
+      logger.warn('Failed to repair bootstrap files:', error);
+    });
+
+    // Skills and plugins must finish BEFORE gateway starts, because
+    // openclaw.json references plugin manifests that must exist on disk.
+    sendProgress(2, 6, '正在安装内置技能到 ~/.openclaw/skills/...');
+    await ensureBuiltinSkillsInstalled().catch((error) => {
+      logger.warn('Failed to install built-in skills:', error);
+    });
+
+    sendProgress(3, 6, '正在安装预置技能到 ~/.openclaw/skills/...');
+    await ensurePreinstalledSkillsInstalled().catch((error) => {
+      logger.warn('Failed to install preinstalled skills:', error);
+    });
+
+    sendProgress(4, 6, '正在安装插件到 ~/.openclaw/extensions/...');
+    await ensureCriticalPluginsInstalled().catch((error) => {
+      logger.warn('Failed to install critical plugins:', error);
+    });
+
+    const gatewayAutoStart = await getSetting('gatewayAutoStart');
+    if (gatewayAutoStart) {
+      try {
+        sendProgress(1, 6, '正在启动 OpenClaw Gateway，生成 ~/.openclaw/workspace/...');
+        await syncAllProviderAuthToRuntime();
+        logger.debug('Auto-starting Gateway...');
+        await gatewayManager.start();
+        logger.info('Gateway auto-start succeeded');
+      } catch (error) {
+        logger.error('Gateway auto-start failed:', error);
+        mainWindow?.webContents.send('gateway:error', String(error));
+      }
+    } else {
+      logger.info('Gateway auto-start disabled in settings');
     }
-  } else {
-    logger.info('Gateway auto-start disabled in settings');
-  }
 
-  // Merge ClawX context snippets into the workspace bootstrap files.
-  // The gateway seeds workspace files asynchronously after its HTTP server
-  // is ready, so ensureClawXContext will retry until the target files appear.
-  void ensureClawXContext().catch((error) => {
-    logger.warn('Failed to merge ClawX context into workspace:', error);
-  });
+    // Feishu is large (~700MB), install after gateway is running
+    void ensureDeferredPluginsInstalled().catch((error) => {
+      logger.warn('Failed to install deferred plugins:', error);
+    });
 
-  // Auto-install openclaw CLI and shell completions (non-blocking).
-  void autoInstallCliIfNeeded((installedPath) => {
-    mainWindow?.webContents.send('openclaw:cli-installed', installedPath);
-  }).then(() => {
-    generateCompletionCache();
-    installCompletionToProfile();
-  }).catch((error) => {
-    logger.warn('CLI auto-install failed:', error);
-  });
+    void ensureClawXContext().then(() => {
+      sendProgress(5, 6, '正在合并 ClawX 上下文到 ~/.openclaw/workspace/...');
+    }).catch((error) => {
+      logger.warn('Failed to merge ClawX context into workspace:', error);
+    });
+
+    const signalComplete = () => {
+      initDone = true;
+      if (!isFirstLaunch || window.isDestroyed()) return;
+      if (rendererReady) {
+        window.webContents.send('init:complete', {});
+      } else {
+        window.webContents.once('did-finish-load', () => {
+          setTimeout(() => window.webContents.send('init:complete', {}), 300);
+        });
+      }
+    };
+
+    // CLI install runs in background; completion is gated on gateway running
+    void autoInstallCliIfNeeded((installedPath) => {
+      mainWindow?.webContents.send('openclaw:cli-installed', installedPath);
+    }).then(() => {
+      sendProgress(6, 6, '正在安装 openclaw CLI...');
+      generateCompletionCache();
+      installCompletionToProfile();
+    }).catch((error) => {
+      logger.warn('CLI auto-install failed:', error);
+    });
+
+    // Signal complete only when gateway is running AND box-im plugin HTTP endpoint is ready
+    if (isFirstLaunch) {
+      sendProgress(6, 6, '正在等待 Gateway 与 box-im 就绪...');
+
+      const checkBoxImReady = (port: number): Promise<boolean> => {
+        return new Promise((resolve) => {
+          try {
+            const https = require('node:https') as typeof import('https');
+            const req = https.get(
+              `https://127.0.0.1:${port}/plugins/box-im/login`,
+              { rejectUnauthorized: false, timeout: 2000 },
+              (resp) => { resolve(resp.statusCode === 200); resp.resume(); },
+            );
+            req.on('error', () => resolve(false));
+            req.on('timeout', () => { req.destroy(); resolve(false); });
+          } catch {
+            resolve(false);
+          }
+        });
+      };
+
+      const waitForBoxImReady = async () => {
+        const port = gatewayManager.getStatus().port || 18789;
+        const deadline = Date.now() + 15000;
+        while (Date.now() < deadline) {
+          const ok = await checkBoxImReady(port);
+          if (ok) {
+            signalComplete();
+            return;
+          }
+          await new Promise<void>((r) => setTimeout(r, 500));
+        }
+        // Timeout — complete anyway, BoxImGate will poll box-im itself
+        signalComplete();
+      };
+
+      const gatewayStatus = gatewayManager.getStatus();
+      if (gatewayStatus.state === 'running') {
+        void waitForBoxImReady();
+      } else {
+        const onStatus = (status: { state: string }) => {
+          if (status.state === 'running') {
+            gatewayManager.off('status', onStatus);
+            void waitForBoxImReady();
+          } else if (status.state === 'error' || status.state === 'stopped') {
+            gatewayManager.off('status', onStatus);
+            signalComplete();
+          }
+        };
+        gatewayManager.on('status', onStatus);
+        // Safety timeout
+        setTimeout(() => {
+          gatewayManager.off('status', onStatus);
+          signalComplete();
+        }, 60000);
+      }
+    }
+  };
+
+  // Wait for renderer to finish loading before starting heavy background work.
+  const scheduleBackgroundInit = () => {
+    if (window.webContents.isLoading()) {
+      // Listen for both dom-ready and did-finish-load — whichever fires first
+      let started = false;
+      const start = () => {
+        if (started) return;
+        started = true;
+        logger.debug('[init] renderer ready, starting background init');
+        void runBackgroundInit();
+      };
+      window.webContents.once('dom-ready', start);
+      window.webContents.once('did-finish-load', start);
+    } else {
+      logger.debug('[init] renderer already loaded, starting background init');
+      void runBackgroundInit();
+    }
+  };
+
+  // Yield event loop first so renderer can start loading
+  setTimeout(scheduleBackgroundInit, 0);
 }
 
 if (gotTheLock) {
@@ -534,6 +681,16 @@ if (gotTheLock) {
     }
 
     logger.debug('Main window is not ready yet; deferring second-instance focus until ready-to-show');
+  });
+
+  // Allow self-signed TLS certs for localhost gateway (mkcert-generated)
+  app.on('certificate-error', (event, _webContents, url, _error, _cert, callback) => {
+    if (url.startsWith('https://127.0.0.1:') || url.startsWith('https://localhost:')) {
+      event.preventDefault();
+      callback(true);
+    } else {
+      callback(false);
+    }
   });
 
   // Application lifecycle

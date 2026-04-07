@@ -141,6 +141,7 @@ const electronAPI = {
         'openclaw:getConfigDir',
         'openclaw:getSkillsDir',
         'openclaw:getCliCommand',
+        'init:getProgress',
       ];
 
       if (validChannels.includes(channel)) {
@@ -182,6 +183,9 @@ const electronAPI = {
         'oauth:success',
         'oauth:error',
         'openclaw:cli-installed',
+        'init:progress',
+        'init:complete',
+        'box-im:refresh',
       ];
 
       if (validChannels.includes(channel)) {

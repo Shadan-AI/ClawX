@@ -158,13 +158,46 @@ export function BoxImGate() {
   }, [markBoxImGateComplete]);
 
   useEffect(() => {
-    if (gatewayStatus.state === 'running') {
-      const timer = setTimeout(() => {
-        fetchQrCode();
-      }, 1000);
-      return () => clearTimeout(timer);
-    }
+    if (gatewayStatus.state !== 'running') return;
+
+    let cancelled = false;
+
+    // Poll /plugins/box-im/login until it returns 200, then fetch QR code
+    const waitAndFetch = async () => {
+      const deadline = Date.now() + 30000;
+      while (!cancelled && Date.now() < deadline) {
+        try {
+          const resp = await invokeIpc<HttpProxyResponse>('gateway:httpProxy', {
+            path: '/plugins/box-im/login',
+            method: 'GET',
+            timeoutMs: 2000,
+          });
+          if (resp?.status === 200) {
+            if (!cancelled) fetchQrCode();
+            return;
+          }
+        } catch {
+          // not ready yet
+        }
+        await new Promise<void>((r) => setTimeout(r, 500));
+      }
+      // Timeout — try anyway
+      if (!cancelled) fetchQrCode();
+    };
+
+    void waitAndFetch();
+    return () => { cancelled = true; };
   }, [gatewayStatus.state, fetchQrCode]);
+
+  // Listen for refresh signal from main process (e.g. box-im ready after timeout)
+  useEffect(() => {
+    const ipc = window.electron?.ipcRenderer;
+    if (!ipc) return;
+    const unsub = ipc.on('box-im:refresh', () => {
+      fetchQrCode();
+    });
+    return () => { if (typeof unsub === 'function') unsub(); };
+  }, [fetchQrCode]);
 
   useEffect(() => {
     if ((status !== 'scanning' && status !== 'scanned') || !qrScene) return;

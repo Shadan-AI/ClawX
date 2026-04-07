@@ -8,6 +8,7 @@
 import { app } from 'electron';
 import path from 'node:path';
 import { existsSync, cpSync, mkdirSync, rmSync, readFileSync, writeFileSync, readdirSync, realpathSync } from 'node:fs';
+import { cp, rm, mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { logger } from './logger';
@@ -296,32 +297,27 @@ export function copyPluginFromNodeModules(npmPkgPath: string, targetDir: string,
 
 // ── Core install / upgrade logic ─────────────────────────────────────────────
 
-export function ensurePluginInstalled(
+export async function ensurePluginInstalled(
   pluginDirName: string,
   candidateSources: string[],
   pluginLabel: string,
-): { installed: boolean; warning?: string } {
+): Promise<{ installed: boolean; warning?: string }> {
   const targetDir = join(homedir(), '.openclaw', 'extensions', pluginDirName);
   const targetManifest = join(targetDir, 'openclaw.plugin.json');
   const targetPkgJson = join(targetDir, 'package.json');
 
   const sourceDir = candidateSources.find((dir) => existsSync(fsPath(join(dir, 'openclaw.plugin.json'))));
 
-  // If already installed, check whether an upgrade is available
   if (existsSync(fsPath(targetManifest))) {
-    if (!sourceDir) return { installed: true }; // no bundled source to compare, keep existing
+    if (!sourceDir) return { installed: true };
     const installedVersion = readPluginVersion(targetPkgJson);
     const sourceVersion = readPluginVersion(join(sourceDir, 'package.json'));
     if (!sourceVersion || !installedVersion || sourceVersion === installedVersion) {
-      return { installed: true }; // same version or unable to compare
+      return { installed: true };
     }
-    // Version differs — fall through to overwrite install
-    logger.info(
-      `[plugin] Upgrading ${pluginLabel} plugin: ${installedVersion} → ${sourceVersion}`,
-    );
+    logger.info(`[plugin] Upgrading ${pluginLabel} plugin: ${installedVersion} → ${sourceVersion}`);
   }
 
-  // Fresh install or upgrade — try bundled/build sources first
   if (sourceDir) {
     const extensionsRoot = join(homedir(), '.openclaw', 'extensions');
     const attempts: Array<{ attempt: number; code?: string; name?: string; message: string }> = [];
@@ -329,9 +325,9 @@ export function ensurePluginInstalled(
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        mkdirSync(fsPath(extensionsRoot), { recursive: true });
-        rmSync(fsPath(targetDir), { recursive: true, force: true });
-        cpSync(fsPath(sourceDir), fsPath(targetDir), { recursive: true, dereference: true });
+        await mkdir(fsPath(extensionsRoot), { recursive: true });
+        await rm(fsPath(targetDir), { recursive: true, force: true });
+        await cp(fsPath(sourceDir), fsPath(targetDir), { recursive: true, dereference: true });
         if (!existsSync(fsPath(join(targetDir, 'openclaw.plugin.json')))) {
           return { installed: false, warning: `Failed to install ${pluginLabel} plugin mirror (manifest missing).` };
         }
@@ -342,31 +338,17 @@ export function ensurePluginInstalled(
         const diagnostic = toErrorDiagnostic(error);
         attempts.push({ attempt, ...diagnostic });
         if (attempt < maxAttempts) {
-          try {
-            rmSync(fsPath(targetDir), { recursive: true, force: true });
-          } catch {
-            // Ignore cleanup failures before retry.
-          }
+          try { await rm(fsPath(targetDir), { recursive: true, force: true }); } catch { /* ignore */ }
         }
       }
     }
 
-    logger.warn(
-      `[plugin] Bundled mirror install failed for ${pluginLabel}`,
-      {
-        pluginDirName,
-        pluginLabel,
-        sourceDir,
-        targetDir,
-        platform: process.platform,
-        attempts,
-      },
-    );
-
+    logger.warn(`[plugin] Bundled mirror install failed for ${pluginLabel}`, {
+      pluginDirName, pluginLabel, sourceDir, targetDir, platform: process.platform, attempts,
+    });
     return { installed: false, warning: `Failed to install bundled ${pluginLabel} plugin mirror` };
   }
 
-  // Dev mode fallback: copy from node_modules with pnpm-aware dep resolution
   if (!app.isPackaged) {
     const npmName = PLUGIN_NPM_NAMES[pluginDirName];
     if (npmName) {
@@ -380,28 +362,20 @@ export function ensurePluginInstalled(
             `${installedVersion ? `: ${installedVersion} → ${sourceVersion}` : `: ${sourceVersion}`} (dev/node_modules)`,
           );
           try {
-            mkdirSync(fsPath(join(homedir(), '.openclaw', 'extensions')), { recursive: true });
+            await mkdir(fsPath(join(homedir(), '.openclaw', 'extensions')), { recursive: true });
             copyPluginFromNodeModules(npmPkgPath, targetDir, npmName);
             fixupPluginManifest(targetDir);
             if (existsSync(fsPath(join(targetDir, 'openclaw.plugin.json')))) {
               return { installed: true };
             }
           } catch (err) {
-            logger.warn(
-              `[plugin] Failed to install ${pluginLabel} plugin from node_modules`,
-              {
-                pluginDirName,
-                pluginLabel,
-                npmName,
-                npmPkgPath,
-                targetDir,
-                platform: process.platform,
-                ...toErrorDiagnostic(err),
-              },
-            );
+            logger.warn(`[plugin] Failed to install ${pluginLabel} plugin from node_modules`, {
+              pluginDirName, pluginLabel, npmName, npmPkgPath, targetDir,
+              platform: process.platform, ...toErrorDiagnostic(err),
+            });
           }
         } else if (existsSync(fsPath(targetManifest))) {
-          return { installed: true }; // same version, already installed
+          return { installed: true };
         }
       }
     }
@@ -412,6 +386,7 @@ export function ensurePluginInstalled(
     warning: `Bundled ${pluginLabel} plugin mirror not found. Checked: ${candidateSources.join(' | ')}`,
   };
 }
+
 
 // ── Candidate source path builder ────────────────────────────────────────────
 
@@ -431,15 +406,15 @@ export function buildCandidateSources(pluginDirName: string): string[] {
 
 // ── Per-channel plugin helpers ───────────────────────────────────────────────
 
-export function ensureDingTalkPluginInstalled(): { installed: boolean; warning?: string } {
+export async function ensureDingTalkPluginInstalled(): Promise<{ installed: boolean; warning?: string }> {
   return ensurePluginInstalled('dingtalk', buildCandidateSources('dingtalk'), 'DingTalk');
 }
 
-export function ensureWeComPluginInstalled(): { installed: boolean; warning?: string } {
+export async function ensureWeComPluginInstalled(): Promise<{ installed: boolean; warning?: string }> {
   return ensurePluginInstalled('wecom', buildCandidateSources('wecom'), 'WeCom');
 }
 
-export function ensureFeishuPluginInstalled(): { installed: boolean; warning?: string } {
+export async function ensureFeishuPluginInstalled(): Promise<{ installed: boolean; warning?: string }> {
   return ensurePluginInstalled(
     'feishu-openclaw-plugin',
     buildCandidateSources('feishu-openclaw-plugin'),
@@ -447,11 +422,11 @@ export function ensureFeishuPluginInstalled(): { installed: boolean; warning?: s
   );
 }
 
-export function ensureQQBotPluginInstalled(): { installed: boolean; warning?: string } {
+export async function ensureQQBotPluginInstalled(): Promise<{ installed: boolean; warning?: string }> {
   return ensurePluginInstalled('qqbot', buildCandidateSources('qqbot'), 'QQ Bot');
 }
 
-export function ensureWeChatPluginInstalled(): { installed: boolean; warning?: string } {
+export async function ensureWeChatPluginInstalled(): Promise<{ installed: boolean; warning?: string }> {
   return ensurePluginInstalled('openclaw-weixin', buildCandidateSources('openclaw-weixin'), 'WeChat');
 }
 
@@ -468,18 +443,59 @@ const ALL_BUNDLED_PLUGINS = [
   { fn: ensureWeChatPluginInstalled, label: 'WeChat' },
 ] as const;
 
+/** Plugins that must be installed before Gateway starts (small/fast). */
+const CRITICAL_PLUGINS = [
+  { fn: ensureDingTalkPluginInstalled, label: 'DingTalk' },
+  { fn: ensureWeComPluginInstalled, label: 'WeCom' },
+  { fn: ensureQQBotPluginInstalled, label: 'QQ Bot' },
+  { fn: ensureWeChatPluginInstalled, label: 'WeChat' },
+] as const;
+
+/** Plugins that can be installed after Gateway starts (large/slow). */
+const DEFERRED_PLUGINS = [
+  { fn: ensureFeishuPluginInstalled, label: 'Feishu' },
+] as const;
+
+/**
+ * Install only the critical (fast) plugins that must exist before Gateway starts.
+ */
+export async function ensureCriticalPluginsInstalled(): Promise<void> {
+  for (const { fn, label } of CRITICAL_PLUGINS) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    try {
+      const result = await fn();
+      if (result.warning) logger.warn(`[plugin] ${label}: ${result.warning}`);
+    } catch (error) {
+      logger.warn(`[plugin] Failed to install/upgrade ${label} plugin:`, error);
+    }
+  }
+}
+
+/**
+ * Install deferred (large/slow) plugins after Gateway has started.
+ */
+export async function ensureDeferredPluginsInstalled(): Promise<void> {
+  for (const { fn, label } of DEFERRED_PLUGINS) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    try {
+      const result = await fn();
+      if (result.warning) logger.warn(`[plugin] ${label}: ${result.warning}`);
+    } catch (error) {
+      logger.warn(`[plugin] Failed to install/upgrade ${label} plugin:`, error);
+    }
+  }
+}
+
 /**
  * Ensure all bundled OpenClaw plugins are installed/upgraded in
- * `~/.openclaw/extensions/`.  Designed to be called once at app startup
- * as a fire-and-forget task — errors are logged but never thrown.
+ * `~/.openclaw/extensions/`.
  */
 export async function ensureAllBundledPluginsInstalled(): Promise<void> {
   for (const { fn, label } of ALL_BUNDLED_PLUGINS) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
     try {
-      const result = fn();
-      if (result.warning) {
-        logger.warn(`[plugin] ${label}: ${result.warning}`);
-      }
+      const result = await fn();
+      if (result.warning) logger.warn(`[plugin] ${label}: ${result.warning}`);
     } catch (error) {
       logger.warn(`[plugin] Failed to install/upgrade ${label} plugin:`, error);
     }

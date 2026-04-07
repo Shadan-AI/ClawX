@@ -2,7 +2,7 @@
  * Windows: generate ~/.openclaw/certs/localhost.pem + localhost-key.pem via bundled mkcert
  * (localhost + 127.0.0.1 + ::1 + private LAN IPv4), aligned with openme/start-npm.ps1.
  */
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { existsSync, mkdirSync } from 'node:fs';
 import { homedir, networkInterfaces } from 'node:os';
 import { join } from 'node:path';
@@ -51,11 +51,19 @@ export type MkcertEnsureResult = {
   certDir?: string;
 };
 
+function execFileAsync(cmd: string, args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    execFile(cmd, args, { windowsHide: true }, (err) => {
+      if (err) reject(err); else resolve();
+    });
+  });
+}
+
 /**
  * Run on Windows before Gateway start when certs are missing.
  * Set CLAWX_SKIP_MKCERT=1 to skip. Set CLAWX_REGENERATE_MKCERT=1 to force re-issue.
  */
-export function ensureOpenClawMkcertCertsWindows(): MkcertEnsureResult {
+export async function ensureOpenClawMkcertCertsWindows(): Promise<MkcertEnsureResult> {
   if (process.platform !== 'win32') {
     return { ok: true, skipped: true, reason: 'not-windows' };
   }
@@ -85,16 +93,13 @@ export function ensureOpenClawMkcertCertsWindows(): MkcertEnsureResult {
   logger.info(`[mkcert] generating certs for: ${hosts.join(', ')}`);
 
   try {
-    execFileSync(mkcert, ['-install'], { stdio: 'pipe', windowsHide: true });
+    await execFileAsync(mkcert, ['-install']);
   } catch (err) {
     logger.warn('[mkcert] -install (non-fatal):', err);
   }
 
   try {
-    execFileSync(mkcert, ['-cert-file', certFile, '-key-file', keyFile, ...hosts], {
-      stdio: 'pipe',
-      windowsHide: true,
-    });
+    await execFileAsync(mkcert, ['-cert-file', certFile, '-key-file', keyFile, ...hosts]);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     logger.error('[mkcert] certificate generation failed:', err);
