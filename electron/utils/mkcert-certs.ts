@@ -75,8 +75,15 @@ function listPrivateLanIPv4(): string[] {
 }
 
 function resolveBundledMkcertExe(): string | null {
+  // Production: <resourcesPath>/resources/tools/mkcert.exe
   const bundled = join(getResourcesDir(), 'tools', 'mkcert.exe');
   if (existsSync(bundled)) return bundled;
+  // Production alt: <resourcesPath>/openclaw/mkcert.exe (OpenMe layout)
+  const { app } = require('electron') as typeof import('electron');
+  if (app.isPackaged) {
+    const openmePackaged = join(process.resourcesPath, 'openclaw', 'mkcert.exe');
+    if (existsSync(openmePackaged)) return openmePackaged;
+  }
   // Dev: ClawX repo layout — openme is sibling of ClawX folder
   const devOpenme = join(__dirname, '../../../openme/mkcert.exe');
   if (existsSync(devOpenme)) return devOpenme;

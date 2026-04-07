@@ -28,6 +28,8 @@ import {
   sanitizeOpenClawConfig,
   seedOpenClawJsonFromTemplateIfMissing,
   mergeOpenClawJsonFromTemplateForMissingSections,
+  ensureGatewayTlsEnabledInConfig,
+  ensureLanOriginsInConfig,
 } from '../utils/openclaw-auth';
 import { startOpenClawConfigLanReconciliationWatcher } from '../utils/openclaw-config-watch';
 import { buildProxyEnv, resolveProxySettings } from '../utils/proxy';
@@ -239,6 +241,24 @@ export async function syncGatewayConfigBeforeLaunch(
     await syncGatewayTokenToConfig(appSettings.gatewayToken);
   } catch (err) {
     logger.warn('Failed to sync gateway token to openclaw.json:', err);
+  }
+
+  // Windows: ensure gateway.tls is enabled so the gateway starts with HTTPS/WSS.
+  // This is a safety net in case mergeOpenClawJsonFromTemplateForMissingSections
+  // ran before the template was available, or the user manually removed the tls block.
+  if (process.platform === 'win32') {
+    try {
+      await ensureGatewayTlsEnabledInConfig();
+    } catch (err) {
+      logger.warn('Failed to ensure gateway TLS config:', err);
+    }
+  }
+
+  // Inject current machine's LAN IPs into controlUi.allowedOrigins so LAN devices can access.
+  try {
+    await ensureLanOriginsInConfig(18789);
+  } catch (err) {
+    logger.warn('Failed to inject LAN origins into gateway config:', err);
   }
 
   try {
