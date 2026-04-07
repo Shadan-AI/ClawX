@@ -164,12 +164,12 @@ export function createSessionActions(
                   ) as { success: boolean; result?: Record<string, unknown> };
                   if (!r.success || !r.result) return;
                   const msgs = Array.isArray(r.result.messages) ? r.result.messages as RawMessage[] : [];
-                  const firstUser = msgs.find((m) => m.role === 'user');
+                  const lastUser = [...msgs].reverse().find((m) => m.role === 'user');
                   const lastMsg = msgs[msgs.length - 1];
                   set((s) => {
                     const next: Partial<typeof s> = {};
-                    if (firstUser) {
-                      const labelText = getMessageText(firstUser.content).trim();
+                    if (lastUser) {
+                      const labelText = getMessageText(lastUser.content).trim();
                       if (labelText) {
                         const truncated = labelText.length > 50 ? `${labelText.slice(0, 50)}…` : labelText;
                         next.sessionLabels = { ...s.sessionLabels, [session.key]: truncated };

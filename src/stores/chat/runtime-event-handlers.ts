@@ -77,7 +77,6 @@ export function handleRuntimeEventState(
           if (get().error) set({ error: null });
           // Message complete - add to history and clear streaming
           const finalMsg = event.message as RawMessage | undefined;
-          console.log('[FileCard Debug] final event, role:', finalMsg?.role, 'isToolResult:', finalMsg ? isToolResultRole(finalMsg.role) : false);
           if (finalMsg) {
             const updates = collectToolUpdates(finalMsg, resolvedState);
             if (isToolResultRole(finalMsg.role)) {
@@ -100,14 +99,11 @@ export function handleRuntimeEventState(
                 }
               }
               const text = getMessageText(finalMsg.content);
-              console.log('[FileCard Debug] tool_result text:', JSON.stringify(text?.substring(0, 500)));
-              console.log('[FileCard Debug] tool_result content:', JSON.stringify(finalMsg.content)?.substring(0, 500));
               if (text) {
                 const mediaRefs = extractMediaRefs(text);
                 const mediaRefPaths = new Set(mediaRefs.map(r => r.filePath));
                 for (const ref of mediaRefs) toolFiles.push(makeAttachedFile(ref));
                 const rawRefs = extractRawFilePaths(text);
-                console.log('[FileCard Debug] extractRawFilePaths result:', rawRefs);
                 for (const ref of rawRefs) {
                   if (!mediaRefPaths.has(ref.filePath)) toolFiles.push(makeAttachedFile(ref));
                 }

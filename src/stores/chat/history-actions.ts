@@ -38,11 +38,10 @@ export function createHistoryActions(
 
       const applyLoadedMessages = (rawMessages: RawMessage[], thinkingLevel: string | null) => {
         // Before filtering: attach images/files from tool_result messages to the next assistant message
-        console.log('[FileCard Debug] loadHistory rawMessages count:', rawMessages.length, 'roles:', rawMessages.map(m => m.role));
         const messagesWithToolImages = enrichWithToolResultFiles(rawMessages);
-        const filteredMessages = messagesWithToolImages.filter((msg) => !isToolResultRole(msg.role));
-        // Restore file attachments for user/assistant messages (from cache + text patterns)
-        const enrichedMessages = enrichWithCachedImages(filteredMessages);
+        const filteredMessages = messagesWithToolImages.filter(
+          (msg) => !isToolResultRole(msg.role) && (msg as unknown as Record<string, unknown>).trigger !== 'auto',
+        );
 
         // Preserve the optimistic user message during an active send.
         // The Gateway may not include the user's message in chat.history
@@ -72,9 +71,9 @@ export function createHistoryActions(
         // displayName (e.g. the configured agent name "ClawX") instead.
         const isMainSession = currentSessionKey.endsWith(':main');
         if (!isMainSession) {
-          const firstUserMsg = finalMessages.find((m) => m.role === 'user');
-          if (firstUserMsg) {
-            const labelText = getMessageText(firstUserMsg.content).trim();
+          const lastUserMsg = [...finalMessages].reverse().find((m) => m.role === 'user');
+          if (lastUserMsg) {
+            const labelText = getMessageText(lastUserMsg.content).trim();
             if (labelText) {
               const truncated = labelText.length > 50 ? `${labelText.slice(0, 50)}…` : labelText;
               set((s) => ({

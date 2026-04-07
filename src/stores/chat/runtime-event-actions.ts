@@ -9,7 +9,6 @@ export function createRuntimeEventActions(set: ChatSet, get: ChatGet): Pick<Runt
       const eventState = String(event.state || '');
       const msg = event.message as Record<string, unknown> | undefined;
       if (msg?.role) {
-        console.log('[FileCard Debug] handleChatEvent state:', eventState, 'role:', msg.role);
       }
       const eventSessionKey = event.sessionKey != null ? String(event.sessionKey) : null;
       const { activeRunId, currentSessionKey } = get();
