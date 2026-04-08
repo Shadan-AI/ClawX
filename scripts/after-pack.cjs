@@ -379,6 +379,60 @@ const PLUGIN_ID_FIXES = {
   'wecom-openclaw-plugin': 'wecom',
 };
 
+/**
+ * Remove the "import" condition from package.json exports fields in a
+ * node_modules directory so CJS require() always resolves to the CJS build.
+ * Node.js 22+ (Electron 40+) otherwise picks the ESM entry for require(),
+ * which breaks packages like eventemitter3 v5.
+ */
+function patchEsmExports(nodeModulesDir) {
+  const { readFileSync, writeFileSync } = require('fs');
+
+  function stripImport(exports) {
+    if (typeof exports !== 'object' || exports === null || Array.isArray(exports)) {
+      return { obj: exports, changed: false };
+    }
+    let changed = false;
+    const result = {};
+    for (const [k, v] of Object.entries(exports)) {
+      if (k === 'import') { changed = true; continue; }
+      const inner = stripImport(v);
+      result[k] = inner.obj;
+      if (inner.changed) changed = true;
+    }
+    return { obj: result, changed };
+  }
+
+  function patchOne(pkgJsonPath) {
+    try {
+      const raw = readFileSync(normWin(pkgJsonPath), 'utf8');
+      const pkg = JSON.parse(raw);
+      if (!pkg.exports || typeof pkg.exports !== 'object') return;
+      const { obj, changed } = stripImport(pkg.exports);
+      if (changed) {
+        pkg.exports = obj;
+        writeFileSync(normWin(pkgJsonPath), JSON.stringify(pkg, null, 2), 'utf8');
+      }
+    } catch { /* ignore */ }
+  }
+
+  let entries;
+  try { entries = readdirSync(normWin(nodeModulesDir), { withFileTypes: true }); } catch { return; }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const pkgDir = join(nodeModulesDir, entry.name);
+    if (entry.name.startsWith('@')) {
+      let scopeEntries;
+      try { scopeEntries = readdirSync(normWin(pkgDir), { withFileTypes: true }); } catch { continue; }
+      for (const sub of scopeEntries) {
+        if (sub.isDirectory()) patchOne(join(pkgDir, sub.name, 'package.json'));
+      }
+    } else {
+      patchOne(join(pkgDir, 'package.json'));
+    }
+  }
+}
+
 function patchPluginIds(pluginDir, expectedId) {
   const { readFileSync, writeFileSync } = require('fs');
 
@@ -449,8 +503,8 @@ function listPkgs(nodeModulesDir) {
   return result;
 }
 
-function bundlePlugin(nodeModulesRoot, npmName, destDir) {
-  const pkgPath = join(nodeModulesRoot, ...npmName.split('/'));
+function bundlePlugin(nodeModulesRoot, npmName, destDir, sourcePath) {
+  const pkgPath = sourcePath || join(nodeModulesRoot, ...npmName.split('/'));
   if (!existsSync(pkgPath)) {
     console.warn(`[after-pack] ⚠️  Plugin package not found: ${pkgPath}. Run pnpm install.`);
     return false;
@@ -470,14 +524,36 @@ function bundlePlugin(nodeModulesRoot, npmName, destDir) {
 
   const rootVirtualNM = getVirtualStoreNodeModules(realPluginPath);
   if (!rootVirtualNM) {
-    console.warn(`[after-pack] ⚠️  Could not find virtual store for ${npmName}, skipping deps.`);
+    // sourcePath points to a non-pnpm directory (e.g. dist/extensions/box-im).
+    // Fall back: copy direct dependencies declared in package.json from nodeModulesRoot.
+    try {
+      const pluginPkg = JSON.parse(require('fs').readFileSync(join(destDir, 'package.json'), 'utf8'));
+      const directDeps = Object.keys(pluginPkg.dependencies || {});
+      if (directDeps.length > 0) {
+        const destNM = join(destDir, 'node_modules');
+        mkdirSync(destNM, { recursive: true });
+        let count = 0;
+        for (const dep of directDeps) {
+          const srcDep = join(nodeModulesRoot, dep);
+          const dstDep = join(destNM, dep);
+          if (existsSync(srcDep) && !existsSync(dstDep)) {
+            mkdirSync(dirname(dstDep), { recursive: true });
+            cpSync(srcDep, dstDep, { recursive: true, dereference: true });
+            count++;
+          }
+        }
+        console.log(`[after-pack] ✅ Plugin ${npmName}: copied ${count} direct deps (fallback) to ${destDir}`);
+      }
+    } catch (e) {
+      console.warn(`[after-pack] ⚠️  Could not copy fallback deps for ${npmName}: ${e.message}`);
+    }
     return true;
   }
   queue.push({ nodeModulesDir: rootVirtualNM, skipPkg: npmName });
 
   // Read peerDependencies from the plugin's package.json so we don't bundle
   // packages that are provided by the host environment (e.g. openclaw itself).
-  const SKIP_PACKAGES = new Set(['typescript', '@playwright/test']);
+  const SKIP_PACKAGES = new Set(['typescript', '@playwright/test', '@shadanai/openclaw']);
   const SKIP_SCOPES = ['@types/'];
   try {
     const pluginPkg = JSON.parse(
@@ -567,6 +643,10 @@ exports.default = async function afterPack(context) {
   // causing TypeError in Node.js 22+ ESM interop.
   patchBrokenModules(dest);
 
+  // Also strip ESM "import" conditions from openclaw's top-level node_modules so
+  // CJS require() always resolves to the CJS build (fixes eventemitter3 v5, p-queue, etc.)
+  patchEsmExports(dest);
+
   // 1.1 Bundle OpenClaw plugins directly from node_modules into packaged resources.
   //     This is intentionally done in afterPack (not extraResources) because:
   //     - electron-builder silently skips extraResources entries whose source
@@ -577,19 +657,26 @@ exports.default = async function afterPack(context) {
     { npmName: '@wecom/wecom-openclaw-plugin', pluginId: 'wecom' },
     { npmName: '@larksuite/openclaw-lark', pluginId: 'feishu-openclaw-plugin' },
     { npmName: '@tencent-weixin/openclaw-weixin', pluginId: 'openclaw-weixin' },
+    {
+      npmName: '@openclaw/box-im',
+      pluginId: 'box-im',
+      // Use the compiled dist/ output, not the raw TypeScript sources under extensions/
+      sourcePath: join(__dirname, '..', 'node_modules', '@shadanai', 'openclaw', 'dist', 'extensions', 'box-im'),
+    },
   ];
 
   mkdirSync(pluginsDestRoot, { recursive: true });
-  for (const { npmName, pluginId } of BUNDLED_PLUGINS) {
+  for (const { npmName, pluginId, sourcePath } of BUNDLED_PLUGINS) {
     const pluginDestDir = join(pluginsDestRoot, pluginId);
     console.log(`[after-pack] Bundling plugin ${npmName} -> ${pluginDestDir}`);
-    const ok = bundlePlugin(nodeModulesRoot, npmName, pluginDestDir);
+    const ok = bundlePlugin(nodeModulesRoot, npmName, pluginDestDir, sourcePath);
     if (ok) {
       const pluginNM = join(pluginDestDir, 'node_modules');
       cleanupUnnecessaryFiles(pluginDestDir);
       if (existsSync(pluginNM)) {
         cleanupKoffi(pluginNM, platform, arch);
         cleanupNativePlatformPackages(pluginNM, platform, arch);
+        patchEsmExports(pluginNM);
       }
       // Fix hardcoded plugin ID mismatches in compiled JS
       patchPluginIds(pluginDestDir, pluginId);

@@ -186,8 +186,76 @@ function bundleOnePlugin({ npmName, pluginId, sourcePath }) {
   //    their JS output than what openclaw.plugin.json declares.  The Gateway
   //    validates that these match, so we fix it post-copy.
   patchPluginId(outputDir, pluginId);
+  patchEsmPackageExports(outputDir);
 
   echo`   ✅ ${pluginId}: copied ${copiedCount} deps (skipped dupes: ${skippedDupes})`;
+}
+
+/**
+ * Walk plugin/node_modules and remove the "import" condition from any
+ * package.json "exports" field so that CJS require() always resolves to
+ * the CJS build instead of the ESM build.
+ *
+ * Node.js 22+ (used by Electron 40) resolves "import" over "require" even
+ * when the caller is CJS, which breaks packages like eventemitter3 v5 whose
+ * index.mjs only re-exports from index.js but doesn't expose named exports
+ * that CJS callers expect via require().EventEmitter.
+ */
+function patchEsmPackageExports(pluginDir) {
+  const nodeModulesDir = path.join(pluginDir, 'node_modules');
+  if (!fs.existsSync(nodeModulesDir)) return;
+
+  let patchedCount = 0;
+
+  function stripImportCondition(exports) {
+    if (typeof exports !== 'object' || exports === null || Array.isArray(exports)) return { obj: exports, changed: false };
+    let changed = false;
+    const result = {};
+    for (const [k, v] of Object.entries(exports)) {
+      if (k === 'import') { changed = true; continue; }
+      const inner = stripImportCondition(v);
+      result[k] = inner.obj;
+      if (inner.changed) changed = true;
+    }
+    return { obj: result, changed };
+  }
+
+  function patchPkgJson(pkgJsonPath) {
+    try {
+      const raw = fs.readFileSync(pkgJsonPath, 'utf8');
+      const pkg = JSON.parse(raw);
+      if (!pkg.exports || typeof pkg.exports !== 'object') return;
+      const { obj, changed } = stripImportCondition(pkg.exports);
+      if (changed) {
+        pkg.exports = obj;
+        fs.writeFileSync(pkgJsonPath, JSON.stringify(pkg, null, 2), 'utf8');
+        patchedCount++;
+      }
+    } catch { /* ignore */ }
+  }
+
+  let topEntries;
+  try { topEntries = fs.readdirSync(nodeModulesDir, { withFileTypes: true }); } catch { return; }
+
+  for (const entry of topEntries) {
+    if (!entry.isDirectory()) continue;
+    const pkgDir = path.join(nodeModulesDir, entry.name);
+    if (entry.name.startsWith('@')) {
+      // scoped: walk one level deeper
+      let scopeEntries;
+      try { scopeEntries = fs.readdirSync(pkgDir, { withFileTypes: true }); } catch { continue; }
+      for (const sub of scopeEntries) {
+        if (!sub.isDirectory()) continue;
+        patchPkgJson(path.join(pkgDir, sub.name, 'package.json'));
+      }
+    } else {
+      patchPkgJson(path.join(pkgDir, 'package.json'));
+    }
+  }
+
+  if (patchedCount > 0) {
+    echo`   🔧 Patched ESM exports in ${patchedCount} package.json files (CJS compat)`;
+  }
 }
 
 /**
