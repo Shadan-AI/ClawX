@@ -384,6 +384,11 @@ const PLUGIN_ID_FIXES = {
  * node_modules directory so CJS require() always resolves to the CJS build.
  * Node.js 22+ (Electron 40+) otherwise picks the ESM entry for require(),
  * which breaks packages like eventemitter3 v5.
+ *
+ * Also patches eventemitter3 CJS entry to add named exports (EventEmitter etc.)
+ * so that `require('eventemitter3').EventEmitter` works even when Node.js 22+
+ * ESM interop is involved. Scans recursively through nested node_modules so
+ * packages like p-queue that vendor their own eventemitter3 are also fixed.
  */
 function patchEsmExports(nodeModulesDir) {
   const { readFileSync, writeFileSync } = require('fs');
@@ -416,21 +421,77 @@ function patchEsmExports(nodeModulesDir) {
     } catch { /* ignore */ }
   }
 
-  let entries;
-  try { entries = readdirSync(normWin(nodeModulesDir), { withFileTypes: true }); } catch { return; }
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const pkgDir = join(nodeModulesDir, entry.name);
-    if (entry.name.startsWith('@')) {
-      let scopeEntries;
-      try { scopeEntries = readdirSync(normWin(pkgDir), { withFileTypes: true }); } catch { continue; }
-      for (const sub of scopeEntries) {
-        if (sub.isDirectory()) patchOne(join(pkgDir, sub.name, 'package.json'));
-      }
-    } else {
-      patchOne(join(pkgDir, 'package.json'));
+  // Patch eventemitter3 CJS entry to expose named exports.
+  // eventemitter3 v5 CJS (index.cjs) does `module.exports = { EventEmitter }`
+  // but some older builds only do `module.exports = EventEmitter` (the class
+  // itself), so `require('eventemitter3').EventEmitter` is undefined.
+  // We ensure the named export always exists regardless of version.
+  function patchEventEmitter3(pkgDir) {
+    try {
+      const pkgJsonPath = join(pkgDir, 'package.json');
+      if (!existsSync(normWin(pkgJsonPath))) return;
+      const pkg = JSON.parse(readFileSync(normWin(pkgJsonPath), 'utf8'));
+      // Determine CJS entry: prefer exports['.'].require, then main, then index.js
+      const exp = pkg.exports;
+      const requireEntry =
+        (exp && typeof exp === 'object' && exp['.'] && typeof exp['.'].require === 'string' && exp['.'].require) ||
+        (exp && typeof exp === 'object' && typeof exp.require === 'string' && exp.require) ||
+        (typeof pkg.main === 'string' && pkg.main) ||
+        'index.js';
+      const entryPath = join(pkgDir, requireEntry);
+      if (!existsSync(normWin(entryPath))) return;
+      const original = readFileSync(normWin(entryPath), 'utf8');
+      if (original.includes('// ClawX-ee3-patch')) return; // already patched
+      const patched = original + [
+        '',
+        '// ClawX-ee3-patch: ensure named exports for Node.js 22+ CJS/ESM interop',
+        'if (typeof module.exports === "function" && !module.exports.EventEmitter) {',
+        '  module.exports.EventEmitter = module.exports;',
+        '}',
+        'if (typeof module.exports === "object" && module.exports !== null && !module.exports.EventEmitter && typeof module.exports.default === "function") {',
+        '  module.exports.EventEmitter = module.exports.default;',
+        '}',
+        '',
+      ].join('\n');
+      writeFileSync(normWin(entryPath), patched, 'utf8');
+      console.log(`[after-pack] 🩹 Patched eventemitter3 CJS named exports at ${entryPath}`);
+    } catch (err) {
+      console.warn(`[after-pack] ⚠️  Failed to patch eventemitter3 at ${pkgDir}:`, err.message);
     }
   }
+
+  // Recursively walk node_modules, patching package.json exports and
+  // special-casing eventemitter3 at every nesting level.
+  function walkNodeModules(nmDir) {
+    let entries;
+    try { entries = readdirSync(normWin(nmDir), { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const pkgDir = join(nmDir, entry.name);
+      if (entry.name.startsWith('@')) {
+        let scopeEntries;
+        try { scopeEntries = readdirSync(normWin(pkgDir), { withFileTypes: true }); } catch { continue; }
+        for (const sub of scopeEntries) {
+          if (!sub.isDirectory()) continue;
+          const subPkgDir = join(pkgDir, sub.name);
+          patchOne(join(subPkgDir, 'package.json'));
+          // Recurse into nested node_modules
+          const nestedNM = join(subPkgDir, 'node_modules');
+          if (existsSync(normWin(nestedNM))) walkNodeModules(nestedNM);
+        }
+      } else {
+        patchOne(join(pkgDir, 'package.json'));
+        if (entry.name === 'eventemitter3') {
+          patchEventEmitter3(pkgDir);
+        }
+        // Recurse into nested node_modules
+        const nestedNM = join(pkgDir, 'node_modules');
+        if (existsSync(normWin(nestedNM))) walkNodeModules(nestedNM);
+      }
+    }
+  }
+
+  walkNodeModules(nodeModulesDir);
 }
 
 function patchPluginIds(pluginDir, expectedId) {
