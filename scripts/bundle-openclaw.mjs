@@ -31,15 +31,28 @@ function normWin(p) {
 
 echo`📦 Bundling openclaw for electron-builder...`;
 
-// 1. Resolve the real path of node_modules/openclaw (follows pnpm symlink)
-const openclawLink = path.join(NODE_MODULES, 'openclaw');
-if (!fs.existsSync(openclawLink)) {
-  echo`❌ node_modules/openclaw not found. Run pnpm install first.`;
+// 1. Resolve the real path of the OpenClaw package (npm `openclaw` or local `@shadanai/openclaw`)
+const openclawLinkCandidates = [
+  path.join(NODE_MODULES, '@shadanai', 'openclaw'),
+  path.join(NODE_MODULES, 'openclaw'),
+];
+const openclawLink = openclawLinkCandidates.find((p) => fs.existsSync(p));
+if (!openclawLink) {
+  echo`❌ OpenClaw package not found under node_modules (@shadanai/openclaw or openclaw). Run pnpm install first.`;
   process.exit(1);
 }
 
 const openclawReal = fs.realpathSync(openclawLink);
-echo`   openclaw resolved: ${openclawReal}`;
+let openclawPkgName = 'openclaw';
+try {
+  const pkg = JSON.parse(fs.readFileSync(path.join(openclawReal, 'package.json'), 'utf8'));
+  if (typeof pkg.name === 'string' && pkg.name) {
+    openclawPkgName = pkg.name;
+  }
+} catch {
+  // keep default
+}
+echo`   openclaw resolved: ${openclawReal} (package name: ${openclawPkgName})`;
 
 // 2. Clean and create output directory
 if (fs.existsSync(OUTPUT)) {
@@ -128,7 +141,7 @@ if (!openclawVirtualNM) {
 }
 
 echo`   Virtual store root: ${openclawVirtualNM}`;
-queue.push({ nodeModulesDir: openclawVirtualNM, skipPkg: 'openclaw' });
+queue.push({ nodeModulesDir: openclawVirtualNM, skipPkg: openclawPkgName });
 
 const SKIP_PACKAGES = new Set([
   'typescript',

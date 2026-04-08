@@ -21,7 +21,7 @@ import { getProviderEnvVar, getKeyableProviderTypes } from '../utils/provider-re
 import { getOpenClawDir, getOpenClawEntryPath, isOpenClawPresent } from '../utils/paths';
 import { getUvMirrorEnv } from '../utils/uv-env';
 import { cleanupDanglingWeChatPluginState, listConfiguredChannels, readOpenClawConfig } from '../utils/channel-config';
-import { syncGatewayTokenToConfig, syncBrowserConfigToOpenClaw, syncSessionIdleMinutesToOpenClaw, sanitizeOpenClawConfig } from '../utils/openclaw-auth';
+import { syncGatewayTokenToConfig, syncBrowserConfigToOpenClaw, syncSessionIdleMinutesToOpenClaw, sanitizeOpenClawConfig, ensureGatewayTlsEnabledInConfig, ensureLanOriginsInConfig } from '../utils/openclaw-auth';
 import { buildProxyEnv, resolveProxySettings } from '../utils/proxy';
 import { syncProxyConfigToOpenClaw } from '../utils/openclaw-proxy';
 import { logger } from '../utils/logger';
@@ -45,12 +45,17 @@ export interface GatewayLaunchContext {
 
 // ── Auto-upgrade bundled plugins on startup ──────────────────────
 
-const CHANNEL_PLUGIN_MAP: Record<string, { dirName: string; npmName: string }> = {
+const CHANNEL_PLUGIN_MAP: Record<string, { dirName: string; npmName: string; devOpenclawExtensionRel?: string }> = {
   dingtalk: { dirName: 'dingtalk', npmName: '@soimy/dingtalk' },
   wecom: { dirName: 'wecom', npmName: '@wecom/wecom-openclaw-plugin' },
   feishu: { dirName: 'feishu-openclaw-plugin', npmName: '@larksuite/openclaw-lark' },
-
   'openclaw-weixin': { dirName: 'openclaw-weixin', npmName: '@tencent-weixin/openclaw-weixin' },
+  /** Lives under `node_modules/@shadanai/openclaw/extensions/box-im`, not `@openclaw/box-im` at repo root. */
+  'box-im': {
+    dirName: 'box-im',
+    npmName: '@openclaw/box-im',
+    devOpenclawExtensionRel: 'extensions/box-im',
+  },
 };
 
 /**
@@ -59,7 +64,7 @@ const CHANNEL_PLUGIN_MAP: Record<string, { dirName: string; npmName: string }> =
  * ~/.openclaw/extensions/, the broken copy overrides the working built-in
  * plugin and must be removed.
  */
-const BUILTIN_CHANNEL_EXTENSIONS = ['discord', 'telegram', 'qqbot'];
+const BUILTIN_CHANNEL_EXTENSIONS = ['discord', 'telegram'];
 
 function cleanupStaleBuiltInExtensions(): void {
   for (const ext of BUILTIN_CHANNEL_EXTENSIONS) {
@@ -141,7 +146,22 @@ function ensureConfiguredPluginsUpgraded(configuredChannels: string[]): void {
 
     // Dev mode fallback: copy from node_modules/ with pnpm dep resolution
     if (!app.isPackaged) {
-      const npmPkgPath = join(process.cwd(), 'node_modules', ...npmName.split('/'));
+      let npmPkgPath = join(process.cwd(), 'node_modules', ...npmName.split('/'));
+      if (
+        pluginInfo.devOpenclawExtensionRel &&
+        !existsSync(fsPath(join(npmPkgPath, 'openclaw.plugin.json')))
+      ) {
+        const alt = join(
+          process.cwd(),
+          'node_modules',
+          '@shadanai',
+          'openclaw',
+          pluginInfo.devOpenclawExtensionRel,
+        );
+        if (existsSync(fsPath(join(alt, 'openclaw.plugin.json')))) {
+          npmPkgPath = alt;
+        }
+      }
       if (!existsSync(fsPath(join(npmPkgPath, 'openclaw.plugin.json')))) continue;
       const sourceVersion = readPluginVersion(join(npmPkgPath, 'package.json'));
       if (!sourceVersion) continue;
@@ -185,6 +205,29 @@ function ensureExtensionDepsResolvable(openclawDir: string): void {
   const topNM = join(openclawDir, 'node_modules');
   let linkedCount = 0;
 
+  // Build a set of packages already provided by openclaw's own pnpm virtual
+  // store node_modules (the real store, not the top-level symlink dir).
+  // We must NOT overwrite these with extension deps — openclaw's own version
+  // takes priority (e.g. file-type@21 must not be shadowed by whatsapp's v16).
+  const openclawRealDir = (() => {
+    try { return require('fs').realpathSync(openclawDir); } catch { return openclawDir; }
+  })();
+  const openclawVirtualNM = join(openclawRealDir, 'node_modules');
+  const ownedByOpenclaw = new Set<string>();
+  try {
+    for (const entry of readdirSync(openclawVirtualNM, { withFileTypes: true })) {
+      if (entry.name.startsWith('@')) {
+        try {
+          for (const sub of readdirSync(join(openclawVirtualNM, entry.name), { withFileTypes: true })) {
+            ownedByOpenclaw.add(`${entry.name}/${sub.name}`);
+          }
+        } catch { /* ignore */ }
+      } else {
+        ownedByOpenclaw.add(entry.name);
+      }
+    }
+  } catch { /* virtual store NM may not exist */ }
+
   try {
     if (!existsSync(extDir)) return;
 
@@ -203,6 +246,8 @@ function ensureExtensionDepsResolvable(openclawDir: string): void {
           try { scopeEntries = readdirSync(scopeDir, { withFileTypes: true }); } catch { continue; }
           for (const sub of scopeEntries) {
             if (!sub.isDirectory()) continue;
+            const scopedName = `${pkg.name}/${sub.name}`;
+            if (ownedByOpenclaw.has(scopedName)) continue; // openclaw owns this dep
             const dest = join(topNM, pkg.name, sub.name);
             if (existsSync(dest)) continue;
             try {
@@ -213,8 +258,8 @@ function ensureExtensionDepsResolvable(openclawDir: string): void {
           }
         } else {
           const dest = join(topNM, pkg.name);
-          if (existsSync(dest)) continue;
-          try {
+          if (ownedByOpenclaw.has(pkg.name)) continue; // openclaw owns this dep
+          if (existsSync(dest)) continue;          try {
             mkdirSync(topNM, { recursive: true });
             symlinkSync(join(extNM, pkg.name), dest);
             linkedCount++;
@@ -299,6 +344,22 @@ export async function syncGatewayConfigBeforeLaunch(
     await syncGatewayTokenToConfig(appSettings.gatewayToken);
   } catch (err) {
     logger.warn('Failed to sync gateway token to openclaw.json:', err);
+  }
+
+  // Windows TLS 配置由 prod 分支的完整 TLS 支持处理，feature1 暂不启用
+  // if (process.platform === 'win32') {
+  //   try {
+  //     await ensureGatewayTlsEnabledInConfig();
+  //   } catch (err) {
+  //     logger.warn('Failed to ensure gateway TLS config:', err);
+  //   }
+  // }
+
+  // Inject current machine's LAN IPs into controlUi.allowedOrigins so LAN devices can access.
+  try {
+    await ensureLanOriginsInConfig(18789);
+  } catch (err) {
+    logger.warn('Failed to inject LAN origins into gateway config:', err);
   }
 
   try {

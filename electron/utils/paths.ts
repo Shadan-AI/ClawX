@@ -111,13 +111,17 @@ export function getPreloadPath(): string {
 /**
  * Get OpenClaw package directory
  * - Production (packaged): from resources/openclaw (copied by electron-builder extraResources)
- * - Development: from node_modules/openclaw
+ * - Development: prefer @shadanai/openclaw, fall back to openclaw
  */
 export function getOpenClawDir(): string {
   if (getElectronApp().isPackaged) {
     return join(process.resourcesPath, 'openclaw');
   }
-  // Development: use node_modules/openclaw
+  // Development: prefer private fork, fall back to public package
+  const privateDir = join(__dirname, '../../node_modules/@shadanai/openclaw');
+  if (existsSync(privateDir)) {
+    return privateDir;
+  }
   return join(__dirname, '../../node_modules/openclaw');
 }
 

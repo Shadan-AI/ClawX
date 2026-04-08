@@ -11,7 +11,7 @@
 import { access, mkdir, readFile, writeFile } from 'fs/promises';
 import { constants, readdirSync, readFileSync, existsSync } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
+import { homedir, networkInterfaces } from 'os';
 import { listConfiguredAgentIds } from './agent-config';
 import { getOpenClawResolvedDir } from './paths';
 import {
@@ -1806,3 +1806,74 @@ export async function sanitizeOpenClawConfig(): Promise<void> {
 }
 
 export { getProviderEnvVar } from './provider-registry';
+
+/**
+ * Collect private LAN IPv4 addresses and inject https://<ip>:<port> origins
+ * into gateway.controlUi.allowedOrigins so LAN devices can access the control UI.
+ */
+export async function ensureLanOriginsInConfig(port = 18789): Promise<void> {
+  return withConfigLock(async () => {
+    const nets = networkInterfaces();
+    const lanIps: string[] = [];
+    const re = /^(192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/;
+    for (const ifaces of Object.values(nets)) {
+      for (const iface of ifaces ?? []) {
+        if (iface.family === 'IPv4' && !iface.internal && re.test(iface.address)) {
+          lanIps.push(iface.address);
+        }
+      }
+    }
+    if (lanIps.length === 0) return;
+
+    const config = await readOpenClawJson();
+    if (!config.gateway || typeof config.gateway !== 'object') return;
+    const gw = config.gateway as Record<string, unknown>;
+    if (!gw.controlUi || typeof gw.controlUi !== 'object') {
+      gw.controlUi = {};
+    }
+    const cui = gw.controlUi as Record<string, unknown>;
+    const existing = Array.isArray(cui.allowedOrigins)
+      ? (cui.allowedOrigins as unknown[]).filter((x): x is string => typeof x === 'string')
+      : [];
+    const toAdd = lanIps.flatMap((ip) => [
+      `https://${ip}:${port}`,
+      `http://${ip}:${port}`,
+    ]).filter((o) => !existing.includes(o));
+    if (toAdd.length === 0) return;
+    cui.allowedOrigins = [...existing, ...toAdd];
+    await writeOpenClawJson(config);
+  });
+}
+
+/**
+ * Ensure gateway.tls is present and enabled in openclaw.json (Windows only).
+ * Writes the standard cert paths from ~/.openclaw/certs/ if missing.
+ * Also ensures gateway.bind is set to "lan" so LAN devices can connect.
+ */
+export async function ensureGatewayTlsEnabledInConfig(): Promise<void> {
+  return withConfigLock(async () => {
+    const config = await readOpenClawJson();
+    if (!config.gateway || typeof config.gateway !== 'object') {
+      config.gateway = {};
+    }
+    const gw = config.gateway as Record<string, unknown>;
+    const certBase = '~/.openclaw/certs';
+    const tls = (gw.tls && typeof gw.tls === 'object' ? gw.tls : {}) as Record<string, unknown>;
+    let changed = false;
+    if (tls.enabled !== true) { tls.enabled = true; changed = true; }
+    if (!tls.certPath) { tls.certPath = `${certBase}/localhost.pem`; changed = true; }
+    if (!tls.keyPath) { tls.keyPath = `${certBase}/localhost-key.pem`; changed = true; }
+    if (!tls.autoGenerate) { tls.autoGenerate = true; changed = true; }
+    if (changed) {
+      gw.tls = tls;
+    }
+    // Ensure bind=lan so gateway listens on all interfaces (not just loopback)
+    if (!gw.bind) {
+      gw.bind = 'lan';
+      changed = true;
+    }
+    if (changed) {
+      await writeOpenClawJson(config);
+    }
+  });
+}
