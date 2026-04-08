@@ -248,13 +248,13 @@ jobs:
           CHANNEL="${{ steps.version.outputs.channel }}"
 
           # Only clean the current channel's directory — never touch other channels
-          ossutil rm -r -f oss://valuecell-clawx/${CHANNEL}/ || true
+          ossutil rm -r -f oss://shadanai-clawx/${CHANNEL}/ || true
 
           # Upload all files with no-cache so clients always get the freshest version
           ossutil cp -r -f \
             --meta="Cache-Control:no-cache,no-store,must-revalidate" \
             staging/${CHANNEL}/ \
-            oss://valuecell-clawx/${CHANNEL}/
+            oss://shadanai-clawx/${CHANNEL}/
 
           echo "Uploaded to ${CHANNEL}/"
 
@@ -265,7 +265,7 @@ jobs:
           # Upload to permanent archive (long cache, immutable)
           ossutil cp -r \
             staging/releases/${TAG}/ \
-            oss://valuecell-clawx/releases/${TAG}/ \
+            oss://shadanai-clawx/releases/${TAG}/ \
             --meta "Cache-Control:public,max-age=31536000,immutable"
 
           echo "Uploaded to releases/${TAG}/"
@@ -276,15 +276,15 @@ jobs:
           CHANNEL="${{ steps.version.outputs.channel }}"
 
           echo "=== ${CHANNEL}/ ==="
-          ossutil ls oss://valuecell-clawx/${CHANNEL}/ --short
+          ossutil ls oss://shadanai-clawx/${CHANNEL}/ --short
 
           echo ""
           echo "=== releases/${TAG}/ ==="
-          ossutil ls oss://valuecell-clawx/releases/${TAG}/ --short
+          ossutil ls oss://shadanai-clawx/releases/${TAG}/ --short
 
           echo ""
           echo "=== Verify release-info.json ==="
-          ossutil cp oss://valuecell-clawx/${CHANNEL}/release-info.json /tmp/release-info.json -f
+          ossutil cp oss://shadanai-clawx/${CHANNEL}/release-info.json /tmp/release-info.json -f
           jq . /tmp/release-info.json
 
           echo ""
@@ -295,7 +295,7 @@ jobs:
             YML_PREFIX="${CHANNEL}"
           fi
           echo "electron-updater expects ${YML_PREFIX}-mac.yml, ${YML_PREFIX}.yml, etc. in ${CHANNEL}/:"
-          ossutil ls oss://valuecell-clawx/${CHANNEL}/ --short | grep "${YML_PREFIX}.*\\.yml" || echo "(none found)"
+          ossutil ls oss://shadanai-clawx/${CHANNEL}/ --short | grep "${YML_PREFIX}.*\\.yml" || echo "(none found)"
           
           echo ""
           echo "All files uploaded and verified successfully!"
