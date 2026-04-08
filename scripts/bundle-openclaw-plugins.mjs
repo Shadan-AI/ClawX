@@ -121,7 +121,7 @@ function bundleOnePlugin({ npmName, pluginId, sourcePath }) {
   queue.push({ nodeModulesDir: rootVirtualNM, skipPkg: npmName });
 
   // Skip peerDependencies — they're provided by the host openclaw gateway.
-  const SKIP_PACKAGES = new Set(['typescript', '@playwright/test']);
+  const SKIP_PACKAGES = new Set(['typescript', '@playwright/test', '@shadanai/openclaw']);
   const SKIP_SCOPES = ['@types/'];
   try {
     const pluginPkg = JSON.parse(fs.readFileSync(path.join(outputDir, 'package.json'), 'utf8'));
