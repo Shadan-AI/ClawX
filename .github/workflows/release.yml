@@ -16,7 +16,6 @@ on:
 permissions:
   contents: write
   actions: read
-  secrets: inherit
 
 jobs:
   release:
@@ -137,6 +136,9 @@ jobs:
   upload-oss:
     needs: release
     runs-on: ubuntu-latest
+    env:
+      OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+      OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
 
     steps:
       - name: Download release artifacts only
@@ -227,9 +229,6 @@ jobs:
           cat staging/${CHANNEL}/release-info.json
 
       - name: Install and configure ossutil
-        env:
-          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
-          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
         run: |
           curl -sL https://gosspublic.alicdn.com/ossutil/install.sh | sudo bash
 
