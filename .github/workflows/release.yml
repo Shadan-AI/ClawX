@@ -17,19 +17,27 @@ permissions:
   contents: write
   actions: read
 
+# Run JS-based actions (upload-artifact, etc.) on Node 24 — see GitHub deprecation of Node 20 runtimes.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   release:
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - os: macos-latest
+          - os: macos-15
             platform: mac
           - os: windows-latest
             platform: win
-          - os: ubuntu-latest
-            platform: linux
+            arch: x64
+          - os: windows-latest
+            platform: win
+            arch: arm64
 
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
     
     steps:
       - name: Checkout code
@@ -37,17 +45,24 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-
+      # Node first, then install pnpm with that Node's npm (no pnpm/action-setup:
+      # avoids Node 20 action runtime + "forced to Node 24" warnings).
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
           node-version: '24'
-          cache: 'pnpm'
+
+      - name: Install pnpm
+        shell: bash
+        run: npm install -g pnpm@10.31.0
+
+      # package.json uses "latest"; refresh lockfile resolution to current npm dist-tag before frozen install.
+      - name: Refresh @shadanai/openclaw to registry latest
+        shell: bash
+        run: pnpm update @shadanai/openclaw --latest
 
       - name: Install dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       - name: Download uv binaries for macOS
         if: matrix.platform == 'mac'
@@ -61,25 +76,7 @@ jobs:
         if: matrix.platform == 'linux'
         run: pnpm run uv:download:linux
 
-
       # macOS specific steps
-      - name: Free disk space (macOS)
-        if: matrix.platform == 'mac'
-        run: |
-          echo "=== Disk usage before cleanup ==="
-          df -h /
-          # Remove large pre-installed toolchains not needed for Electron builds
-          sudo rm -rf /usr/local/lib/android || true
-          sudo rm -rf /usr/share/dotnet || true
-          sudo rm -rf /usr/local/share/powershell || true
-          sudo rm -rf /usr/local/share/chromium || true
-          sudo rm -rf /usr/local/lib/node_modules || true
-          rm -rf ~/Library/Caches/electron-builder/dmg-builder* || true
-          # Homebrew cleanup
-          brew cleanup --prune=all 2>/dev/null || true
-          echo "=== Disk usage after cleanup ==="
-          df -h /
-
       # --publish never: prevent electron-builder from auto-publishing to GitHub.
       # All artifacts are collected and published atomically in the publish job.
       - name: Build macOS
@@ -91,157 +88,167 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          HAS_MAC_CERTS: ${{ secrets.MAC_CERTS != '' && secrets.MAC_CERTS_PASSWORD != '' }}
+          HAS_APPLE_NOTARY: ${{ secrets.APPLE_ID != '' && secrets.APPLE_APP_SPECIFIC_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' }}
         run: |
           ulimit -n 65536
           echo "File descriptor limit: $(ulimit -n)"
-          pnpm run package:mac
+          if [[ "$HAS_MAC_CERTS" == "true" && "$HAS_APPLE_NOTARY" == "true" ]]; then
+            echo "Using signed + notarized macOS release build"
+            pnpm run package:mac
+          else
+            echo "Mac signing/notarization secrets are incomplete; building unsigned macOS release instead"
+            node scripts/package-mac.mjs --config.mac.identity=null --config.mac.notarize=false
+          fi
 
       # Windows specific steps
       - name: Build Windows
         if: matrix.platform == 'win'
-        run: pnpm run package:win
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: pnpm run package:win:${{ matrix.arch }}
 
-      # Detect release channel from tag to skip code signing for alpha/beta builds
-      - name: Detect Windows release channel
-        if: matrix.platform == 'win'
-        id: win-channel
-        shell: bash
-        run: |
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            TAG="${GITHUB_REF#refs/tags/v}"
-          else
-            TAG="${{ github.event.inputs.version }}"
-          fi
-          if [[ "$TAG" =~ (alpha|beta) ]]; then
-            echo "is_stable=false" >> $GITHUB_OUTPUT
-            echo "Channel: prerelease ($TAG) — skipping code signing"
-          else
-            echo "is_stable=true" >> $GITHUB_OUTPUT
-            echo "Channel: stable ($TAG) — will sign"
-          fi
+      # # Detect release channel from tag to skip code signing for alpha/beta builds
+      # - name: Detect Windows release channel
+      #   if: matrix.platform == 'win'
+      #   id: win-channel
+      #   shell: bash
+      #   run: |
+      #     if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+      #       TAG="${GITHUB_REF#refs/tags/v}"
+      #     else
+      #       TAG="${{ github.event.inputs.version }}"
+      #     fi
+      #     if [[ "$TAG" =~ (alpha|beta) ]]; then
+      #       echo "is_stable=false" >> $GITHUB_OUTPUT
+      #       echo "Channel: prerelease ($TAG) — skipping code signing"
+      #     else
+      #       echo "is_stable=true" >> $GITHUB_OUTPUT
+      #       echo "Channel: stable ($TAG) — will sign"
+      #     fi
 
-      - name: Validate unsigned Windows artifacts before SignPath
-        if: matrix.platform == 'win' && steps.win-channel.outputs.is_stable == 'true'
-        shell: pwsh
-        run: |
-          $unsignedExeFiles = Get-ChildItem -Path "release" -Filter *.exe -File
-          if (-not $unsignedExeFiles) {
-            throw "No unsigned .exe files found in release/ before SignPath upload"
-          }
-          $unsignedCount = $unsignedExeFiles.Count
-          "UNSIGNED_EXE_COUNT=$unsignedCount" | Out-File -FilePath $env:GITHUB_ENV -Append
-          Write-Host "Found $unsignedCount unsigned .exe file(s):"
-          $unsignedExeFiles | ForEach-Object { Write-Host " - $($_.Name)" }
+      # - name: Validate unsigned Windows artifacts before SignPath
+      #   if: matrix.platform == 'win' && steps.win-channel.outputs.is_stable == 'true'
+      #   shell: pwsh
+      #   run: |
+      #     $unsignedExeFiles = Get-ChildItem -Path "release" -Filter *.exe -File
+      #     if (-not $unsignedExeFiles) {
+      #       throw "No unsigned .exe files found in release/ before SignPath upload"
+      #     }
+      #     $unsignedCount = $unsignedExeFiles.Count
+      #     "UNSIGNED_EXE_COUNT=$unsignedCount" | Out-File -FilePath $env:GITHUB_ENV -Append
+      #     Write-Host "Found $unsignedCount unsigned .exe file(s):"
+      #     $unsignedExeFiles | ForEach-Object { Write-Host " - $($_.Name)" }
 
-      - name: Upload unsigned Windows artifacts for SignPath
-        if: matrix.platform == 'win' && steps.win-channel.outputs.is_stable == 'true'
-        id: upload-unsigned-windows-artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: unsigned-win-exe-${{ github.run_id }}-${{ github.run_attempt }}
-          path: release/*.exe
-          retention-days: 1
+      # - name: Upload unsigned Windows artifacts for SignPath
+      #   if: matrix.platform == 'win' && steps.win-channel.outputs.is_stable == 'true'
+      #   id: upload-unsigned-windows-artifact
+      #   uses: actions/upload-artifact@v5
+      #   with:
+      #     name: unsigned-win-exe-${{ github.run_id }}-${{ github.run_attempt }}
+      #     path: release/*.exe
+      #     retention-days: 1
 
-      - name: Sign Windows artifacts via SignPath
-        if: matrix.platform == 'win' && steps.win-channel.outputs.is_stable == 'true'
-        id: signpath-sign-windows
-        uses: signpath/github-action-submit-signing-request@v2
-        with:
-          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
-          organization-id: "78e37079-23df-4800-b41c-33312ad7c1e3"
-          project-slug: "ValueCell"
-          signing-policy-slug: "ValueCell-sign"
-          github-artifact-id: ${{ steps.upload-unsigned-windows-artifact.outputs.artifact-id }}
-          wait-for-completion: true
-          output-artifact-directory: release/signed
+      # - name: Sign Windows artifacts via SignPath
+      #   if: matrix.platform == 'win' && steps.win-channel.outputs.is_stable == 'true'
+      #   id: signpath-sign-windows
+      #   uses: signpath/github-action-submit-signing-request@v2
+      #   with:
+      #     api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+      #     organization-id: "78e37079-23df-4800-b41c-33312ad7c1e3"
+      #     project-slug: "ValueCell"
+      #     signing-policy-slug: "ValueCell-sign"
+      #     github-artifact-id: ${{ steps.upload-unsigned-windows-artifact.outputs.artifact-id }}
+      #     wait-for-completion: true
+      #     output-artifact-directory: release/signed
 
-      - name: Replace unsigned executables with signed ones
-        if: matrix.platform == 'win' && steps.win-channel.outputs.is_stable == 'true'
-        shell: pwsh
-        run: |
-          Write-Host "SignPath GitHub artifact ID: ${{ steps.upload-unsigned-windows-artifact.outputs.artifact-id }}"
-          $signedExeFiles = Get-ChildItem -Path "release/signed" -Filter *.exe -File -Recurse
-          if (-not $signedExeFiles) {
-            throw "No signed .exe files found in release/signed"
-          }
-          $signedCount = $signedExeFiles.Count
-          if ($env:UNSIGNED_EXE_COUNT -and ($signedCount -ne [int]$env:UNSIGNED_EXE_COUNT)) {
-            throw "Signed .exe count ($signedCount) does not match unsigned count ($env:UNSIGNED_EXE_COUNT)"
-          }
-          foreach ($file in $signedExeFiles) {
-            Copy-Item -Path $file.FullName -Destination "release/$($file.Name)" -Force
-          }
-          $finalExeFiles = Get-ChildItem -Path "release" -Filter *.exe -File
-          if ($env:UNSIGNED_EXE_COUNT -and ($finalExeFiles.Count -ne [int]$env:UNSIGNED_EXE_COUNT)) {
-            throw "Final release .exe count ($($finalExeFiles.Count)) does not match unsigned count ($env:UNSIGNED_EXE_COUNT)"
-          }
-          Write-Host "Signed executables copied to release/ ($($finalExeFiles.Count) file(s))"
+      # - name: Replace unsigned executables with signed ones
+      #   if: matrix.platform == 'win' && steps.win-channel.outputs.is_stable == 'true'
+      #   shell: pwsh
+      #   run: |
+      #     Write-Host "SignPath GitHub artifact ID: ${{ steps.upload-unsigned-windows-artifact.outputs.artifact-id }}"
+      #     $signedExeFiles = Get-ChildItem -Path "release/signed" -Filter *.exe -File -Recurse
+      #     if (-not $signedExeFiles) {
+      #       throw "No signed .exe files found in release/signed"
+      #     }
+      #     $signedCount = $signedExeFiles.Count
+      #     if ($env:UNSIGNED_EXE_COUNT -and ($signedCount -ne [int]$env:UNSIGNED_EXE_COUNT)) {
+      #       throw "Signed .exe count ($signedCount) does not match unsigned count ($env:UNSIGNED_EXE_COUNT)"
+      #     }
+      #     foreach ($file in $signedExeFiles) {
+      #       Copy-Item -Path $file.FullName -Destination "release/$($file.Name)" -Force
+      #     }
+      #     $finalExeFiles = Get-ChildItem -Path "release" -Filter *.exe -File
+      #     if ($env:UNSIGNED_EXE_COUNT -and ($finalExeFiles.Count -ne [int]$env:UNSIGNED_EXE_COUNT)) {
+      #       throw "Final release .exe count ($($finalExeFiles.Count)) does not match unsigned count ($env:UNSIGNED_EXE_COUNT)"
+      #     }
+      #     Write-Host "Signed executables copied to release/ ($($finalExeFiles.Count) file(s))"
 
-      # Code signing changes the .exe binary, invalidating the sha512 hash that
-      # electron-builder wrote into latest.yml during the initial build.
-      # Recalculate the hash for each signed .exe and patch the yml files so
-      # electron-updater can verify the download successfully.
-      #
-      # Actual latest.yml structure (from electron-builder NSIS):
-      #   files:
-      #     - url: ClawX-0.2.4-win-x64.exe    ← files[] entries have url/sha512/size
-      #       sha512: <base64>
-      #       size: 430775882
-      #   path: ClawX-0.2.4-win-arm64.exe      ← top-level has path/sha512 (no size!)
-      #   sha512: <base64>
-      #   releaseDate: '...'
-      - name: Update latest.yml sha512 after code signing
-        if: matrix.platform == 'win' && steps.win-channel.outputs.is_stable == 'true'
-        shell: pwsh
-        run: |
-          $ymlFiles = Get-ChildItem -Path "release" -Filter "*.yml" -File | Where-Object { $_.Name -ne "builder-debug.yml" }
-          $exeFiles = Get-ChildItem -Path "release" -Filter "*.exe" -File
+      # # Code signing changes the .exe binary, invalidating the sha512 hash that
+      # # electron-builder wrote into latest.yml during the initial build.
+      # # Recalculate the hash for each signed .exe and patch the yml files so
+      # # electron-updater can verify the download successfully.
+      # #
+      # # Actual latest.yml structure (from electron-builder NSIS):
+      # #   files:
+      # #     - url: ClawX-0.2.4-win-x64.exe    ← files[] entries have url/sha512/size
+      # #       sha512: <base64>
+      # #       size: 430775882
+      # #   path: ClawX-0.2.4-win-arm64.exe      ← top-level has path/sha512 (no size!)
+      # #   sha512: <base64>
+      # #   releaseDate: '...'
+      # - name: Update latest.yml sha512 after code signing
+      #   if: matrix.platform == 'win' && steps.win-channel.outputs.is_stable == 'true'
+      #   shell: pwsh
+      #   run: |
+      #     $ymlFiles = Get-ChildItem -Path "release" -Filter "*.yml" -File | Where-Object { $_.Name -ne "builder-debug.yml" }
+      #     $exeFiles = Get-ChildItem -Path "release" -Filter "*.exe" -File
 
-          foreach ($yml in $ymlFiles) {
-            $content = Get-Content $yml.FullName -Raw
-            $modified = $false
+      #     foreach ($yml in $ymlFiles) {
+      #       $content = Get-Content $yml.FullName -Raw
+      #       $modified = $false
 
-            foreach ($exe in $exeFiles) {
-              # Compute new sha512 (base64) for the signed exe
-              $hash = Get-FileHash -Path $exe.FullName -Algorithm SHA512
-              $hashBytes = [byte[]]::new($hash.Hash.Length / 2)
-              for ($i = 0; $i -lt $hashBytes.Length; $i++) {
-                $hashBytes[$i] = [Convert]::ToByte($hash.Hash.Substring($i * 2, 2), 16)
-              }
-              $newSha512 = [Convert]::ToBase64String($hashBytes)
-              $newSize = (Get-Item $exe.FullName).Length
-              $escapedName = [Regex]::Escape($exe.Name)
+      #       foreach ($exe in $exeFiles) {
+      #         # Compute new sha512 (base64) for the signed exe
+      #         $hash = Get-FileHash -Path $exe.FullName -Algorithm SHA512
+      #         $hashBytes = [byte[]]::new($hash.Hash.Length / 2)
+      #         for ($i = 0; $i -lt $hashBytes.Length; $i++) {
+      #           $hashBytes[$i] = [Convert]::ToByte($hash.Hash.Substring($i * 2, 2), 16)
+      #         }
+      #         $newSha512 = [Convert]::ToBase64String($hashBytes)
+      #         $newSize = (Get-Item $exe.FullName).Length
+      #         $escapedName = [Regex]::Escape($exe.Name)
 
-              # 1) files[] entries:  url: <name>\n    sha512: <hash>\n    size: <n>
-              $urlPattern = "(?m)(url:\s*${escapedName}\s*\r?\n\s*sha512:\s*)(\S+)(\s*\r?\n\s*size:\s*)(\d+)"
-              if ($content -match $urlPattern) {
-                $content = $content -replace $urlPattern, "`${1}${newSha512}`${3}${newSize}"
-                $modified = $true
-                Write-Host "Updated $($yml.Name) files[]: $($exe.Name) sha512=$newSha512 size=$newSize"
-              }
+      #         # 1) files[] entries:  url: <name>\n    sha512: <hash>\n    size: <n>
+      #         $urlPattern = "(?m)(url:\s*${escapedName}\s*\r?\n\s*sha512:\s*)(\S+)(\s*\r?\n\s*size:\s*)(\d+)"
+      #         if ($content -match $urlPattern) {
+      #           $content = $content -replace $urlPattern, "`${1}${newSha512}`${3}${newSize}"
+      #           $modified = $true
+      #           Write-Host "Updated $($yml.Name) files[]: $($exe.Name) sha512=$newSha512 size=$newSize"
+      #         }
 
-              # 2) Top-level entry:  path: <name>\nsha512: <hash>\n  (no size field)
-              $pathPattern = "(?m)(path:\s*${escapedName}\s*\r?\n)sha512:\s*\S+"
-              if ($content -match $pathPattern) {
-                $content = $content -replace $pathPattern, "`${1}sha512: ${newSha512}"
-                $modified = $true
-                Write-Host "Updated $($yml.Name) top-level: $($exe.Name) sha512=$newSha512"
-              }
-            }
+      #         # 2) Top-level entry:  path: <name>\nsha512: <hash>\n  (no size field)
+      #         $pathPattern = "(?m)(path:\s*${escapedName}\s*\r?\n)sha512:\s*\S+"
+      #         if ($content -match $pathPattern) {
+      #           $content = $content -replace $pathPattern, "`${1}sha512: ${newSha512}"
+      #           $modified = $true
+      #           Write-Host "Updated $($yml.Name) top-level: $($exe.Name) sha512=$newSha512"
+      #         }
+      #       }
 
-            if ($modified) {
-              Set-Content -Path $yml.FullName -Value $content -NoNewline
-              Write-Host "Saved updated $($yml.Name)"
-            }
-          }
+      #       if ($modified) {
+      #         Set-Content -Path $yml.FullName -Value $content -NoNewline
+      #         Write-Host "Saved updated $($yml.Name)"
+      #       }
+      #     }
 
-          Write-Host ""
-          Write-Host "=== Final yml contents ==="
-          foreach ($yml in $ymlFiles) {
-            Write-Host "--- $($yml.Name) ---"
-            Get-Content $yml.FullName
-            Write-Host ""
-          }
+      #     Write-Host ""
+      #     Write-Host "=== Final yml contents ==="
+      #     foreach ($yml in $ymlFiles) {
+      #       Write-Host "--- $($yml.Name) ---"
+      #       Get-Content $yml.FullName
+      #       Write-Host ""
+      #     }
 
       # Linux specific steps
       - name: Build Linux
@@ -249,9 +256,9 @@ jobs:
         run: pnpm run package:linux
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
-          name: release-${{ matrix.platform }}
+          name: release-${{ matrix.platform }}${{ matrix.arch && format('-{0}', matrix.arch) || '' }}
           path: |
             release/*.dmg
             release/*.zip
@@ -273,7 +280,7 @@ jobs:
     
     steps:
       - name: Download release artifacts only
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           path: release-artifacts
           pattern: release-*
@@ -291,10 +298,14 @@ jobs:
           echo "Removing builder-debug.yml files to avoid duplicate asset upload conflicts..."
           find release-artifacts/ -name "builder-debug.yml" -delete -print || true
 
+      # Tag push: github.ref is refs/tags/v* → ref_name is the tag.
+      # workflow_dispatch: github.ref is refs/heads/* → must set tag_name from inputs (otherwise this step is skipped).
       - name: Create GitHub Release (as pre-release)
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', github.event.inputs.version) || github.ref_name }}
+          target_commitish: ${{ github.sha }}
           files: |
             release-artifacts/**/*.dmg
             release-artifacts/**/*.zip
@@ -304,11 +315,11 @@ jobs:
             release-artifacts/**/*.rpm
             release-artifacts/**/*.yml
           draft: false
-          prerelease: true
-          make_latest: false
+          prerelease: false
+          make_latest: true
           generate_release_notes: true
           body: |
-            ## 🚀 ClawX ${{ github.ref_name }}
+            ## 🚀 ClawX ${{ github.event_name == 'workflow_dispatch' && format('v{0}', github.event.inputs.version) || github.ref_name }}
             
             ClawX - Graphical AI Assistant based on OpenClaw
             
@@ -366,7 +377,7 @@ jobs:
 
     steps:
       - name: Download release artifacts only
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           path: release-artifacts
           pattern: release-*
@@ -549,14 +560,18 @@ jobs:
   finalize:
     needs: [publish, upload-oss]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
 
     steps:
       - name: Promote release from pre-release to latest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            TAG="v${{ github.event.inputs.version }}"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
           IS_PRERELEASE_CHANNEL=false
 
           if [[ "$TAG" == *"alpha"* ]] || [[ "$TAG" == *"beta"* ]]; then
