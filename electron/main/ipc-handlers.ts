@@ -68,6 +68,15 @@ import {
   type AppRequest,
   type AppResponse,
 } from './ipc/request-helpers';
+import { getTokenKey as getBoxImTokenKey, logoutBoxIm } from '../utils/box-im-sync';
+import {
+  createWxScene,
+  pollWxScan,
+  findOrCreateImUser,
+  bindPhoneAndRegister,
+  sendSmsCode,
+  persistLoginResult,
+} from '../utils/wx-auth';
 
 /**
  * Register all IPC handlers
@@ -121,6 +130,12 @@ export function registerIpcHandlers(
 
   // Skill config handlers (direct file access, no Gateway RPC)
   registerSkillConfigHandlers();
+
+  // Box-IM config handlers (direct file access for tokenKey)
+  registerBoxImConfigHandlers();
+
+  // WeChat QR auth handlers (direct HTTP, no Gateway dependency)
+  registerWxAuthHandlers();
 
   // Cron task handlers (proxy to Gateway RPC)
   registerCronHandlers(gatewayManager);
@@ -719,6 +734,81 @@ function registerSkillConfigHandlers(): void {
   // Get all skill configs
   ipcMain.handle('skill:getAllConfigs', async () => {
     return await getAllSkillConfigs();
+  });
+}
+
+function registerBoxImConfigHandlers(): void {
+  ipcMain.handle('box-im:getTokenKey', async () => {
+    try {
+      return await getBoxImTokenKey();
+    } catch (err) {
+      logger.warn('[box-im] Failed to read tokenKey:', err);
+      return null;
+    }
+  });
+
+  ipcMain.handle('box-im:logout', async () => {
+    try {
+      await logoutBoxIm();
+      return { success: true };
+    } catch (err) {
+      logger.error('[box-im] Logout failed:', err);
+      return { success: false, error: String(err) };
+    }
+  });
+}
+
+function registerWxAuthHandlers(): void {
+  ipcMain.handle('wx-auth:createScene', async () => {
+    try {
+      return { success: true, ...(await createWxScene()) };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+  });
+
+  ipcMain.handle('wx-auth:pollScan', async (_, sceneId: string) => {
+    try {
+      return { success: true, ...(await pollWxScan(sceneId)) };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+  });
+
+  ipcMain.handle('wx-auth:findOrCreateUser', async (_, openid: string, nickname?: string, avatar?: string) => {
+    try {
+      return { success: true, ...(await findOrCreateImUser(openid, nickname, avatar)) };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+  });
+
+  ipcMain.handle('wx-auth:sendSms', async (_, phone: string) => {
+    try {
+      await sendSmsCode(phone);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+  });
+
+  ipcMain.handle('wx-auth:bindPhone', async (_, openid: string, phone: string, code: string, nickname?: string, avatar?: string) => {
+    try {
+      const result = await bindPhoneAndRegister(openid, phone, code, nickname, avatar);
+      await persistLoginResult(result.tokenKey, result.userId, openid, nickname, avatar);
+      return { success: true, ...result };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+  });
+
+  ipcMain.handle('wx-auth:persistLogin', async (_, tokenKey: string, userId?: number, openid?: string, nickname?: string, avatar?: string, accessToken?: string) => {
+    try {
+      await persistLoginResult(tokenKey, userId, openid, nickname, avatar, accessToken);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
   });
 }
 

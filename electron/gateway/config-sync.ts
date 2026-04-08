@@ -21,7 +21,8 @@ import { getProviderEnvVar, getKeyableProviderTypes } from '../utils/provider-re
 import { getOpenClawDir, getOpenClawEntryPath, isOpenClawPresent } from '../utils/paths';
 import { getUvMirrorEnv } from '../utils/uv-env';
 import { cleanupDanglingWeChatPluginState, listConfiguredChannels, readOpenClawConfig } from '../utils/channel-config';
-import { syncGatewayTokenToConfig, syncBrowserConfigToOpenClaw, syncSessionIdleMinutesToOpenClaw, sanitizeOpenClawConfig, ensureGatewayTlsEnabledInConfig, ensureLanOriginsInConfig } from '../utils/openclaw-auth';
+import { syncGatewayTokenToConfig, syncBrowserConfigToOpenClaw, syncSessionIdleMinutesToOpenClaw, sanitizeOpenClawConfig } from '../utils/openclaw-auth';
+import { getTokenKey, writeBoxImTokenKey } from '../utils/box-im-sync';
 import { buildProxyEnv, resolveProxySettings } from '../utils/proxy';
 import { syncProxyConfigToOpenClaw } from '../utils/openclaw-proxy';
 import { logger } from '../utils/logger';
@@ -45,17 +46,11 @@ export interface GatewayLaunchContext {
 
 // ── Auto-upgrade bundled plugins on startup ──────────────────────
 
-const CHANNEL_PLUGIN_MAP: Record<string, { dirName: string; npmName: string; devOpenclawExtensionRel?: string }> = {
+const CHANNEL_PLUGIN_MAP: Record<string, { dirName: string; npmName: string }> = {
   dingtalk: { dirName: 'dingtalk', npmName: '@soimy/dingtalk' },
   wecom: { dirName: 'wecom', npmName: '@wecom/wecom-openclaw-plugin' },
   feishu: { dirName: 'feishu-openclaw-plugin', npmName: '@larksuite/openclaw-lark' },
   'openclaw-weixin': { dirName: 'openclaw-weixin', npmName: '@tencent-weixin/openclaw-weixin' },
-  /** Lives under `node_modules/@shadanai/openclaw/extensions/box-im`, not `@openclaw/box-im` at repo root. */
-  'box-im': {
-    dirName: 'box-im',
-    npmName: '@openclaw/box-im',
-    devOpenclawExtensionRel: 'extensions/box-im',
-  },
 };
 
 /**
@@ -146,22 +141,7 @@ function ensureConfiguredPluginsUpgraded(configuredChannels: string[]): void {
 
     // Dev mode fallback: copy from node_modules/ with pnpm dep resolution
     if (!app.isPackaged) {
-      let npmPkgPath = join(process.cwd(), 'node_modules', ...npmName.split('/'));
-      if (
-        pluginInfo.devOpenclawExtensionRel &&
-        !existsSync(fsPath(join(npmPkgPath, 'openclaw.plugin.json')))
-      ) {
-        const alt = join(
-          process.cwd(),
-          'node_modules',
-          '@shadanai',
-          'openclaw',
-          pluginInfo.devOpenclawExtensionRel,
-        );
-        if (existsSync(fsPath(join(alt, 'openclaw.plugin.json')))) {
-          npmPkgPath = alt;
-        }
-      }
+      const npmPkgPath = join(process.cwd(), 'node_modules', ...npmName.split('/'));
       if (!existsSync(fsPath(join(npmPkgPath, 'openclaw.plugin.json')))) continue;
       const sourceVersion = readPluginVersion(join(npmPkgPath, 'package.json'));
       if (!sourceVersion) continue;
@@ -356,11 +336,12 @@ export async function syncGatewayConfigBeforeLaunch(
   // }
 
   // Inject current machine's LAN IPs into controlUi.allowedOrigins so LAN devices can access.
-  try {
-    await ensureLanOriginsInConfig(18789);
-  } catch (err) {
-    logger.warn('Failed to inject LAN origins into gateway config:', err);
-  }
+  // (ensureLanOriginsInConfig is available in prod branch; skipped in feature1)
+  // try {
+  //   await ensureLanOriginsInConfig(18789);
+  // } catch (err) {
+  //   logger.warn('Failed to inject LAN origins into gateway config:', err);
+  // }
 
   try {
     await syncBrowserConfigToOpenClaw();
@@ -372,6 +353,20 @@ export async function syncGatewayConfigBeforeLaunch(
     await syncSessionIdleMinutesToOpenClaw();
   } catch (err) {
     logger.warn('Failed to sync session idle minutes to openclaw.json:', err);
+  }
+
+  // Re-apply tokenKey after every Gateway (re)start.
+  // The Gateway may overwrite openclaw.json on restart (config change detection),
+  // which would erase the tokenKey we wrote during login. Re-writing it here
+  // ensures it survives Gateway restarts.
+  try {
+    const tokenKey = await getTokenKey();
+    if (tokenKey) {
+      await writeBoxImTokenKey(tokenKey);
+      logger.debug('[box-im] Re-applied tokenKey to openclaw.json before Gateway launch');
+    }
+  } catch (err) {
+    logger.warn('[box-im] Failed to re-apply tokenKey before Gateway launch:', err);
   }
 }
 

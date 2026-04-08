@@ -52,7 +52,24 @@ export async function runGatewayStartupSequence(hooks: StartupHooks): Promise<vo
       logger.debug('No existing Gateway found, starting new process...');
 
       if (hooks.shouldWaitForPortFree) {
-        await hooks.waitForPortFree(hooks.port);
+        try {
+          await hooks.waitForPortFree(hooks.port);
+        } catch {
+          // Port still occupied after timeout — the old process may have
+          // restarted itself (e.g. code=1012 service restart). Try connecting
+          // to whatever is on the port before giving up.
+          logger.warn(`Port ${hooks.port} still occupied; attempting to connect to existing process before starting new one`);
+          const existing = await hooks.findExistingGateway(hooks.port);
+          if (existing) {
+            logger.debug(`Connected to existing Gateway on port ${existing.port} after port-wait timeout`);
+            await hooks.connect(existing.port, existing.externalToken);
+            hooks.assertLifecycle('start/connect-existing-after-timeout');
+            hooks.onConnectedToExistingGateway();
+            return;
+          }
+          // Still nothing — re-throw to trigger normal error handling
+          throw new Error(`Port ${hooks.port} still occupied and no connectable Gateway found`);
+        }
         hooks.assertLifecycle('start/wait-port');
       }
 

@@ -16,6 +16,7 @@ import enAgents from './locales/en/agents.json';
 import enSkills from './locales/en/skills.json';
 import enCron from './locales/en/cron.json';
 import enSetup from './locales/en/setup.json';
+import enBoxImGate from './locales/en/boxImGate.json';
 
 // ZH
 import zhCommon from './locales/zh/common.json';
@@ -27,6 +28,7 @@ import zhAgents from './locales/zh/agents.json';
 import zhSkills from './locales/zh/skills.json';
 import zhCron from './locales/zh/cron.json';
 import zhSetup from './locales/zh/setup.json';
+import zhBoxImGate from './locales/zh/boxImGate.json';
 
 // JA
 import jaCommon from './locales/ja/common.json';
@@ -38,6 +40,7 @@ import jaAgents from './locales/ja/agents.json';
 import jaSkills from './locales/ja/skills.json';
 import jaCron from './locales/ja/cron.json';
 import jaSetup from './locales/ja/setup.json';
+import jaBoxImGate from './locales/ja/boxImGate.json';
 
 export const SUPPORTED_LANGUAGES = [
     { code: 'en', label: 'English' },
@@ -56,6 +59,7 @@ const resources = {
         skills: enSkills,
         cron: enCron,
         setup: enSetup,
+        boxImGate: enBoxImGate,
     },
     zh: {
         common: zhCommon,
@@ -67,6 +71,7 @@ const resources = {
         skills: zhSkills,
         cron: zhCron,
         setup: zhSetup,
+        boxImGate: zhBoxImGate,
     },
     ja: {
         common: jaCommon,
@@ -78,6 +83,7 @@ const resources = {
         skills: jaSkills,
         cron: jaCron,
         setup: jaSetup,
+        boxImGate: jaBoxImGate,
     },
 };
 
@@ -89,7 +95,7 @@ i18n
         fallbackLng: 'en',
         supportedLngs: [...SUPPORTED_LANGUAGE_CODES],
         defaultNS: 'common',
-        ns: ['common', 'settings', 'dashboard', 'chat', 'channels', 'agents', 'skills', 'cron', 'setup'],
+        ns: ['common', 'settings', 'dashboard', 'chat', 'channels', 'agents', 'skills', 'cron', 'setup', 'boxImGate'],
         interpolation: {
             escapeValue: false, // React already escapes
         },

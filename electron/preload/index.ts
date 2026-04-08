@@ -118,6 +118,16 @@ const electronAPI = {
         'skill:updateConfig',
         'skill:getConfig',
         'skill:getAllConfigs',
+        // Box-IM
+        'box-im:getTokenKey',
+        'box-im:logout',
+        // WeChat QR auth (direct, no Gateway)
+        'wx-auth:createScene',
+        'wx-auth:pollScan',
+        'wx-auth:findOrCreateUser',
+        'wx-auth:sendSms',
+        'wx-auth:bindPhone',
+        'wx-auth:persistLogin',
         // Logs
         'log:getRecent',
         'log:readFile',
@@ -179,6 +189,8 @@ const electronAPI = {
         'oauth:success',
         'oauth:error',
         'openclaw:cli-installed',
+        // Box-IM
+        'box-im:refresh',
       ];
 
       if (validChannels.includes(channel)) {

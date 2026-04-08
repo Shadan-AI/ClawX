@@ -40,6 +40,8 @@ interface SettingsState {
 
   // Setup
   setupComplete: boolean;
+  /** After WeChat / box-im plugin login gate (before Setup wizard). */
+  boxImGateComplete: boolean;
 
   // Actions
   init: () => Promise<void>;
@@ -62,6 +64,8 @@ interface SettingsState {
   setSidebarCollapsed: (value: boolean) => void;
   setDevModeUnlocked: (value: boolean) => void;
   markSetupComplete: () => void;
+  markBoxImGateComplete: () => void;
+  resetBoxImGateComplete: () => void;
   resetSettings: () => void;
 }
 
@@ -85,6 +89,7 @@ const defaultSettings = {
   sidebarCollapsed: false,
   devModeUnlocked: false,
   setupComplete: false,
+  boxImGateComplete: false,
 };
 
 export const useSettingsStore = create<SettingsState>()(
@@ -175,6 +180,16 @@ export const useSettingsStore = create<SettingsState>()(
         }).catch(() => { });
       },
       markSetupComplete: () => set({ setupComplete: true }),
+      markBoxImGateComplete: () => {
+        set({ boxImGateComplete: true });
+        try {
+          const stored = localStorage.getItem('clawx-settings');
+          const parsed = stored ? JSON.parse(stored) : {};
+          parsed.state = { ...parsed.state, boxImGateComplete: true };
+          localStorage.setItem('clawx-settings', JSON.stringify(parsed));
+        } catch { /* ignore */ }
+      },
+      resetBoxImGateComplete: () => set({ boxImGateComplete: false }),
       resetSettings: () => set(defaultSettings),
     }),
     {

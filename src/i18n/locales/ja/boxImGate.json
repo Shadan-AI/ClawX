@@ -1,0 +1,20 @@
+{
+    "title": "QRコードでログイン",
+    "subtitle": "WeChatでQRコードをスキャンしてアカウントを連携してください",
+    "gatewayNotRunning": "ゲートウェイが停止中",
+    "startGatewayHint": "ログインQRコードを取得するにはゲートウェイを起動してください",
+    "startGateway": "ゲートウェイを起動",
+    "startingGateway": "ゲートウェイを起動中",
+    "pleaseWait": "お待ちください...",
+    "fetchingQrCode": "QRコードを取得中...",
+    "error": "取得に失敗しました",
+    "retry": "再試行",
+    "wechatQrCode": "WeChat QRコード",
+    "scanToLogin": "WeChatでQRコードをスキャンしてログイン",
+    "refreshQrCode": "QRコードを更新",
+    "loginSuccess": "ログイン成功",
+    "welcome": "ようこそ {{nickname}}",
+    "redirecting": "リダイレクト中...",
+    "qrCodeExpired": "QRコードの有効期限が切れました",
+    "skip": "ログインをスキップ"
+}

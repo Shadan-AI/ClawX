@@ -517,6 +517,10 @@ export function ensureWeChatPluginInstalled(): { installed: boolean; warning?: s
   return ensurePluginInstalled('openclaw-weixin', buildCandidateSources('openclaw-weixin'), 'WeChat');
 }
 
+export function ensureBoxImPluginInstalled(): { installed: boolean; warning?: string } {
+  return ensurePluginInstalled('box-im', buildCandidateSources('box-im'), 'Box-IM');
+}
+
 // ── Bulk startup installer ───────────────────────────────────────────────────
 
 /**
@@ -525,9 +529,9 @@ export function ensureWeChatPluginInstalled(): { installed: boolean; warning?: s
 const ALL_BUNDLED_PLUGINS = [
   { fn: ensureDingTalkPluginInstalled, label: 'DingTalk' },
   { fn: ensureWeComPluginInstalled, label: 'WeCom' },
-
   { fn: ensureFeishuPluginInstalled, label: 'Feishu' },
   { fn: ensureWeChatPluginInstalled, label: 'WeChat' },
+  { fn: ensureBoxImPluginInstalled, label: 'Box-IM' },
 ] as const;
 
 /**

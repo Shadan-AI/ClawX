@@ -3,7 +3,7 @@
  * Handles routing and global providers
  */
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
-import { Component, useEffect } from 'react';
+import { Component, useEffect, useRef, useState, useCallback } from 'react';
 import type { ErrorInfo, ReactNode } from 'react';
 import { Toaster } from 'sonner';
 import i18n from './i18n';
@@ -17,10 +17,11 @@ import { Skills } from './pages/Skills';
 import { Cron } from './pages/Cron';
 import { Settings } from './pages/Settings';
 import { Setup } from './pages/Setup';
+import { BoxImGate } from './pages/BoxImGate';
 import { useSettingsStore } from './stores/settings';
 import { useGatewayStore } from './stores/gateway';
 import { useProviderStore } from './stores/providers';
-import { applyGatewayTransportPreference } from './lib/api-client';
+import { applyGatewayTransportPreference, invokeIpc } from './lib/api-client';
 
 
 /**
@@ -98,6 +99,19 @@ function App() {
   const setupComplete = useSettingsStore((state) => state.setupComplete);
   const initGateway = useGatewayStore((state) => state.init);
   const initProviders = useProviderStore((state) => state.init);
+  const gatewayStatus = useGatewayStore((state) => state.status);
+  // null = not yet checked, true/false = result
+  const [isLoggedIn, setIsLoggedIn] = useState<boolean | null>(null);
+  const checkIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const checkLoginStatus = useCallback(async () => {
+    try {
+      const tokenKey = await invokeIpc<string | null>('box-im:getTokenKey');
+      setIsLoggedIn(!!tokenKey);
+    } catch {
+      setIsLoggedIn(false);
+    }
+  }, []);
 
   useEffect(() => {
     initSettings();
@@ -120,12 +134,56 @@ function App() {
     initProviders();
   }, [initProviders]);
 
-  // Redirect to setup wizard if not complete
+  // Check login status immediately on mount (reads openclaw.json, no gateway needed)
   useEffect(() => {
-    if (!setupComplete && !skipSetupForE2E && !location.pathname.startsWith('/setup')) {
-      navigate('/setup');
+    void checkLoginStatus();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Re-check when gateway comes online (token may have been written during login flow)
+  useEffect(() => {
+    if (gatewayStatus.state !== 'running') return;
+    void checkLoginStatus();
+  }, [gatewayStatus.state, checkLoginStatus]);
+
+  // Periodic login check while gateway is running
+  useEffect(() => {
+    if (gatewayStatus.state !== 'running') {
+      if (checkIntervalRef.current) {
+        clearInterval(checkIntervalRef.current);
+        checkIntervalRef.current = null;
+      }
+      return;
     }
-  }, [setupComplete, skipSetupForE2E, location.pathname, navigate]);
+    checkIntervalRef.current = setInterval(() => {
+      void checkLoginStatus();
+    }, 5000);
+    return () => {
+      if (checkIntervalRef.current) {
+        clearInterval(checkIntervalRef.current);
+        checkIntervalRef.current = null;
+      }
+    };
+  }, [gatewayStatus.state, checkLoginStatus]);
+
+  // Route guard — only runs after login check completes (isLoggedIn !== null)
+  useEffect(() => {
+    const path = location.pathname;
+    if (path.startsWith('/setup') || path === '/box-im-gate') return;
+
+    // Still waiting for the initial IPC check — don't redirect yet
+    if (isLoggedIn === null) return;
+
+    if (isLoggedIn === false) {
+      navigate('/box-im-gate', { replace: true });
+      return;
+    }
+
+    if (!setupComplete && !skipSetupForE2E) {
+      navigate('/setup', { replace: true });
+      return;
+    }
+  }, [setupComplete, isLoggedIn, skipSetupForE2E, location.pathname, navigate]);
 
   // Listen for navigation events from main process
   useEffect(() => {
@@ -168,6 +226,8 @@ function App() {
     <ErrorBoundary>
       <TooltipProvider delayDuration={300}>
         <Routes>
+          {/* box-im plugin login gate (before setup) */}
+          <Route path="/box-im-gate" element={<BoxImGate />} />
           {/* Setup wizard (shown on first launch) */}
           <Route path="/setup/*" element={<Setup />} />
 

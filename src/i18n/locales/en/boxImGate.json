@@ -1,0 +1,20 @@
+{
+    "title": "Scan to sign in",
+    "subtitle": "Scan the QR code with WeChat to bind your account",
+    "gatewayNotRunning": "Gateway not running",
+    "startGatewayHint": "Please start the gateway to get the login QR code",
+    "startGateway": "Start gateway",
+    "startingGateway": "Starting gateway",
+    "pleaseWait": "Please wait...",
+    "fetchingQrCode": "Fetching QR code...",
+    "error": "Failed to fetch",
+    "retry": "Retry",
+    "wechatQrCode": "WeChat QR Code",
+    "scanToLogin": "Scan the QR code with WeChat to sign in",
+    "refreshQrCode": "Refresh QR code",
+    "loginSuccess": "Login successful",
+    "welcome": "Welcome {{nickname}}",
+    "redirecting": "Redirecting...",
+    "qrCodeExpired": "QR code expired",
+    "skip": "Skip login"
+}
