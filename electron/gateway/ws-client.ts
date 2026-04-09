@@ -1,4 +1,5 @@
 import WebSocket from 'ws';
+import type { ClientOptions } from 'ws';
 import type { DeviceIdentity } from '../utils/device-identity';
 import type { PendingGatewayRequest } from './request-store';
 import {
@@ -11,12 +12,27 @@ import { logger } from '../utils/logger';
 export const GATEWAY_CHALLENGE_TIMEOUT_MS = 10_000;
 export const GATEWAY_CONNECT_HANDSHAKE_TIMEOUT_MS = 20_000;
 
+function localGatewayWsUrl(port: number, tls: boolean): string {
+  const proto = tls ? 'wss' : 'ws';
+  return `${proto}://127.0.0.1:${port}/ws`;
+}
+
+/** Self-signed / mkcert-generated localhost certs need this for Node TLS client. */
+function wsClientOptionsForLocalGateway(tls: boolean): ClientOptions | undefined {
+  if (!tls) return undefined;
+  return { rejectUnauthorized: false };
+}
+
 export async function probeGatewayReady(
   port: number,
   timeoutMs = 1500,
+  options?: { tls?: boolean },
 ): Promise<boolean> {
+  const tls = options?.tls === true;
+  const url = localGatewayWsUrl(port, tls);
+  const wsOpts = wsClientOptionsForLocalGateway(tls);
   return await new Promise<boolean>((resolve) => {
-    const testWs = new WebSocket(`ws://localhost:${port}/ws`);
+    const testWs = wsOpts ? new WebSocket(url, wsOpts) : new WebSocket(url);
     let settled = false;
 
     const resolveOnce = (value: boolean) => {
@@ -67,6 +83,7 @@ export async function probeGatewayReady(
 
 export async function waitForGatewayReady(options: {
   port: number;
+  tls?: boolean;
   getProcessExitCode: () => number | null;
   retries?: number;
   intervalMs?: number;
@@ -82,7 +99,7 @@ export async function waitForGatewayReady(options: {
     }
 
     try {
-      const ready = await probeGatewayReady(options.port, 1500);
+      const ready = await probeGatewayReady(options.port, 1500, { tls: options.tls });
       if (ready) {
         logger.debug(`Gateway ready after ${i + 1} attempt(s)`);
         return;
@@ -168,6 +185,7 @@ export function buildGatewayConnectFrame(options: {
 
 export async function connectGatewaySocket(options: {
   port: number;
+  tls?: boolean;
   deviceIdentity: DeviceIdentity | null;
   platform: string;
   pendingRequests: Map<string, PendingGatewayRequest>;
@@ -178,13 +196,15 @@ export async function connectGatewaySocket(options: {
   challengeTimeoutMs?: number;
   connectTimeoutMs?: number;
 }): Promise<WebSocket> {
-  logger.debug(`Connecting Gateway WebSocket (ws://localhost:${options.port}/ws)`);
+  const tls = options.tls === true;
+  const wsUrl = localGatewayWsUrl(options.port, tls);
+  const wsOpts = wsClientOptionsForLocalGateway(tls);
+  logger.debug(`Connecting Gateway WebSocket (${wsUrl})`);
   const challengeTimeoutMs = options.challengeTimeoutMs ?? GATEWAY_CHALLENGE_TIMEOUT_MS;
   const connectTimeoutMs = options.connectTimeoutMs ?? GATEWAY_CONNECT_HANDSHAKE_TIMEOUT_MS;
 
   return await new Promise<WebSocket>((resolve, reject) => {
-    const wsUrl = `ws://localhost:${options.port}/ws`;
-    const ws = new WebSocket(wsUrl);
+    const ws = wsOpts ? new WebSocket(wsUrl, wsOpts) : new WebSocket(wsUrl);
     let handshakeComplete = false;
     let connectId: string | null = null;
     let handshakeTimeout: NodeJS.Timeout | null = null;

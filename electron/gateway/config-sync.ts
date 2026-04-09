@@ -21,7 +21,8 @@ import { getProviderEnvVar, getKeyableProviderTypes } from '../utils/provider-re
 import { getOpenClawDir, getOpenClawEntryPath, isOpenClawPresent } from '../utils/paths';
 import { getUvMirrorEnv } from '../utils/uv-env';
 import { cleanupDanglingWeChatPluginState, listConfiguredChannels, readOpenClawConfig } from '../utils/channel-config';
-import { syncGatewayTokenToConfig, syncBrowserConfigToOpenClaw, syncSessionIdleMinutesToOpenClaw, sanitizeOpenClawConfig } from '../utils/openclaw-auth';
+import { syncGatewayTokenToConfig, syncBrowserConfigToOpenClaw, syncSessionIdleMinutesToOpenClaw, sanitizeOpenClawConfig, ensureGatewayTlsEnabledInConfig, ensureLanOriginsInConfig } from '../utils/openclaw-auth';
+import { startOpenClawConfigLanReconciliationWatcher } from '../utils/openclaw-config-watch';
 import { getTokenKey, writeBoxImTokenKey } from '../utils/box-im-sync';
 import { buildProxyEnv, resolveProxySettings } from '../utils/proxy';
 import { syncProxyConfigToOpenClaw } from '../utils/openclaw-proxy';
@@ -326,22 +327,24 @@ export async function syncGatewayConfigBeforeLaunch(
     logger.warn('Failed to sync gateway token to openclaw.json:', err);
   }
 
-  // Windows TLS 配置由 prod 分支的完整 TLS 支持处理，feature1 暂不启用
-  // if (process.platform === 'win32') {
-  //   try {
-  //     await ensureGatewayTlsEnabledInConfig();
-  //   } catch (err) {
-  //     logger.warn('Failed to ensure gateway TLS config:', err);
-  //   }
-  // }
+  // Windows: ensure gateway.tls is enabled so the gateway starts with HTTPS/WSS.
+  if (process.platform === 'win32') {
+    try {
+      await ensureGatewayTlsEnabledInConfig();
+    } catch (err) {
+      logger.warn('Failed to ensure gateway TLS config:', err);
+    }
+  }
 
   // Inject current machine's LAN IPs into controlUi.allowedOrigins so LAN devices can access.
-  // (ensureLanOriginsInConfig is available in prod branch; skipped in feature1)
-  // try {
-  //   await ensureLanOriginsInConfig(18789);
-  // } catch (err) {
-  //   logger.warn('Failed to inject LAN origins into gateway config:', err);
-  // }
+  try {
+    await ensureLanOriginsInConfig(18789);
+  } catch (err) {
+    logger.warn('Failed to inject LAN origins into gateway config:', err);
+  }
+
+  // Start watcher to prevent Gateway from overwriting models.providers baseUrl.
+  startOpenClawConfigLanReconciliationWatcher();
 
   try {
     await syncBrowserConfigToOpenClaw();

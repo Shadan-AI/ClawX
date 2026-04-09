@@ -238,8 +238,9 @@ async function terminateOrphanedProcessIds(port: number, pids: string[]): Promis
 export async function findExistingGatewayProcess(options: {
   port: number;
   ownedPid?: number;
+  tls?: boolean;
 }): Promise<{ port: number; externalToken?: string } | null> {
-  const { port, ownedPid } = options;
+  const { port, ownedPid, tls } = options;
 
   try {
     try {
@@ -255,7 +256,7 @@ export async function findExistingGatewayProcess(options: {
       logger.warn('Error checking for existing process on port:', err);
     }
 
-    const ready = await probeGatewayReady(port, 5000);
+    const ready = await probeGatewayReady(port, 5000, { tls });
     return ready ? { port } : null;
   } catch {
     return null;

@@ -43,6 +43,7 @@ import { deviceOAuthManager } from '../utils/device-oauth';
 import { browserOAuthManager } from '../utils/browser-oauth';
 import { whatsAppLoginManager } from '../utils/whatsapp-login';
 import { syncAllProviderAuthToRuntime } from '../services/providers/provider-runtime-sync';
+import { ensureOpenClawMkcertCertsWindows } from '../utils/mkcert-certs';
 
 const WINDOWS_APP_USER_MODEL_ID = 'app.clawx.desktop';
 const isE2EMode = process.env.CLAWX_E2E === '1';
@@ -456,6 +457,22 @@ async function initialize(): Promise<void> {
     hostEventBus.emit('channel:whatsapp-error', error);
   });
 
+  // Windows: generate trusted HTTPS/WSS certs via mkcert before Gateway starts.
+  if (process.platform === 'win32' && !isE2EMode) {
+    try {
+      const mk = await ensureOpenClawMkcertCertsWindows();
+      if (mk.ok && !mk.skipped) {
+        logger.info(`[mkcert] Gateway TLS certs ready under ${mk.certDir}`);
+      } else if (mk.skipped) {
+        logger.debug(`[mkcert] skipped: ${mk.reason ?? 'unknown'}`);
+      } else if (mk.error) {
+        logger.warn(`[mkcert] ${mk.error}`);
+      }
+    } catch (e) {
+      logger.warn('[mkcert] ensure certs failed:', e);
+    }
+  }
+
   // Start Gateway automatically (this seeds missing bootstrap files with full templates)
   const gatewayAutoStart = await getSetting('gatewayAutoStart');
   if (!isE2EMode && gatewayAutoStart) {
@@ -536,6 +553,16 @@ if (gotTheLock) {
     }
 
     logger.debug('Main window is not ready yet; deferring second-instance focus until ready-to-show');
+  });
+
+  // Allow self-signed TLS certs for localhost gateway (mkcert-generated)
+  app.on('certificate-error', (event, _webContents, url, _error, _cert, callback) => {
+    if (url.startsWith('https://127.0.0.1:') || url.startsWith('https://localhost:')) {
+      event.preventDefault();
+      callback(true);
+    } else {
+      callback(false);
+    }
   });
 
   // Application lifecycle

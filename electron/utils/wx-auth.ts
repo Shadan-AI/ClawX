@@ -7,6 +7,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { syncBots } from './box-im-sync';
+import { ensureVncOriginsInConfig } from './openclaw-auth';
 
 const WX_API = 'https://shadan.web.service.thinkgs.cn/jeecg-boot/sys';
 const DEFAULT_API_URL = 'https://im.shadanai.com/api';
@@ -239,6 +240,15 @@ export async function persistLoginResult(
     await syncBots();
   } catch (err) {
     console.warn('[wx-auth] Bot sync failed (non-fatal):', err);
+  }
+
+  // 5. Inject user-specific VNC origins into gateway.controlUi.allowedOrigins (best-effort)
+  if (userId && userId > 0) {
+    try {
+      await ensureVncOriginsInConfig(userId, 18789);
+    } catch (err) {
+      console.warn('[wx-auth] VNC origins inject failed (non-fatal):', err);
+    }
   }
 }
 
