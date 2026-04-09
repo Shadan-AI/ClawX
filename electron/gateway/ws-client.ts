@@ -149,7 +149,7 @@ export function buildGatewayConnectFrame(options: {
         maxProtocol: 3,
         client: {
           id: clientId,
-          displayName: 'ClawX',
+          displayName: 'OpenMe',
           version: '0.1.0',
           platform: options.platform,
           mode: clientMode,

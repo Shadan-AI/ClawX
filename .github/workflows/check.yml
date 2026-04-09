@@ -1,4 +1,4 @@
-# ClawX CI Workflow
+# OpenMe CI Workflow
 # Runs on pull requests (main/develop) 
 name: Check and Build
 

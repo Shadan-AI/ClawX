@@ -1,6 +1,6 @@
 import { closeElectronApp, expect, getStableWindow, test } from './fixtures/electron';
 
-test.describe('ClawX main navigation without setup flow', () => {
+test.describe('OpenMe main navigation without setup flow', () => {
   test('navigates between core pages with setup bypassed', async ({ launchElectronApp }) => {
     const app = await launchElectronApp({ skipSetup: true });
 

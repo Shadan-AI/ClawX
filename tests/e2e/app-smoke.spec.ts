@@ -1,6 +1,6 @@
 import { closeElectronApp, expect, test } from './fixtures/electron';
 
-test.describe('ClawX Electron smoke flows', () => {
+test.describe('OpenMe Electron smoke flows', () => {
   test('shows the setup wizard on a fresh profile', async ({ page }) => {
     await expect(page.getByTestId('setup-page')).toBeVisible();
     await expect(page.getByTestId('setup-welcome-step')).toBeVisible();

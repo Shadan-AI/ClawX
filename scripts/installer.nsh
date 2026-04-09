@@ -1,4 +1,4 @@
-; ClawX Custom NSIS Installer/Uninstaller Script
+; OpenMe Custom NSIS Installer/Uninstaller Script
 ;
 ; Install: enables long paths, adds resources\cli to user PATH for openclaw CLI.
 ; Uninstall: removes the PATH entry and optionally deletes user data.
@@ -17,7 +17,7 @@
   ; Make stage logs visible on assisted installers (defaults to hidden).
   SetDetailsPrint both
   DetailPrint "Preparing installation..."
-  DetailPrint "Extracting ClawX runtime files. This can take a few minutes on slower disks or while antivirus scanning is active."
+  DetailPrint "Extracting OpenMe runtime files. This can take a few minutes on slower disks or while antivirus scanning is active."
 
   ${nsProcess::FindProcess} "${APP_EXECUTABLE_FILENAME}" $R0
 
@@ -50,7 +50,7 @@
     DetailPrint `Closing running "${PRODUCT_NAME}"...`
 
     # Kill ALL processes whose executable lives inside $INSTDIR.
-    # This covers ClawX.exe (multiple Electron processes), openclaw-gateway.exe,
+    # This covers OpenMe.exe (multiple Electron processes), openclaw-gateway.exe,
     # python.exe (skills runtime), uv.exe (package manager), and any other
     # child process that might hold file locks in the installation directory.
     #
@@ -83,7 +83,7 @@
       ${nsProcess::Unload}
   ${endIf}
 
-  ; Even if ClawX.exe was not detected as running, orphan child processes
+  ; Even if OpenMe.exe was not detected as running, orphan child processes
   ; (python.exe, openclaw-gateway.exe, uv.exe, etc.) from a previous crash
   ; or unclean shutdown may still hold file locks inside $INSTDIR.
   ; Unconditionally kill any process whose executable lives in the install dir.
@@ -92,7 +92,7 @@
   Pop $1
 
   ; Always kill known process names as a belt-and-suspenders approach.
-  ; PowerShell path-based kill may miss processes if the old ClawX was installed
+  ; PowerShell path-based kill may miss processes if the old OpenMe was installed
   ; in a different directory than $INSTDIR (e.g., per-machine -> per-user migration).
   ; taskkill is name-based and catches processes regardless of their install location.
   nsExec::ExecToStack 'taskkill /F /T /IM "${APP_EXECUTABLE_FILENAME}"'
@@ -118,7 +118,7 @@
   ; locked files.  electron-builder's extractUsing7za macro extracts to a
   ; temp folder first, then uses `CopyFiles /SILENT` to copy into $INSTDIR.
   ; If ANY file in $INSTDIR is still locked, CopyFiles fails and triggers a
-  ; "Can't modify ClawX's files" retry loop -> "ClawX 无法关闭" dialog.
+  ; "Can't modify OpenMe's files" retry loop -> "OpenMe 无法关闭" dialog.
   ;
   ; Strategy: rename (move) the old $INSTDIR out of the way.  Rename works
   ; even when AV/indexer have files open for reading (they use
@@ -160,7 +160,7 @@
   ;
   ; Why: uninstallOldVersion has a hardcoded 5-retry loop that runs the old
   ; uninstaller repeatedly.  The old uninstaller's atomicRMDir fails on locked
-  ; files (antivirus, indexing) causing a blocking "ClawX 无法关闭" dialog.
+  ; files (antivirus, indexing) causing a blocking "OpenMe 无法关闭" dialog.
   ; Deleting UninstallString makes uninstallOldVersion return immediately.
   ; The new installer will overwrite / extract all files on top of the old dir.
   ; registryAddInstallInfo will write the correct new entries afterwards.
@@ -179,7 +179,7 @@
 !macroend
 
 ; Override electron-builder's handleUninstallResult to prevent the
-; "ClawX 无法关闭" retry dialog when the old uninstaller fails.
+; "OpenMe 无法关闭" retry dialog when the old uninstaller fails.
 ;
 ; During upgrades, electron-builder copies the old uninstaller to a temp dir
 ; and runs it silently.  The old uninstaller uses atomicRMDir to rename every
@@ -212,7 +212,7 @@
 
 !macro customInstall
   ; Async cleanup of old dirs left by the rename loop in customCheckAppRunning.
-  ; Wait 60s before starting deletion to avoid I/O contention with ClawX's
+  ; Wait 60s before starting deletion to avoid I/O contention with OpenMe's
   ; first launch (Windows Defender scan, ASAR mapping, etc.).
   ; ExecShell SW_HIDE is completely detached from NSIS and avoids pipe blocking.
   IfFileExists "$INSTDIR._stale_0\" 0 _ci_stale_cleaned
@@ -285,11 +285,11 @@
 
   ; Ask user if they want to remove AppData (preserves .openclaw)
   MessageBox MB_YESNO|MB_ICONQUESTION \
-    "Do you want to remove ClawX application data?$\r$\n$\r$\nThis will delete:$\r$\n  • AppData\Local\clawx (local app data)$\r$\n  • AppData\Roaming\clawx (roaming app data)$\r$\n$\r$\nYour .openclaw folder (configuration & skills) will be preserved.$\r$\nSelect 'No' to keep all data for future reinstallation." \
+    "Do you want to remove OpenMe application data?$\r$\n$\r$\nThis will delete:$\r$\n  • AppData\Local\openme (local app data)$\r$\n  • AppData\Roaming\openme (roaming app data)$\r$\n$\r$\nYour .openclaw folder (configuration & skills) will be preserved.$\r$\nSelect 'No' to keep all data for future reinstallation." \
     /SD IDNO IDYES _cu_removeData IDNO _cu_skipRemove
 
   _cu_removeData:
-    ; Kill any lingering ClawX processes (and their child process trees) to
+    ; Kill any lingering OpenMe processes (and their child process trees) to
     ; release file locks on electron-store JSON files, Gateway sockets, etc.
     ${nsProcess::FindProcess} "${APP_EXECUTABLE_FILENAME}" $R0
     ${if} $R0 == 0
@@ -304,37 +304,37 @@
 
     ; --- Always remove current user's AppData first ---
     ; NOTE: .openclaw directory is intentionally preserved (user configuration & skills)
-    RMDir /r "$LOCALAPPDATA\clawx"
-    RMDir /r "$APPDATA\clawx"
+    RMDir /r "$LOCALAPPDATA\openme"
+    RMDir /r "$APPDATA\openme"
 
     ; --- Retry: if directories still exist (locked files), wait and try again ---
 
-    ; Check AppData\Local\clawx
-    IfFileExists "$LOCALAPPDATA\clawx\*.*" 0 _cu_localDone
+    ; Check AppData\Local\openme
+    IfFileExists "$LOCALAPPDATA\openme\*.*" 0 _cu_localDone
       Sleep 3000
-      RMDir /r "$LOCALAPPDATA\clawx"
-      IfFileExists "$LOCALAPPDATA\clawx\*.*" 0 _cu_localDone
-        nsExec::ExecToStack 'cmd.exe /c rd /s /q "$LOCALAPPDATA\clawx"'
+      RMDir /r "$LOCALAPPDATA\openme"
+      IfFileExists "$LOCALAPPDATA\openme\*.*" 0 _cu_localDone
+        nsExec::ExecToStack 'cmd.exe /c rd /s /q "$LOCALAPPDATA\openme"'
         Pop $0
         Pop $1
     _cu_localDone:
 
-    ; Check AppData\Roaming\clawx
-    IfFileExists "$APPDATA\clawx\*.*" 0 _cu_roamingDone
+    ; Check AppData\Roaming\openme
+    IfFileExists "$APPDATA\openme\*.*" 0 _cu_roamingDone
       Sleep 3000
-      RMDir /r "$APPDATA\clawx"
-      IfFileExists "$APPDATA\clawx\*.*" 0 _cu_roamingDone
-        nsExec::ExecToStack 'cmd.exe /c rd /s /q "$APPDATA\clawx"'
+      RMDir /r "$APPDATA\openme"
+      IfFileExists "$APPDATA\openme\*.*" 0 _cu_roamingDone
+        nsExec::ExecToStack 'cmd.exe /c rd /s /q "$APPDATA\openme"'
         Pop $0
         Pop $1
     _cu_roamingDone:
 
     ; --- Final check: warn user if any directories could not be removed ---
     StrCpy $R3 ""
-    IfFileExists "$LOCALAPPDATA\clawx\*.*" 0 +2
-      StrCpy $R3 "$R3$\r$\n  • $LOCALAPPDATA\clawx"
-    IfFileExists "$APPDATA\clawx\*.*" 0 +2
-      StrCpy $R3 "$R3$\r$\n  • $APPDATA\clawx"
+    IfFileExists "$LOCALAPPDATA\openme\*.*" 0 +2
+      StrCpy $R3 "$R3$\r$\n  • $LOCALAPPDATA\openme"
+    IfFileExists "$APPDATA\openme\*.*" 0 +2
+      StrCpy $R3 "$R3$\r$\n  • $APPDATA\openme"
     StrCmp $R3 "" _cu_cleanupOk
       MessageBox MB_OK|MB_ICONEXCLAMATION \
         "Some data directories could not be removed (files may be in use):$\r$\n$R3$\r$\n$\r$\nPlease delete them manually after restarting your computer."
@@ -355,8 +355,8 @@
     StrCmp $R3 $PROFILE _cu_enumNext
 
     ; NOTE: .openclaw directory is intentionally preserved for all users
-    RMDir /r "$R3\AppData\Local\clawx"
-    RMDir /r "$R3\AppData\Roaming\clawx"
+    RMDir /r "$R3\AppData\Local\openme"
+    RMDir /r "$R3\AppData\Roaming\openme"
 
   _cu_enumNext:
     IntOp $R0 $R0 + 1

@@ -22,7 +22,7 @@
     },
     "deleteDialog": {
         "title": "Delete Agent",
-        "message": "Delete \"{{name}}\" from ClawX? This permanently deletes the agent and its ClawX-managed workspace, runtime, and session files from disk."
+        "message": "Delete \"{{name}}\" from OpenMe? This permanently deletes the agent and its OpenMe-managed workspace, runtime, and session files from disk."
     },
     "settingsDialog": {
         "title": "{{name}} Settings",
@@ -53,7 +53,7 @@
     },
     "removeChannelDialog": {
         "title": "Remove Channel",
-        "message": "Remove {{name}} from ClawX? This deletes the current channel configuration."
+        "message": "Remove {{name}} from OpenMe? This deletes the current channel configuration."
     },
     "toast": {
         "agentCreated": "Agent created",

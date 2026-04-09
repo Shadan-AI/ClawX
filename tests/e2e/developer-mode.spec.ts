@@ -1,6 +1,6 @@
 import { completeSetup, expect, test } from './fixtures/electron';
 
-test.describe('ClawX developer-mode gated UI', () => {
+test.describe('OpenMe developer-mode gated UI', () => {
   test('keeps developer-only configuration hidden until dev mode is enabled', async ({ page }) => {
     await completeSetup(page);
 

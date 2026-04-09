@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { logger } from '../utils/logger';
 import { getSetting } from '../utils/store';
 
-const LINUX_AUTOSTART_FILE = join('.config', 'autostart', 'clawx.desktop');
+const LINUX_AUTOSTART_FILE = join('.config', 'autostart', 'openme.desktop');
 
 function quoteDesktopArg(value: string): string {
   if (!value) return '""';
@@ -30,8 +30,8 @@ function getLinuxDesktopEntry(): string {
     '[Desktop Entry]',
     'Type=Application',
     'Version=1.0',
-    'Name=ClawX',
-    'Comment=ClawX - AI Assistant',
+    'Name=OpenMe',
+    'Comment=OpenMe - AI Assistant',
     `Exec=${getLinuxExecCommand()}`,
     'Terminal=false',
     'Categories=Utility;',

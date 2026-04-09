@@ -19,7 +19,7 @@ async function seedTestProvider(page: Parameters<typeof completeSetup>[0]): Prom
   }, { providerId: TEST_PROVIDER_ID, providerLabel: TEST_PROVIDER_LABEL });
 }
 
-test.describe('ClawX provider lifecycle', () => {
+test.describe('OpenMe provider lifecycle', () => {
   test('shows a saved provider and removes it cleanly after deletion', async ({ page }) => {
     await completeSetup(page);
     await seedTestProvider(page);

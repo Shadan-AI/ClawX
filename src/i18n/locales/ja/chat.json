@@ -2,7 +2,7 @@
     "gatewayNotRunning": "ゲートウェイが停止中",
     "gatewayRequired": "チャットを利用するには OpenClaw ゲートウェイが実行されている必要があります。自動的に起動するか、設定から起動できます。",
     "welcome": {
-        "title": "ClawX チャット",
+        "title": "OpenMe チャット",
         "subtitle": "お手伝いできることはありますか？",
         "askQuestions": "タスク対応",
         "askQuestionsDesc": "タスク指向の依頼に対応します",
@@ -21,7 +21,7 @@
         "eyebrow": "実行ビュー",
         "title": "タスクの流れ",
         "emptyTitle": "まだ構造化されたステップはありません",
-        "emptyBody": "実行が始まると、ClawX は思考・ツール呼び出し・最終化の状態をここに表示します。",
+        "emptyBody": "実行が始まると、OpenMe は思考・ツール呼び出し・最終化の状態をここに表示します。",
         "status": {
             "idle": "待機中",
             "running_one": "進行中 1 件",

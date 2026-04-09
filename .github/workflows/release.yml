@@ -1,4 +1,4 @@
-# ClawX Release Workflow
+# OpenMe Release Workflow
 # Builds and publishes releases for Windows only
 
 name: Release
@@ -95,17 +95,17 @@ jobs:
           make_latest: false
           generate_release_notes: true
           body: |
-            ## 🚀 ClawX ${{ github.ref_name }}
+            ## 🚀 OpenMe ${{ github.ref_name }}
             
-            ClawX - Graphical AI Assistant based on OpenClaw
+            OpenMe - Graphical AI Assistant based on OpenClaw
             
             ### 📦 Downloads
             
             Please select the appropriate installer for your operating system and architecture:
             
             #### Windows
-            - **Installer (x64)**: `ClawX-*-win-x64.exe`
-            - **Installer (ARM64)**: `ClawX-*-win-arm64.exe`
+            - **Installer (x64)**: `OpenMe-*-win-x64.exe`
+            - **Installer (ARM64)**: `OpenMe-*-win-arm64.exe`
             
             ### 📝 Release Notes
             
@@ -218,8 +218,8 @@ jobs:
               releaseDate: $date,
               downloads: {
                 win: {
-                  x64: ($base + "/ClawX-" + $version + "-win-x64.exe"),
-                  arm64: ($base + "/ClawX-" + $version + "-win-arm64.exe")
+                  x64: ($base + "/OpenMe-" + $version + "-win-x64.exe"),
+                  arm64: ($base + "/OpenMe-" + $version + "-win-arm64.exe")
                 }
               },
               changelog: $changelog

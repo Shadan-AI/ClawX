@@ -1,5 +1,5 @@
 {
-    "name": "clawx",
+    "name": "openme",
     "version": "0.5.11",
     "pnpm": {
         "onlyBuiltDependencies": [
@@ -27,9 +27,9 @@
             ]
         }
     },
-    "description": "ClawX - Graphical AI Assistant based on OpenClaw",
+    "description": "OpenMe - Graphical AI Assistant based on OpenClaw",
     "main": "dist-electron/main/index.js",
-    "author": "ClawX Team",
+    "author": "OpenMe Team",
     "license": "MIT",
     "private": true,
     "scripts": {

@@ -227,9 +227,9 @@ export function Sidebar() {
       <div className={cn("flex items-center p-2 h-12", sidebarCollapsed ? "justify-center" : "justify-between")}>
         {!sidebarCollapsed && (
           <div className="flex items-center gap-2 px-2 overflow-hidden">
-            <img src={logoSvg} alt="ClawX" className="h-5 w-auto shrink-0" />
+            <img src={logoSvg} alt="OpenMe" className="h-5 w-auto shrink-0" />
             <span className="text-sm font-semibold truncate whitespace-nowrap text-foreground/90">
-              ClawX
+              OpenMe
             </span>
           </div>
         )}
