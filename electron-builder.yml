@@ -55,7 +55,7 @@ npmRebuild: false
 # Fallback: GitHub Releases (backup, used when OSS is unavailable)
 publish:
   - provider: generic
-    url: https://oss.intelli-spectrum.com/latest
+    url: https://shadanai-clawx.oss-cn-beijing.aliyuncs.com/latest
     useMultipleRangeRequest: false
   - provider: github
     owner: ValueCell-ai

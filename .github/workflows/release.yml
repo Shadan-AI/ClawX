@@ -204,7 +204,7 @@ jobs:
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           CHANNEL="${{ steps.version.outputs.channel }}"
-          BASE_URL="https://oss.intelli-spectrum.com/${CHANNEL}"
+          BASE_URL="https://shadanai-clawx.oss-cn-beijing.aliyuncs.com/${CHANNEL}"
 
           jq -n \
             --arg version "$VERSION" \
