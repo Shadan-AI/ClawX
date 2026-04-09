@@ -51,16 +51,10 @@ import {
 import { whatsAppLoginManager } from '../../utils/whatsapp-login';
 import { proxyAwareFetch } from '../../utils/proxy-fetch';
 import {
-  listDiscordDirectoryGroupsFromConfig,
-  listDiscordDirectoryPeersFromConfig,
-  normalizeDiscordMessagingTarget,
-  listTelegramDirectoryGroupsFromConfig,
-  listTelegramDirectoryPeersFromConfig,
-  normalizeTelegramMessagingTarget,
-  listSlackDirectoryGroupsFromConfig,
-  listSlackDirectoryPeersFromConfig,
-  normalizeSlackMessagingTarget,
-  normalizeWhatsAppMessagingTarget,
+  getDiscordSdk,
+  getTelegramSdk,
+  getSlackSdk,
+  getWhatsAppSdk,
 } from '../../utils/openclaw-sdk';
 
 // listWhatsAppDirectory*FromConfig were removed from openclaw's public exports
@@ -910,45 +904,49 @@ async function listConfigDirectoryTargetOptions(params: {
   };
 
   if (params.channelType === 'discord') {
+    const sdk = await getDiscordSdk();
     const [users, groups] = await Promise.all([
-      listDiscordDirectoryPeersFromConfig(commonParams),
-      listDiscordDirectoryGroupsFromConfig(commonParams),
+      sdk.listDiscordDirectoryPeersFromConfig(commonParams),
+      sdk.listDiscordDirectoryGroupsFromConfig(commonParams),
     ]);
     return buildDirectoryTargetOptions(
       [...users, ...groups] as DirectoryEntry[],
-      normalizeDiscordMessagingTarget,
+      sdk.normalizeDiscordMessagingTarget,
     );
   }
 
   if (params.channelType === 'telegram') {
+    const sdk = await getTelegramSdk();
     const [users, groups] = await Promise.all([
-      listTelegramDirectoryPeersFromConfig(commonParams),
-      listTelegramDirectoryGroupsFromConfig(commonParams),
+      sdk.listTelegramDirectoryPeersFromConfig(commonParams),
+      sdk.listTelegramDirectoryGroupsFromConfig(commonParams),
     ]);
     return buildDirectoryTargetOptions(
       [...users, ...groups] as DirectoryEntry[],
-      normalizeTelegramMessagingTarget,
+      sdk.normalizeTelegramMessagingTarget,
     );
   }
 
   if (params.channelType === 'slack') {
+    const sdk = await getSlackSdk();
     const [users, groups] = await Promise.all([
-      listSlackDirectoryPeersFromConfig(commonParams),
-      listSlackDirectoryGroupsFromConfig(commonParams),
+      sdk.listSlackDirectoryPeersFromConfig(commonParams),
+      sdk.listSlackDirectoryGroupsFromConfig(commonParams),
     ]);
     return buildDirectoryTargetOptions(
       [...users, ...groups] as DirectoryEntry[],
-      normalizeSlackMessagingTarget,
+      sdk.normalizeSlackMessagingTarget,
     );
   }
 
+  const whatsappSdk = await getWhatsAppSdk();
   const [users, groups] = await Promise.all([
     listWhatsAppDirectoryPeersFromConfig(commonParams),
     listWhatsAppDirectoryGroupsFromConfig(commonParams),
   ]);
   return buildDirectoryTargetOptions(
     [...users, ...groups] as DirectoryEntry[],
-    normalizeWhatsAppMessagingTarget,
+    whatsappSdk.normalizeWhatsAppMessagingTarget,
   );
 }
 

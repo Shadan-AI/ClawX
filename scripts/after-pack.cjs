@@ -380,58 +380,18 @@ const PLUGIN_ID_FIXES = {
 };
 
 /**
- * Remove the "import" condition from package.json exports fields in a
- * node_modules directory so CJS require() always resolves to the CJS build.
- * Node.js 22+ (Electron 40+) otherwise picks the ESM entry for require(),
- * which breaks packages like eventemitter3 v5.
- *
- * Also patches eventemitter3 CJS entry to add named exports (EventEmitter etc.)
- * so that `require('eventemitter3').EventEmitter` works even when Node.js 22+
- * ESM interop is involved. Scans recursively through nested node_modules so
- * packages like p-queue that vendor their own eventemitter3 are also fixed.
+ * Patches eventemitter3 CJS entry to add named exports (EventEmitter etc.)
+ * so that `require('eventemitter3').EventEmitter` works in Node.js 22+ ESM interop.
+ * Scans recursively through nested node_modules.
  */
 function patchEsmExports(nodeModulesDir) {
   const { readFileSync, writeFileSync } = require('fs');
 
-  function stripImport(exports) {
-    if (typeof exports !== 'object' || exports === null || Array.isArray(exports)) {
-      return { obj: exports, changed: false };
-    }
-    let changed = false;
-    const result = {};
-    for (const [k, v] of Object.entries(exports)) {
-      if (k === 'import') { changed = true; continue; }
-      const inner = stripImport(v);
-      result[k] = inner.obj;
-      if (inner.changed) changed = true;
-    }
-    return { obj: result, changed };
-  }
-
-  function patchOne(pkgJsonPath) {
-    try {
-      const raw = readFileSync(normWin(pkgJsonPath), 'utf8');
-      const pkg = JSON.parse(raw);
-      if (!pkg.exports || typeof pkg.exports !== 'object') return;
-      const { obj, changed } = stripImport(pkg.exports);
-      if (changed) {
-        pkg.exports = obj;
-        writeFileSync(normWin(pkgJsonPath), JSON.stringify(pkg, null, 2), 'utf8');
-      }
-    } catch { /* ignore */ }
-  }
-
-  // Patch eventemitter3 CJS entry to expose named exports.
-  // eventemitter3 v5 CJS (index.cjs) does `module.exports = { EventEmitter }`
-  // but some older builds only do `module.exports = EventEmitter` (the class
-  // itself), so `require('eventemitter3').EventEmitter` is undefined.
-  // We ensure the named export always exists regardless of version.
   function patchEventEmitter3(pkgDir) {
     try {
       const pkgJsonPath = join(pkgDir, 'package.json');
       if (!existsSync(normWin(pkgJsonPath))) return;
       const pkg = JSON.parse(readFileSync(normWin(pkgJsonPath), 'utf8'));
-      // Determine CJS entry: prefer exports['.'].require, then main, then index.js
       const exp = pkg.exports;
       const requireEntry =
         (exp && typeof exp === 'object' && exp['.'] && typeof exp['.'].require === 'string' && exp['.'].require) ||
@@ -441,7 +401,7 @@ function patchEsmExports(nodeModulesDir) {
       const entryPath = join(pkgDir, requireEntry);
       if (!existsSync(normWin(entryPath))) return;
       const original = readFileSync(normWin(entryPath), 'utf8');
-      if (original.includes('// ClawX-ee3-patch')) return; // already patched
+      if (original.includes('// ClawX-ee3-patch')) return;
       const patched = original + [
         '',
         '// ClawX-ee3-patch: ensure named exports for Node.js 22+ CJS/ESM interop',
@@ -460,8 +420,6 @@ function patchEsmExports(nodeModulesDir) {
     }
   }
 
-  // Recursively walk node_modules, patching package.json exports and
-  // special-casing eventemitter3 at every nesting level.
   function walkNodeModules(nmDir) {
     let entries;
     try { entries = readdirSync(normWin(nmDir), { withFileTypes: true }); } catch { return; }
@@ -474,17 +432,13 @@ function patchEsmExports(nodeModulesDir) {
         for (const sub of scopeEntries) {
           if (!sub.isDirectory()) continue;
           const subPkgDir = join(pkgDir, sub.name);
-          patchOne(join(subPkgDir, 'package.json'));
-          // Recurse into nested node_modules
           const nestedNM = join(subPkgDir, 'node_modules');
           if (existsSync(normWin(nestedNM))) walkNodeModules(nestedNM);
         }
       } else {
-        patchOne(join(pkgDir, 'package.json'));
         if (entry.name === 'eventemitter3') {
           patchEventEmitter3(pkgDir);
         }
-        // Recurse into nested node_modules
         const nestedNM = join(pkgDir, 'node_modules');
         if (existsSync(normWin(nestedNM))) walkNodeModules(nestedNM);
       }

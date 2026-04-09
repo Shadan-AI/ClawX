@@ -596,8 +596,36 @@ function patchBrokenModules(nodeModulesDir) {
       count++;
     }
   }
-  for (const { rel, search, replace } of replacePatches) {
-    const target = path.join(nodeModulesDir, rel);
+
+  // @shadanai/openclaw plugin-sdk exports: the package.json uses only "default"
+  // condition for all plugin-sdk/* subpaths. When CJS code calls require() on
+  // these paths, Node 22+ matches "default" and gets an ESM file, then fails
+  // with "Cannot find module". Fix: add "require" condition pointing to the
+  // same .js file so CJS callers resolve correctly.
+  const openclawRootPkgPath = path.join(path.dirname(nodeModulesDir), 'package.json');
+  if (fs.existsSync(openclawRootPkgPath)) {
+    try {
+      const ocPkg = JSON.parse(fs.readFileSync(openclawRootPkgPath, 'utf8'));
+      if (ocPkg.name === '@shadanai/openclaw' && ocPkg.exports) {
+        let patched = false;
+        for (const [, val] of Object.entries(ocPkg.exports)) {
+          if (typeof val === 'object' && val !== null && val.default && !val.require) {
+            val.require = val.default;
+            patched = true;
+          }
+        }
+        if (patched) {
+          fs.writeFileSync(openclawRootPkgPath, JSON.stringify(ocPkg, null, 2) + '\n', 'utf8');
+          echo`   🩹 Patched @shadanai/openclaw: added "require" condition to plugin-sdk exports`;
+          count++;
+        }
+      }
+    } catch (e) {
+      echo`   ⚠️  Failed to patch @shadanai/openclaw exports: ${e.message}`;
+    }
+  }
+
+  for (const { rel, search, replace } of replacePatches) {    const target = path.join(nodeModulesDir, rel);
     if (!fs.existsSync(target)) continue;
 
     const current = fs.readFileSync(target, 'utf8');
@@ -612,6 +640,75 @@ function patchBrokenModules(nodeModulesDir) {
       count++;
     }
   }
+  // Generic exports fix: some packages publish with only "types" in their
+  // exports conditions (no "import", "require", or "default"), so Node.js
+  // cannot resolve them at runtime. Recursively scan all package.json files
+  // and add "default" pointing to the .js file when only "types" is present.
+  function fixTypesOnlyExports(rootDir) {
+    let fixCount = 0;
+    const stack = [rootDir];
+    while (stack.length > 0) {
+      const dir = stack.pop();
+      let entries;
+      try { entries = fs.readdirSync(normWin(dir), { withFileTypes: true }); } catch { continue; }
+      for (const entry of entries) {
+        if (entry.name === 'node_modules') continue; // don't recurse into nested node_modules here
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) { stack.push(fullPath); continue; }
+        if (entry.name !== 'package.json') continue;
+        try {
+          const raw = fs.readFileSync(normWin(fullPath), 'utf8');
+          const pkg = JSON.parse(raw);
+          if (!pkg.exports || typeof pkg.exports !== 'object') continue;
+          let changed = false;
+          function fixExportsObj(obj) {
+            if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) return obj;
+            const keys = Object.keys(obj);
+            const hasRuntime = keys.some(k => k === 'import' || k === 'require' || k === 'default' || k === 'node');
+            const hasTypes = keys.includes('types');
+            if (hasTypes && !hasRuntime) {
+              // Only types, no runtime condition — infer default from types path
+              const typesPath = obj.types;
+              if (typeof typesPath === 'string') {
+                const jsPath = typesPath.replace(/\.d\.ts$/, '.js');
+                const absJs = path.join(path.dirname(fullPath), jsPath);
+                if (fs.existsSync(normWin(absJs))) {
+                  obj.default = jsPath;
+                  changed = true;
+                }
+              }
+              return obj;
+            }
+            // Recurse into nested condition objects
+            for (const k of keys) {
+              if (typeof obj[k] === 'object' && obj[k] !== null) {
+                obj[k] = fixExportsObj(obj[k]);
+              }
+            }
+            return obj;
+          }
+          if (typeof pkg.exports === 'string') continue;
+          // Handle both map-style and condition-style exports
+          for (const [key, val] of Object.entries(pkg.exports)) {
+            if (typeof val === 'object' && val !== null) {
+              pkg.exports[key] = fixExportsObj(val);
+            }
+          }
+          if (changed) {
+            fs.writeFileSync(normWin(fullPath), JSON.stringify(pkg, null, 2) + '\n', 'utf8');
+            fixCount++;
+          }
+        } catch { /* ignore malformed package.json */ }
+      }
+    }
+    return fixCount;
+  }
+  const exportsFixed = fixTypesOnlyExports(nodeModulesDir);
+  if (exportsFixed > 0) {
+    echo`   🩹 Fixed types-only exports in ${exportsFixed} package(s)`;
+    count += exportsFixed;
+  }
+
   // lru-cache CJS/ESM interop fix (recursive):
   // Multiple versions of lru-cache may exist in the output tree — not just
   // at node_modules/lru-cache/ but also nested inside other packages.

@@ -2,73 +2,64 @@
  * Dynamic imports for openclaw plugin-sdk subpath exports.
  *
  * openclaw is NOT in the asar's node_modules — it lives at resources/openclaw/
- * (extraResources).  Static `import ... from 'openclaw/plugin-sdk/...'` would
- * produce a runtime require() that fails inside the asar.
- *
- * Instead, we create a require context from the openclaw directory itself.
- * Node.js package self-referencing allows a package to require its own exports
- * by name, so `openclawRequire('openclaw/plugin-sdk/discord')` resolves via the
- * exports map in openclaw's package.json.
- *
- * In dev mode (pnpm), the resolved path is in the pnpm virtual store where
- * self-referencing also works.  The projectRequire fallback covers edge cases.
+ * (extraResources). All plugin-sdk files are pure ESM, so we must use dynamic
+ * import() rather than require(). Modules are lazily loaded on first use and cached.
  */
-import { createRequire } from 'module';
 import { join } from 'node:path';
-import { getOpenClawDir, getOpenClawResolvedDir } from './paths';
+import { pathToFileURL } from 'node:url';
+import { getOpenClawResolvedDir } from './paths';
 
-const _openclawPath = getOpenClawDir();
-const _openclawResolvedPath = getOpenClawResolvedDir();
-const _openclawSdkRequire = createRequire(join(_openclawResolvedPath, 'package.json'));
-const _projectSdkRequire = createRequire(join(_openclawPath, 'package.json'));
-
-function requireOpenClawSdk(subpath: string): Record<string, unknown> {
-  try {
-    return _openclawSdkRequire(subpath);
-  } catch {
-    return _projectSdkRequire(subpath);
-  }
+function resolvePluginSdkPath(subpath: string): string {
+  // subpath e.g. 'openclaw/plugin-sdk/discord' -> dist/plugin-sdk/discord.js
+  const exportKey = subpath.replace(/^[^/]+\//, ''); // strip package name
+  const rel = exportKey.replace(/^plugin-sdk\//, 'dist/plugin-sdk/') + '.js';
+  return join(getOpenClawResolvedDir(), rel);
 }
 
-// --- Channel SDK dynamic imports ---
-const _discordSdk = requireOpenClawSdk('openclaw/plugin-sdk/discord') as {
+async function importSdk<T>(subpath: string): Promise<T> {
+  const url = pathToFileURL(resolvePluginSdkPath(subpath)).href;
+  return import(url) as Promise<T>;
+}
+
+// --- SDK types ---
+export type DiscordSdk = {
   listDiscordDirectoryGroupsFromConfig: (...args: unknown[]) => Promise<unknown[]>;
   listDiscordDirectoryPeersFromConfig: (...args: unknown[]) => Promise<unknown[]>;
   normalizeDiscordMessagingTarget: (target: string) => string | undefined;
 };
-
-const _telegramSdk = requireOpenClawSdk('openclaw/plugin-sdk/telegram-surface') as {
+export type TelegramSdk = {
   listTelegramDirectoryGroupsFromConfig: (...args: unknown[]) => Promise<unknown[]>;
   listTelegramDirectoryPeersFromConfig: (...args: unknown[]) => Promise<unknown[]>;
   normalizeTelegramMessagingTarget: (target: string) => string | undefined;
 };
-
-const _slackSdk = requireOpenClawSdk('openclaw/plugin-sdk/slack') as {
+export type SlackSdk = {
   listSlackDirectoryGroupsFromConfig: (...args: unknown[]) => Promise<unknown[]>;
   listSlackDirectoryPeersFromConfig: (...args: unknown[]) => Promise<unknown[]>;
   normalizeSlackMessagingTarget: (target: string) => string | undefined;
 };
-
-const _whatsappSdk = requireOpenClawSdk('openclaw/plugin-sdk/whatsapp-shared') as {
+export type WhatsAppSdk = {
   normalizeWhatsAppMessagingTarget: (target: string) => string | undefined;
 };
 
-export const {
-  listDiscordDirectoryGroupsFromConfig,
-  listDiscordDirectoryPeersFromConfig,
-  normalizeDiscordMessagingTarget,
-} = _discordSdk;
+// --- Lazy-loaded module cache ---
+let _discord: DiscordSdk | null = null;
+let _telegram: TelegramSdk | null = null;
+let _slack: SlackSdk | null = null;
+let _whatsapp: WhatsAppSdk | null = null;
 
-export const {
-  listTelegramDirectoryGroupsFromConfig,
-  listTelegramDirectoryPeersFromConfig,
-  normalizeTelegramMessagingTarget,
-} = _telegramSdk;
-
-export const {
-  listSlackDirectoryGroupsFromConfig,
-  listSlackDirectoryPeersFromConfig,
-  normalizeSlackMessagingTarget,
-} = _slackSdk;
-
-export const { normalizeWhatsAppMessagingTarget } = _whatsappSdk;
+export async function getDiscordSdk(): Promise<DiscordSdk> {
+  if (!_discord) _discord = await importSdk<DiscordSdk>('openclaw/plugin-sdk/discord');
+  return _discord;
+}
+export async function getTelegramSdk(): Promise<TelegramSdk> {
+  if (!_telegram) _telegram = await importSdk<TelegramSdk>('openclaw/plugin-sdk/telegram-surface');
+  return _telegram;
+}
+export async function getSlackSdk(): Promise<SlackSdk> {
+  if (!_slack) _slack = await importSdk<SlackSdk>('openclaw/plugin-sdk/slack');
+  return _slack;
+}
+export async function getWhatsAppSdk(): Promise<WhatsAppSdk> {
+  if (!_whatsapp) _whatsapp = await importSdk<WhatsAppSdk>('openclaw/plugin-sdk/whatsapp-shared');
+  return _whatsapp;
+}
