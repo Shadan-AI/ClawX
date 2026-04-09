@@ -14,7 +14,8 @@
         ],
         "overrides": {
             "isbinaryfile": "^5.0.0",
-            "https-proxy-agent": "7.0.6"
+            "https-proxy-agent": "7.0.6",
+            "eventemitter3": "5.0.1"
         },
         "supportedArchitectures": {
             "os": [
@@ -35,7 +36,7 @@
         "init": "pnpm install && pnpm run uv:download",
         "predev": "zx scripts/prepare-preinstalled-skills-dev.mjs",
         "dev": "vite",
-        "prebuild": "node -e \"const fs=require('fs'),p='node_modules/eventemitter3/package.json',pkg=JSON.parse(fs.readFileSync(p,'utf8'));if(pkg.exports&&pkg.exports['.']){delete pkg.exports['.']['import'];fs.writeFileSync(p,JSON.stringify(pkg,null,2)+'\\n','utf8');console.log('[prebuild] patched eventemitter3 exports');}\"",
+        "prebuild": "",
         "build": "vite build && zx scripts/bundle-openclaw.mjs && zx scripts/bundle-openclaw-plugins.mjs && zx scripts/bundle-preinstalled-skills.mjs && electron-builder",
         "build:vite": "vite build",
         "bundle:openclaw-plugins": "zx scripts/bundle-openclaw-plugins.mjs",
@@ -56,7 +57,7 @@
         "node:download:win": "zx scripts/download-bundled-node.mjs --platform=win",
         "prep:win-binaries": "pnpm run uv:download:win && pnpm run node:download:win",
         "icons": "zx scripts/generate-icons.mjs",
-        "prepackage": "node -e \"const fs=require('fs'),p='node_modules/eventemitter3/package.json',pkg=JSON.parse(fs.readFileSync(p,'utf8'));if(pkg.exports&&pkg.exports['.']){delete pkg.exports['.']['import'];fs.writeFileSync(p,JSON.stringify(pkg,null,2)+'\\n','utf8');console.log('[prepackage] patched eventemitter3 exports');}\"",
+        "prepackage": "",
         "package": "vite build && zx scripts/bundle-openclaw.mjs && zx scripts/bundle-openclaw-plugins.mjs && zx scripts/bundle-preinstalled-skills.mjs",
         "package:mac": "pnpm run package && electron-builder --mac --publish never",
         "package:mac:local": "SKIP_PREINSTALLED_SKILLS=1 pnpm run package && electron-builder --mac --publish never",

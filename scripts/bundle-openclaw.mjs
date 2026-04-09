@@ -534,6 +534,61 @@ function patchBrokenModules(nodeModulesDir) {
   ];
 
   let count = 0;
+
+  // eventemitter3 v5: ensure the "import" condition is present so that
+  // p-queue's ESM named import `{ EventEmitter }` resolves correctly in
+  // Electron's Node runtime. Some build steps may have stripped this field.
+  const ee3PkgPath = path.join(nodeModulesDir, 'eventemitter3', 'package.json');
+  if (fs.existsSync(ee3PkgPath)) {
+    try {
+      const ee3Pkg = JSON.parse(fs.readFileSync(ee3PkgPath, 'utf8'));
+      const dot = ee3Pkg.exports && ee3Pkg.exports['.'];
+      const ee3MjsPath = path.join(nodeModulesDir, 'eventemitter3', 'index.mjs');
+      if (dot && !dot.import && fs.existsSync(ee3MjsPath)) {
+        ee3Pkg.exports['.'] = { types: dot.types, import: './index.mjs', require: dot.require };
+        fs.writeFileSync(ee3PkgPath, JSON.stringify(ee3Pkg, null, 2) + '\n', 'utf8');
+        echo`   🩹 Patched eventemitter3: restored missing "import" export condition`;
+        count++;
+      }
+    } catch (e) {
+      echo`   ⚠️  Failed to patch eventemitter3: ${e.message}`;
+    }
+  }
+
+  // eventemitter3 v4 nested inside p-queue: v4 has no exports field and no index.mjs.
+  // p-queue does `import { EventEmitter } from 'eventemitter3'` (ESM named import).
+  // In Node 22+ ESM interop, CJS module.exports = Fn doesn't expose named exports.
+  // Fix: add exports field pointing to index.js for both require/import, and patch
+  // index.js to expose `module.exports.EventEmitter` as a named export.
+  const ee3v4PkgPath = path.join(nodeModulesDir, 'p-queue', 'node_modules', 'eventemitter3', 'package.json');
+  if (fs.existsSync(ee3v4PkgPath)) {
+    try {
+      const ee3v4Pkg = JSON.parse(fs.readFileSync(ee3v4PkgPath, 'utf8'));
+      if (!ee3v4Pkg.exports) {
+        ee3v4Pkg.exports = {
+          '.': { require: './index.js', import: './index.js', default: './index.js' },
+          './package.json': './package.json',
+        };
+        fs.writeFileSync(ee3v4PkgPath, JSON.stringify(ee3v4Pkg, null, 2) + '\n', 'utf8');
+        echo`   🩹 Patched eventemitter3 v4 (p-queue nested): added exports field`;
+        count++;
+      }
+      // Also patch index.js to expose named EventEmitter export for ESM interop
+      const ee3v4IndexPath = path.join(nodeModulesDir, 'p-queue', 'node_modules', 'eventemitter3', 'index.js');
+      if (fs.existsSync(ee3v4IndexPath)) {
+        const src = fs.readFileSync(ee3v4IndexPath, 'utf8');
+        const marker = '// ClawX: named export for ESM interop';
+        if (!src.includes(marker)) {
+          fs.writeFileSync(ee3v4IndexPath, src.trimEnd() + `\n${marker}\nmodule.exports.EventEmitter = module.exports;\n`, 'utf8');
+          echo`   🩹 Patched eventemitter3 v4 (p-queue nested): added EventEmitter named export`;
+          count++;
+        }
+      }
+    } catch (e) {
+      echo`   ⚠️  Failed to patch eventemitter3 v4: ${e.message}`;
+    }
+  }
+
   for (const [rel, content] of Object.entries(rewritePatches)) {
     const target = path.join(nodeModulesDir, rel);
     if (fs.existsSync(target)) {

@@ -225,6 +225,8 @@ function patchEsmPackageExports(pluginDir) {
       const raw = fs.readFileSync(pkgJsonPath, 'utf8');
       const pkg = JSON.parse(raw);
       if (!pkg.exports || typeof pkg.exports !== 'object') return;
+      // eventemitter3 v5.0.1+ has proper named ESM exports - do not strip
+      if (pkg.name === 'eventemitter3') return;
       const { obj, changed } = stripImportCondition(pkg.exports);
       if (changed) {
         pkg.exports = obj;
