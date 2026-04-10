@@ -77,9 +77,7 @@ function normalizeUsageNumber(value: unknown): number | undefined {
   }
   if (typeof value === 'string') {
     const trimmed = value.trim();
-    if (trimmed.length === 0) {
-      return undefined;
-    }
+    if (trimmed.length === 0) return undefined;
     const parsed = Number(trimmed);
     return Number.isFinite(parsed) ? parsed : undefined;
   }
@@ -97,65 +95,32 @@ function firstUsageNumber(usage: TranscriptUsageShape | undefined, candidates: s
 }
 
 function parseUsageFromShape(usage: unknown): ParsedUsageTokens | undefined {
-  if (usage === undefined) {
-    return undefined;
-  }
+  if (usage === undefined) return undefined;
 
   if (usage === null || typeof usage !== 'object' || Array.isArray(usage)) {
-    return {
-      usageStatus: 'error',
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
-      totalTokens: 0,
-    };
+    return { usageStatus: 'error', inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0 };
   }
 
   const usageShape = usage as TranscriptUsageShape;
 
   const inputTokens = firstUsageNumber(usageShape, [
-    'input',
-    'promptTokens',
-    'prompt_tokens',
-    'input_tokens',
-    'inputTokenCount',
-    'input_token_count',
-    'promptTokenCount',
-    'prompt_token_count',
+    'input', 'promptTokens', 'prompt_tokens', 'input_tokens',
+    'inputTokenCount', 'input_token_count', 'promptTokenCount', 'prompt_token_count',
   ]);
   const outputTokens = firstUsageNumber(usageShape, [
-    'output',
-    'completionTokens',
-    'completion_tokens',
-    'output_tokens',
-    'outputTokenCount',
-    'output_token_count',
-    'completionTokenCount',
-    'completion_token_count',
+    'output', 'completionTokens', 'completion_tokens', 'output_tokens',
+    'outputTokenCount', 'output_token_count', 'completionTokenCount', 'completion_token_count',
   ]);
   const cacheReadTokens = firstUsageNumber(usageShape, [
-    'cacheRead',
-    'cache_read',
-    'cacheReadTokens',
-    'cache_read_tokens',
-    'cacheReadTokenCount',
-    'cache_read_token_count',
+    'cacheRead', 'cache_read', 'cacheReadTokens', 'cache_read_tokens',
+    'cacheReadTokenCount', 'cache_read_token_count',
   ]);
   const cacheWriteTokens = firstUsageNumber(usageShape, [
-    'cacheWrite',
-    'cache_write',
-    'cacheWriteTokens',
-    'cache_write_tokens',
-    'cacheWriteTokenCount',
-    'cache_write_token_count',
+    'cacheWrite', 'cache_write', 'cacheWriteTokens', 'cache_write_tokens',
+    'cacheWriteTokenCount', 'cache_write_token_count',
   ]);
   const explicitTotalTokens = firstUsageNumber(usageShape, [
-    'total',
-    'totalTokens',
-    'total_tokens',
-    'totalTokenCount',
-    'total_token_count',
+    'total', 'totalTokens', 'total_tokens', 'totalTokenCount', 'total_token_count',
   ]);
 
   const hasUsageValue =
@@ -167,21 +132,11 @@ function parseUsageFromShape(usage: unknown): ParsedUsageTokens | undefined {
     || normalizeUsageNumber(usageShape.cost?.total) !== undefined;
 
   if (!hasUsageValue) {
-    return {
-      usageStatus: 'missing',
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
-      totalTokens: 0,
-    };
+    return { usageStatus: 'missing', inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0 };
   }
 
   const totalTokens = explicitTotalTokens ?? (
-    (inputTokens ?? 0)
-      + (outputTokens ?? 0)
-      + (cacheReadTokens ?? 0)
-      + (cacheWriteTokens ?? 0)
+    (inputTokens ?? 0) + (outputTokens ?? 0) + (cacheReadTokens ?? 0) + (cacheWriteTokens ?? 0)
   );
 
   return {
@@ -277,9 +232,7 @@ export function parseUsageEntriesFromJsonl(
     }
 
     const message = parsed.message;
-    if (!message || !parsed.timestamp) {
-      continue;
-    }
+    if (!message || !parsed.timestamp) continue;
 
     if (message.role === 'assistant' && 'usage' in message) {
       const usage = parseUsageFromShape(message.usage);
@@ -298,14 +251,10 @@ export function parseUsageEntriesFromJsonl(
       continue;
     }
 
-    if (message.role !== 'toolResult') {
-      continue;
-    }
+    if (message.role !== 'toolResult') continue;
 
     const details = message.details;
-    if (!details || !('usage' in details)) {
-      continue;
-    }
+    if (!details || !('usage' in details)) continue;
 
     const usage = parseUsageFromShape(details.usage);
     if (!usage) continue;

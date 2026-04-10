@@ -9,6 +9,7 @@ import { AlertCircle, Loader2, Sparkles } from 'lucide-react';
 import { useChatStore, type RawMessage } from '@/stores/chat';
 import { useGatewayStore } from '@/stores/gateway';
 import { useAgentsStore } from '@/stores/agents';
+import { useModelsStore } from '@/stores/models';
 import { hostApiFetch } from '@/lib/host-api';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 import { ChatMessage } from './ChatMessage';
@@ -43,6 +44,7 @@ export function Chat() {
   const clearError = useChatStore((s) => s.clearError);
   const fetchAgents = useAgentsStore((s) => s.fetchAgents);
   const agents = useAgentsStore((s) => s.agents);
+  const checkLoginStatus = useModelsStore((s) => s.checkLoginStatus);
 
   const cleanupEmptySession = useChatStore((s) => s.cleanupEmptySession);
   const [childTranscripts, setChildTranscripts] = useState<Record<string, RawMessage[]>>({});
@@ -67,6 +69,11 @@ export function Chat() {
   useEffect(() => {
     void fetchAgents();
   }, [fetchAgents]);
+
+  // 初始化模型列表（登录后拉取 OneAPI 模型）
+  useEffect(() => {
+    void checkLoginStatus();
+  }, [checkLoginStatus]);
 
   useEffect(() => {
     const completions = messages

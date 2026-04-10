@@ -7,7 +7,7 @@
  * are sent with the message (no base64 over WebSocket).
  */
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { SendHorizontal, Square, X, Paperclip, FileText, Film, Music, FileArchive, File, Loader2, AtSign } from 'lucide-react';
+import { SendHorizontal, Square, X, Paperclip, FileText, Film, Music, FileArchive, File, Loader2, AtSign, ChevronDown, Check } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { hostApiFetch } from '@/lib/host-api';
@@ -16,6 +16,7 @@ import { cn } from '@/lib/utils';
 import { useGatewayStore } from '@/stores/gateway';
 import { useAgentsStore } from '@/stores/agents';
 import { useChatStore } from '@/stores/chat';
+import { useModelsStore } from '@/stores/models';
 import type { AgentSummary } from '@/types/agent';
 import { useTranslation } from 'react-i18next';
 
@@ -110,6 +111,13 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
   );
   const showAgentPicker = mentionableAgents.length > 0;
 
+  const models = useModelsStore((s) => s.models);
+  const currentModelId = useModelsStore((s) => s.currentModelId);
+  const setCurrentModel = useModelsStore((s) => s.setCurrentModel);
+  const currentModel = models.find((m) => m.id === currentModelId);
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const modelMenuRef = useRef<HTMLDivElement>(null);
+
   // Auto-resize textarea
   useEffect(() => {
     if (textareaRef.current) {
@@ -150,6 +158,19 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
       document.removeEventListener('mousedown', handlePointerDown);
     };
   }, [pickerOpen]);
+
+  useEffect(() => {
+    if (!modelMenuOpen) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!modelMenuRef.current?.contains(event.target as Node)) {
+        setModelMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+    };
+  }, [modelMenuOpen]);
 
   // ── File staging via native dialog ─────────────────────────────
 
@@ -496,10 +517,58 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
               />
             </div>
 
+            {/* Model Picker */}
+            {models.length > 0 && (
+              <div ref={modelMenuRef} className="relative shrink-0">
+                <button
+                  type="button"
+                  aria-haspopup="listbox"
+                  aria-expanded={modelMenuOpen}
+                  onClick={() => setModelMenuOpen((open) => !open)}
+                  className={cn(
+                    'flex items-center gap-1 rounded-full border border-black/10 bg-black/5 dark:bg-white/10 px-3 py-2 text-[12px] font-medium text-foreground/80 dark:border-white/10',
+                    'focus:outline-none focus:ring-1 focus:ring-ring/50 transition-all duration-200',
+                    modelMenuOpen && 'ring-1 ring-ring/50',
+                  )}
+                >
+                  <span className="truncate max-w-[100px]">
+                    {currentModel?.name || currentModelId || t('selectModel')}
+                  </span>
+                  <ChevronDown className={cn('h-3.5 w-3.5 text-muted-foreground shrink-0 transition-transform duration-200', modelMenuOpen && 'rotate-180')} />
+                </button>
+                {modelMenuOpen && (
+                  <div
+                    role="listbox"
+                    className="absolute z-50 right-0 bottom-full mb-2 min-w-[160px] rounded-lg border border-border bg-popover shadow-lg animate-in fade-in-0 zoom-in-95 duration-150 max-h-48 overflow-auto py-1"
+                  >
+                    {models.map((model) => {
+                      const isSelected = model.id === currentModelId;
+                      return (
+                        <button
+                          key={model.id}
+                          type="button"
+                          role="option"
+                          aria-selected={isSelected}
+                          onClick={() => { setCurrentModel(model.id); setModelMenuOpen(false); }}
+                          className={cn(
+                            'w-full px-3 py-2 text-left text-[12px] flex items-center justify-between gap-2',
+                            'hover:bg-accent transition-colors duration-150',
+                            isSelected && 'bg-accent/60',
+                          )}
+                        >
+                          <span className="truncate">{model.name || model.id}</span>
+                          {isSelected && <Check className="h-3.5 w-3.5 text-primary shrink-0" />}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Send Button */}
             <Button
               onClick={sending ? handleStop : handleSend}
-              disabled={sending ? !canStop : !canSend}
               size="icon"
               className={`shrink-0 h-10 w-10 rounded-full transition-colors ${
                 (sending || canSend)
