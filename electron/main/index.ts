@@ -309,24 +309,53 @@ async function initialize(): Promise<void> {
   }
 
   // Override security headers ONLY for the OpenClaw Gateway Control UI.
+  // Covers both HTTP (dev) and HTTPS (TLS/LAN production) on port 18789.
   // The URL filter ensures this callback only fires for gateway requests,
   // avoiding unnecessary overhead on every other HTTP response.
   session.defaultSession.webRequest.onHeadersReceived(
-    { urls: ['http://127.0.0.1:18789/*', 'http://localhost:18789/*'] },
+    {
+      urls: [
+        'http://127.0.0.1:18789/*',
+        'http://localhost:18789/*',
+        'https://127.0.0.1:18789/*',
+        'https://localhost:18789/*',
+        'https://*/*',  // covers https://<LAN-IP>:18789/* — Electron requires wildcard host
+      ],
+    },
     (details, callback) => {
+      // Only process port 18789 responses (the wildcard above is broad, so filter here)
+      const url = details.url;
+      const isGateway = /^https?:\/\/[^/]+:18789\//.test(url);
+      if (!isGateway) {
+        callback({});
+        return;
+      }
+
       const headers = { ...details.responseHeaders };
+      // Remove X-Frame-Options so browsers allow iframe embedding
       delete headers['X-Frame-Options'];
       delete headers['x-frame-options'];
+
+      // Allowed iframe parent origins
+      const frameAncestors =
+        "frame-ancestors 'self' https://im.shadanai.com https://shadanai.com https://*.shadanai.com";
+
+      const patchCsp = (csp: string): string => {
+        if (/frame-ancestors/.test(csp)) {
+          // Replace any existing frame-ancestors directive
+          return csp.replace(/frame-ancestors[^;]*(;|$)/g, `${frameAncestors}$1`);
+        }
+        // Append if not present
+        return csp.trimEnd().replace(/;?$/, `; ${frameAncestors}`);
+      };
+
       if (headers['Content-Security-Policy']) {
-        headers['Content-Security-Policy'] = headers['Content-Security-Policy'].map(
-          (csp) => csp.replace(/frame-ancestors\s+'none'/g, "frame-ancestors 'self' *")
-        );
+        headers['Content-Security-Policy'] = headers['Content-Security-Policy'].map(patchCsp);
       }
       if (headers['content-security-policy']) {
-        headers['content-security-policy'] = headers['content-security-policy'].map(
-          (csp) => csp.replace(/frame-ancestors\s+'none'/g, "frame-ancestors 'self' *")
-        );
+        headers['content-security-policy'] = headers['content-security-policy'].map(patchCsp);
       }
+
       callback({ responseHeaders: headers });
     },
   );

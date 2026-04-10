@@ -21,7 +21,7 @@ import { getProviderEnvVar, getKeyableProviderTypes } from '../utils/provider-re
 import { getOpenClawDir, getOpenClawEntryPath, isOpenClawPresent } from '../utils/paths';
 import { getUvMirrorEnv } from '../utils/uv-env';
 import { cleanupDanglingWeChatPluginState, listConfiguredChannels, readOpenClawConfig } from '../utils/channel-config';
-import { syncGatewayTokenToConfig, syncBrowserConfigToOpenClaw, syncSessionIdleMinutesToOpenClaw, sanitizeOpenClawConfig, ensureGatewayTlsEnabledInConfig, ensureLanOriginsInConfig } from '../utils/openclaw-auth';
+import { syncGatewayTokenToConfig, syncBrowserConfigToOpenClaw, syncSessionIdleMinutesToOpenClaw, sanitizeOpenClawConfig, ensureGatewayTlsEnabledInConfig, ensureLanOriginsInConfig, ensureStaticOriginsInConfig } from '../utils/openclaw-auth';
 import { startOpenClawConfigLanReconciliationWatcher } from '../utils/openclaw-config-watch';
 import { getTokenKey, writeBoxImTokenKey } from '../utils/box-im-sync';
 import { buildProxyEnv, resolveProxySettings } from '../utils/proxy';
@@ -341,6 +341,14 @@ export async function syncGatewayConfigBeforeLaunch(
     await ensureLanOriginsInConfig(18789);
   } catch (err) {
     logger.warn('Failed to inject LAN origins into gateway config:', err);
+  }
+
+  // Ensure static parent-page origins (im.shadanai.com, shadanai.com) are present
+  // so the Gateway accepts iframe WebSocket connections from those pages.
+  try {
+    await ensureStaticOriginsInConfig();
+  } catch (err) {
+    logger.warn('Failed to inject static origins into gateway config:', err);
   }
 
   // Start watcher to prevent Gateway from overwriting models.providers baseUrl.

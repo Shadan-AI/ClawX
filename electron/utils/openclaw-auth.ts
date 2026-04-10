@@ -1153,6 +1153,34 @@ export async function ensureLanOriginsInConfig(port = 18789): Promise<void> {
 }
 
 /**
+ * Ensure the static parent-page origins (im.shadanai.com, shadanai.com) are
+ * present in gateway.controlUi.allowedOrigins so the Gateway accepts WebSocket
+ * connections from those pages when ClawX is embedded via iframe.
+ */
+export async function ensureStaticOriginsInConfig(): Promise<void> {
+  return withConfigLock(async () => {
+    const config = await readOpenClawJson();
+    if (!config.gateway || typeof config.gateway !== 'object') return;
+    const gw = config.gateway as Record<string, unknown>;
+    if (!gw.controlUi || typeof gw.controlUi !== 'object') {
+      gw.controlUi = {};
+    }
+    const cui = gw.controlUi as Record<string, unknown>;
+    const existing = Array.isArray(cui.allowedOrigins)
+      ? (cui.allowedOrigins as unknown[]).filter((x): x is string => typeof x === 'string')
+      : [];
+    const staticOrigins = [
+      'https://im.shadanai.com',
+      'https://shadanai.com',
+    ];
+    const toAdd = staticOrigins.filter((o) => !existing.includes(o));
+    if (toAdd.length === 0) return;
+    cui.allowedOrigins = [...existing, ...toAdd];
+    await writeOpenClawJson(config);
+  });
+}
+
+/**
  * Ensure gateway.tls is present and enabled in openclaw.json (Windows only).
  * Writes the standard cert paths from ~/.openclaw/certs/ if missing.
  * Also ensures gateway.bind is set to "lan" so LAN devices can connect.
