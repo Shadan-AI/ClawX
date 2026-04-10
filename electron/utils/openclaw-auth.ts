@@ -1156,6 +1156,7 @@ export async function ensureLanOriginsInConfig(port = 18789): Promise<void> {
  * Ensure gateway.tls is present and enabled in openclaw.json (Windows only).
  * Writes the standard cert paths from ~/.openclaw/certs/ if missing.
  * Also ensures gateway.bind is set to "lan" so LAN devices can connect.
+ * Also ensures controlUi security flags are set so LAN browsers can authenticate.
  */
 export async function ensureGatewayTlsEnabledInConfig(): Promise<void> {
   return withConfigLock(async () => {
@@ -1177,6 +1178,23 @@ export async function ensureGatewayTlsEnabledInConfig(): Promise<void> {
     // Ensure bind=lan so gateway listens on all interfaces (not just loopback)
     if (!gw.bind) {
       gw.bind = 'lan';
+      changed = true;
+    }
+    // Ensure controlUi security flags so LAN browsers can connect without device pairing
+    if (!gw.controlUi || typeof gw.controlUi !== 'object') {
+      gw.controlUi = {};
+    }
+    const cui = gw.controlUi as Record<string, unknown>;
+    if (cui.dangerouslyAllowHostHeaderOriginFallback !== true) {
+      cui.dangerouslyAllowHostHeaderOriginFallback = true;
+      changed = true;
+    }
+    if (cui.allowInsecureAuth !== true) {
+      cui.allowInsecureAuth = true;
+      changed = true;
+    }
+    if (cui.dangerouslyDisableDeviceAuth !== true) {
+      cui.dangerouslyDisableDeviceAuth = true;
       changed = true;
     }
     if (changed) {
