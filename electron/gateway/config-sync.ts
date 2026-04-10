@@ -30,6 +30,7 @@ import { logger } from '../utils/logger';
 import { prependPathEntry } from '../utils/env-path';
 import { copyPluginFromNodeModules, fixupPluginManifest, cpSyncSafe } from '../utils/plugin-install';
 import { stripSystemdSupervisorEnv } from './config-sync-env';
+import { SKILL_MARKET_BASE_URL } from '../utils/skill-market';
 
 
 export interface GatewayLaunchContext {
@@ -497,6 +498,7 @@ export async function prepareGatewayLaunchContext(port: number): Promise<Gateway
     OPENCLAW_SKIP_CHANNELS: skipChannels ? '1' : '',
     CLAWDBOT_SKIP_CHANNELS: skipChannels ? '1' : '',
     OPENCLAW_NO_RESPAWN: '1',
+    OPENCLAW_SKILL_MARKET_URL: SKILL_MARKET_BASE_URL,
   };
 
   // Ensure extension-specific packages (e.g. grammy from the telegram
