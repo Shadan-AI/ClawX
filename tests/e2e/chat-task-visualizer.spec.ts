@@ -148,7 +148,7 @@ const childTranscriptMessages = [
   },
 ];
 
-test.describe('ClawX chat execution graph', () => {
+test.describe('OpenMe chat execution graph', () => {
   test('renders internal yield status and linked subagent branch from mocked IPC', async ({ launchElectronApp }) => {
     const app = await launchElectronApp({ skipSetup: true });
 

@@ -2,7 +2,7 @@
     "gatewayNotRunning": "网关未运行",
     "gatewayRequired": "OpenClaw 网关需要运行才能使用聊天。它将自动启动，或者您可以从设置中启动。",
     "welcome": {
-        "title": "ClawX 聊天",
+        "title": "OpenMe 聊天",
         "subtitle": "我能为你做些什么？",
         "askQuestions": "处理任务",
         "askQuestionsDesc": "处理面向任务的请求",
@@ -21,7 +21,7 @@
         "eyebrow": "运行视图",
         "title": "任务脉络",
         "emptyTitle": "还没有结构化步骤",
-        "emptyBody": "当一次运行开始后，ClawX 会在这里展示思考、工具调用和收尾状态。",
+        "emptyBody": "当一次运行开始后，OpenMe 会在这里展示思考、工具调用和收尾状态。",
         "status": {
             "idle": "空闲",
             "running_one": "1 个活动步骤",

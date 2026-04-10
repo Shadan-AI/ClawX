@@ -2,7 +2,7 @@
     "gatewayNotRunning": "Gateway Not Running",
     "gatewayRequired": "The OpenClaw Gateway needs to be running to use chat. It will start automatically, or you can start it from Settings.",
     "welcome": {
-        "title": "ClawX Chat",
+        "title": "OpenMe Chat",
         "subtitle": "What can I do for you?",
         "askQuestions": "Handle Tasks",
         "askQuestionsDesc": "Work on task-oriented requests",
@@ -21,7 +21,7 @@
         "eyebrow": "Run View",
         "title": "Task Outline",
         "emptyTitle": "No structured steps yet",
-        "emptyBody": "Once a run starts, ClawX will surface thinking, tool calls, and handoff states here.",
+        "emptyBody": "Once a run starts, OpenMe will surface thinking, tool calls, and handoff states here.",
         "status": {
             "idle": "Idle",
             "running_one": "1 active step",

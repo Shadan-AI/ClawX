@@ -16,7 +16,7 @@ async function readProxyEnabled(page: Page): Promise<boolean> {
   });
 }
 
-test.describe('ClawX developer proxy settings', () => {
+test.describe('OpenMe developer proxy settings', () => {
   test('keeps proxy save available when disabling proxy in developer mode', async ({ page }) => {
     await completeSetup(page);
 
