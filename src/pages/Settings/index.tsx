@@ -300,6 +300,11 @@ export function Settings() {
   }, [devModeUnlocked]);
 
   useEffect(() => {
+    void refreshControlUiInfo();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
     setProxyEnabledDraft(proxyEnabled);
   }, [proxyEnabled]);
 
@@ -627,6 +632,31 @@ export function Settings() {
                 />
               </div>
 
+              <div className="space-y-2">
+                <Label className="text-[14px] font-medium text-foreground/80">{t('developer.gatewayToken')}</Label>
+                <p className="text-[13px] text-muted-foreground">
+                  {t('developer.gatewayTokenDesc')}
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <Input
+                    data-testid="settings-gateway-token-display"
+                    readOnly
+                    value={controlUiInfo?.token || ''}
+                    placeholder={t('developer.tokenUnavailable')}
+                    className="font-mono text-[13px] h-10 rounded-xl bg-black/5 dark:bg-white/5 border-transparent flex-1 min-w-[200px]"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={handleCopyGatewayToken}
+                    disabled={!controlUiInfo?.token}
+                    className="rounded-xl h-10 px-4 bg-transparent border-black/10 dark:border-white/10 hover:bg-black/5 dark:hover:bg-white/5"
+                  >
+                    <Copy className="h-4 w-4 mr-2" />
+                    {t('common:actions.copy')}
+                  </Button>
+                </div>
+              </div>
 
               <div className="flex items-center justify-between">
                 <div>
