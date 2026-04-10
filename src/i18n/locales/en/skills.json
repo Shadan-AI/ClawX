@@ -5,9 +5,14 @@
     "openFolder": "Open Skills Folder",
     "gatewayWarning": "Gateway is not running. Skills cannot be loaded without an active Gateway.",
     "tabs": {
-        "installed": "Installed",
-        "marketplace": "Marketplace"
+        "installed": "Installed skills",
+        "official": "Official library",
+        "market": "Skill market"
     },
+    "officialMinChars": "Enter at least 2 characters to search the official library.",
+    "searchOfficial": "Search official library…",
+    "searchMarketTab": "Search skill market…",
+    "loadMoreMarket": "Load more ({{shown}} / {{total}})",
     "filter": {
         "all": "All ({{count}})",
         "builtIn": "Built-in ({{count}})",
@@ -96,6 +101,7 @@
         "batchPartial": "Updated {{success}} / {{total}} skills. Some items failed."
     },
     "marketplace": {
+        "installedBadge": "Installed",
         "title": "Marketplace",
         "installDialogTitle": "Install Skills",
         "installDialogSubtitle": "Browse Explore by default, or enter keywords to search.",
@@ -105,6 +111,7 @@
         "manualInstallHint": "Network issues? You can always download skill ZIP archives from ClawHub.ai and extract them manually into \"{{path}}\".",
         "searching": "Searching ClawHub...",
         "noResults": "No skills found matching your search.",
+        "marketEmpty": "No skills in the marketplace, or the service is unavailable.",
         "emptyPrompt": "Search for new skills to expand your capabilities.",
         "searchError": "ClawHub search failed. Check your connection or installation."
     }

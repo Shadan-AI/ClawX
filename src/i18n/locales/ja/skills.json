@@ -5,9 +5,14 @@
     "openFolder": "スキルフォルダを開く",
     "gatewayWarning": "ゲートウェイが稼働していません。アクティブなゲートウェイがないとスキルを読み込めません。",
     "tabs": {
-        "installed": "インストール済み",
-        "marketplace": "マーケットプレイス"
+        "installed": "インストール済みスキル",
+        "official": "公式ライブラリ",
+        "market": "スキルマーケット"
     },
+    "officialMinChars": "公式ライブラリを検索するには2文字以上入力してください。",
+    "searchOfficial": "公式ライブラリを検索…",
+    "searchMarketTab": "スキルマーケットを検索…",
+    "loadMoreMarket": "さらに読み込む（{{shown}} / {{total}}）",
     "filter": {
         "all": "すべて ({{count}})",
         "builtIn": "内蔵 ({{count}})",
@@ -96,6 +101,7 @@
         "batchPartial": "{{success}} / {{total}} 件を更新しました。一部失敗しています。"
     },
     "marketplace": {
+        "installedBadge": "インストール済み",
         "title": "マーケットプレイス",
         "installDialogTitle": "スキルをインストール",
         "installDialogSubtitle": "初期表示は Explore、キーワード入力時は検索します。",
@@ -105,6 +111,7 @@
         "manualInstallHint": "ネットワークに問題がありますか？いつでもClawHub.aiからスキルのZIPをダウンロードし、手動で \"{{path}}\" に展開してインストールできます。",
         "searching": "ClawHubを検索中...",
         "noResults": "検索に一致するスキルが見つかりません。",
+        "marketEmpty": "マーケットにスキルがないか、サービスが利用できません。",
         "emptyPrompt": "新しいスキルを検索して機能を拡張しましょう。",
         "searchError": "ClawHub検索に失敗しました。接続またはインストールを確認してください。"
     }

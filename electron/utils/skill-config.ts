@@ -5,14 +5,14 @@
  *
  * All file I/O uses async fs/promises to avoid blocking the main thread.
  */
-import { readFile, writeFile, access, mkdir } from 'fs/promises';
+import { readFile, writeFile, access, cp, mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { constants } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { getOpenClawDir, getResourcesDir } from './paths';
+import { stampOpenClawConfigMeta } from './openclaw-config-meta';
 import { logger } from './logger';
-import { cpAsyncSafe } from './plugin-install';
 import { withConfigLock } from './config-mutex';
 
 const OPENCLAW_CONFIG_PATH = join(homedir(), '.openclaw', 'openclaw.json');
@@ -81,6 +81,7 @@ async function readConfig(): Promise<OpenClawConfig> {
  * Write the OpenClaw config
  */
 async function writeConfig(config: OpenClawConfig): Promise<void> {
+    stampOpenClawConfigMeta(config as Record<string, unknown>);
     const json = JSON.stringify(config, null, 2);
     await writeFile(OPENCLAW_CONFIG_PATH, json, 'utf-8');
 }
@@ -204,6 +205,9 @@ export async function ensureBuiltinSkillsInstalled(): Promise<void> {
     const skillsRoot = join(homedir(), '.openclaw', 'skills');
 
     for (const { slug, sourceExtension } of BUILTIN_SKILLS) {
+        // Yield event loop between each skill so main thread stays responsive
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
         const targetDir = join(skillsRoot, slug);
         const targetManifest = join(targetDir, 'SKILL.md');
 
@@ -221,7 +225,7 @@ export async function ensureBuiltinSkillsInstalled(): Promise<void> {
 
         try {
             await mkdir(targetDir, { recursive: true });
-            await cpAsyncSafe(sourceDir, targetDir);
+            await cp(sourceDir, targetDir, { recursive: true });
             logger.info(`Installed built-in skill: ${slug} -> ${targetDir}`);
         } catch (error) {
             logger.warn(`Failed to install built-in skill ${slug}:`, error);
@@ -334,6 +338,9 @@ export async function ensurePreinstalledSkillsInstalled(): Promise<void> {
     const toEnable: string[] = [];
 
     for (const spec of skills) {
+        // Yield event loop between each skill so main thread stays responsive
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
         const sourceDir = join(sourceRoot, spec.slug);
         const sourceManifest = join(sourceDir, 'SKILL.md');
         if (!existsSync(sourceManifest)) {
@@ -363,7 +370,7 @@ export async function ensurePreinstalledSkillsInstalled(): Promise<void> {
 
         try {
             await mkdir(targetDir, { recursive: true });
-            await cpAsyncSafe(sourceDir, targetDir);
+            await cp(sourceDir, targetDir, { recursive: true, force: true });
             const markerPayload: PreinstalledMarker = {
                 source: 'clawx-preinstalled',
                 slug: spec.slug,
