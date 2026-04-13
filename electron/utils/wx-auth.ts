@@ -295,9 +295,10 @@ async function registerDeviceWithImServer(
 ): Promise<void> {
   // Read the same token that Settings → Gateway displays (electron-store, clawx-<hex> format)
   const gatewayToken = await getSetting('gatewayToken');
-  const cfg = await readOpenClawConfig();
-  const tlsEnabled = (cfg as any).gateway?.tls?.enabled === true;
-  const protocol = tlsEnabled ? 'https' : 'http';
+
+  // buildOpenClawControlUiUrl always uses https (feature2 branch hardcodes it).
+  // Use the same protocol so probeGatewayUrl on the IM side builds the correct URL.
+  const protocol = 'https';
   const lanIp = detectLanIp();
 
   // Detect WAN IP (best-effort, short timeout)
@@ -307,6 +308,7 @@ async function registerDeviceWithImServer(
     if (r.ok) wanIp = (await r.text()).trim();
   } catch { /* ignore */ }
 
+  const cfg = await readOpenClawConfig();
   const openid = (cfg.channels?.[CHANNEL_ID] as any)?.ownerAuth?.openid ?? '';
 
   const registration = {
@@ -316,8 +318,8 @@ async function registerDeviceWithImServer(
     lanIp,
     wanIp,
     openclawPort: GATEWAY_PORT,
-    protocol,
-    gatewayToken,
+    protocol,       // always 'https' — matches buildOpenClawControlUiUrl behavior
+    gatewayToken,   // clawx-<hex> from electron-store, same as Settings → Gateway shows
     ...(userId ? { userId } : {}),
   };
 
@@ -331,7 +333,7 @@ async function registerDeviceWithImServer(
     const text = await res.text().catch(() => '');
     throw new Error(`Device register failed: ${res.status} ${text}`);
   }
-  console.log(`[wx-auth] Device registered: lanIp=${lanIp}, port=${GATEWAY_PORT}, protocol=${protocol}`);
+  console.log(`[wx-auth] Device registered: ${protocol}://${lanIp}:${GATEWAY_PORT}/#token=${gatewayToken}`);
 }
 
 // ── OneAPI models ────────────────────────────────────────────────
