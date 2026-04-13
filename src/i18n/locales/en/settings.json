@@ -211,6 +211,15 @@
     "telemetry": "Anonymous Usage Data",
     "telemetryDesc": "Allow providing anonymous basic usage data to improve OpenMe"
   },
+  "account": {
+    "title": "Account",
+    "logout": "Log Out",
+    "logoutDesc": "You will need to scan the QR code again to log back in",
+    "logoutConfirmTitle": "Confirm Log Out",
+    "logoutConfirmDesc": "This will clear your login state. You will need to scan the QR code again to continue.",
+    "logoutSuccess": "Logged out successfully",
+    "logoutFailed": "Failed to log out"
+  },
   "developer": {
     "title": "Developer",
     "description": "Advanced options for developers",

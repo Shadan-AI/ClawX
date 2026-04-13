@@ -3,6 +3,7 @@
  * Application configuration
  */
 import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Sun,
   Moon,
@@ -11,6 +12,7 @@ import {
   ExternalLink,
   Copy,
   FileText,
+  LogOut,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
@@ -40,6 +42,7 @@ import { useTranslation } from 'react-i18next';
 import { SUPPORTED_LANGUAGES } from '@/i18n';
 import { hostApiFetch } from '@/lib/host-api';
 import { cn } from '@/lib/utils';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 type ControlUiInfo = {
   url: string;
   token: string;
@@ -48,6 +51,7 @@ type ControlUiInfo = {
 
 export function Settings() {
   const { t } = useTranslation('settings');
+  const navigate = useNavigate();
   const {
     theme,
     setTheme,
@@ -77,6 +81,7 @@ export function Settings() {
     setDevModeUnlocked,
     telemetryEnabled,
     setTelemetryEnabled,
+    resetBoxImGateComplete,
   } = useSettingsStore();
 
   const { status: gatewayStatus, restart: restartGateway } = useGatewayStore();
@@ -100,6 +105,8 @@ export function Settings() {
   const showCliTools = true;
   const [showLogs, setShowLogs] = useState(false);
   const [logContent, setLogContent] = useState('');
+  const [loggingOut, setLoggingOut] = useState(false);
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [doctorRunningMode, setDoctorRunningMode] = useState<'diagnose' | 'fix' | null>(null);
   const [doctorResult, setDoctorResult] = useState<{
     mode: 'diagnose' | 'fix';
@@ -113,6 +120,25 @@ export function Settings() {
     timedOut?: boolean;
     error?: string;
   } | null>(null);
+
+  const handleLogout = async () => {
+    setLoggingOut(true);
+    try {
+      const result = await invokeIpc<{ success: boolean; error?: string }>('box-im:logout');
+      if (result.success) {
+        resetBoxImGateComplete();
+        toast.success(t('account.logoutSuccess'));
+        navigate('/box-im-gate', { replace: true });
+      } else {
+        toast.error(result.error || t('account.logoutFailed'));
+      }
+    } catch (error) {
+      toast.error(`${t('account.logoutFailed')}: ${toUserMessage(error)}`);
+    } finally {
+      setLoggingOut(false);
+      setShowLogoutConfirm(false);
+    }
+  };
 
   const handleShowLogs = async () => {
     try {
@@ -688,6 +714,40 @@ export function Settings() {
             </div>
           </div>
 
+          {/* Account */}
+          <Separator className="bg-black/5 dark:bg-white/5" />
+          <div>
+            <h2 className="text-3xl font-serif text-foreground mb-6 font-normal tracking-tight" style={{ fontFamily: 'Georgia, Cambria, "Times New Roman", Times, serif' }}>
+              {t('account.title')}
+            </h2>
+            <div className="flex items-center justify-between">
+              <div>
+                <Label className="text-[15px] font-medium text-foreground">{t('account.logout')}</Label>
+                <p className="text-[13px] text-muted-foreground mt-1">
+                  {t('account.logoutDesc')}
+                </p>
+              </div>
+              <Button
+                variant="outline"
+                onClick={() => setShowLogoutConfirm(true)}
+                disabled={loggingOut}
+                className="rounded-full h-9 px-5 border-red-500/30 text-red-600 dark:text-red-400 hover:bg-red-500/10 hover:border-red-500/50 bg-transparent"
+              >
+                <LogOut className="h-4 w-4 mr-2" />
+                {t('account.logout')}
+              </Button>
+            </div>
+          </div>
+
+          <ConfirmDialog
+            open={showLogoutConfirm}
+            title={t('account.logoutConfirmTitle')}
+            message={t('account.logoutConfirmDesc')}
+            confirmLabel={t('account.logout')}
+            variant="destructive"
+            onConfirm={() => void handleLogout()}
+            onCancel={() => setShowLogoutConfirm(false)}
+          />
 
           {/* Developer */}
           {devModeUnlocked && (

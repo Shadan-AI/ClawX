@@ -208,6 +208,15 @@
     "devMode": "開発者モード",
     "devModeDesc": "開発者ツールとショートカットを表示"
   },
+  "account": {
+    "title": "アカウント",
+    "logout": "ログアウト",
+    "logoutDesc": "ログアウト後はQRコードを再スキャンしてログインする必要があります",
+    "logoutConfirmTitle": "ログアウトの確認",
+    "logoutConfirmDesc": "ログイン状態がクリアされます。続けるにはQRコードを再スキャンしてください。",
+    "logoutSuccess": "ログアウトしました",
+    "logoutFailed": "ログアウトに失敗しました"
+  },
   "developer": {
     "title": "開発者",
     "description": "開発者向け詳細オプション",

@@ -211,6 +211,15 @@
     "telemetry": "匿名使用数据",
     "telemetryDesc": "允许提供匿名的基础使用数据，用于改进 OpenMe"
   },
+  "account": {
+    "title": "账号",
+    "logout": "退出登录",
+    "logoutDesc": "退出后需要重新扫码登录",
+    "logoutConfirmTitle": "确认退出登录",
+    "logoutConfirmDesc": "退出后将清除登录状态，需要重新扫码登录才能继续使用。",
+    "logoutSuccess": "已退出登录",
+    "logoutFailed": "退出登录失败"
+  },
   "developer": {
     "title": "开发者",
     "description": "开发者高级选项",
