@@ -6,8 +6,10 @@
  *   node_modules/@shadanai/openclaw/extensions/box-im/src/wx-auth.ts
  */
 import { randomUUID } from 'node:crypto';
+import { networkInterfaces } from 'node:os';
 import { syncBots } from './box-im-sync';
 import { ensureVncOriginsInConfig } from './openclaw-auth';
+import { getSetting } from './store';
 
 const WX_API = 'https://shadan.web.service.thinkgs.cn/jeecg-boot/sys';
 const DEFAULT_API_URL = 'https://im.shadanai.com/api';
@@ -250,6 +252,86 @@ export async function persistLoginResult(
       console.warn('[wx-auth] VNC origins inject failed (non-fatal):', err);
     }
   }
+
+  // 6. Register device with IM server so it can build the iframe URL:
+  //    https://<accessip>:18789/#token=<gatewayToken>
+  try {
+    await registerDeviceWithImServer(tokenKey, nodeId, userId);
+  } catch (err) {
+    console.warn('[wx-auth] Device registration failed (non-fatal):', err);
+  }
+}
+
+// ── Device registration ──────────────────────────────────────────
+
+const GATEWAY_PORT = 18789;
+
+/** Detect the first private LAN IPv4 address on this machine. */
+function detectLanIp(): string | undefined {
+  const nets = networkInterfaces();
+  for (const ifaces of Object.values(nets)) {
+    for (const iface of ifaces ?? []) {
+      if (
+        iface.family === 'IPv4' &&
+        !iface.internal &&
+        /^(192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/.test(iface.address)
+      ) {
+        return iface.address;
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Register this device with the IM server so it can build the iframe URL:
+ *   https://<accessip>:18789/#token=<gatewayToken>
+ */
+async function registerDeviceWithImServer(
+  tokenKey: string,
+  nodeId: string,
+  userId?: number,
+  apiUrl = DEFAULT_API_URL,
+): Promise<void> {
+  // Read the same token that Settings → Gateway displays (electron-store, clawx-<hex> format)
+  const gatewayToken = await getSetting('gatewayToken');
+  const cfg = await readOpenClawConfig();
+  const tlsEnabled = (cfg as any).gateway?.tls?.enabled === true;
+  const protocol = tlsEnabled ? 'https' : 'http';
+  const lanIp = detectLanIp();
+
+  // Detect WAN IP (best-effort, short timeout)
+  let wanIp: string | undefined;
+  try {
+    const r = await fetch('https://api.ipify.org?format=text', { signal: AbortSignal.timeout(3000) });
+    if (r.ok) wanIp = (await r.text()).trim();
+  } catch { /* ignore */ }
+
+  const openid = (cfg.channels?.[CHANNEL_ID] as any)?.ownerAuth?.openid ?? '';
+
+  const registration = {
+    openid,
+    nodeId,
+    nodeName: nodeId,
+    lanIp,
+    wanIp,
+    openclawPort: GATEWAY_PORT,
+    protocol,
+    gatewayToken,
+    ...(userId ? { userId } : {}),
+  };
+
+  const res = await fetch(`${apiUrl}/device/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Token-Key': tokenKey },
+    body: JSON.stringify(registration),
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Device register failed: ${res.status} ${text}`);
+  }
+  console.log(`[wx-auth] Device registered: lanIp=${lanIp}, port=${GATEWAY_PORT}, protocol=${protocol}`);
 }
 
 // ── OneAPI models ────────────────────────────────────────────────
