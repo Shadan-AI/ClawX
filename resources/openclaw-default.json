@@ -1,0 +1,153 @@
+{
+  "meta": {
+    "lastTouchedVersion": "0.1.45",
+    "lastTouchedAt": "2026-03-27T04:40:58.457Z"
+  },
+  "env": {
+    "vars": {}
+  },
+  "models": {
+    "providers": {
+      "shadan": {
+        "baseUrl": "http://192.168.10.252:3002/v1",
+        "apiKey": "sk-Q2VWSLflzZEX1W2ME5709fEe504a4e0583E0B3D7B9261f8d",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "glm-4",
+            "name": "GLM-4",
+            "reasoning": false,
+            "input": ["text"],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 128000,
+            "maxTokens": 8192
+          },
+          {
+            "id": "qwen-max",
+            "name": "Qwen Max",
+            "reasoning": false,
+            "input": ["text"],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 131072,
+            "maxTokens": 8192
+          },
+          {
+            "id": "glm-5",
+            "name": "GLM-5",
+            "reasoning": false,
+            "input": ["text"],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 202752,
+            "maxTokens": 16384
+          }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "shadan/glm-5"
+      },
+      "compaction": {
+        "mode": "safeguard"
+      }
+    },
+    "list": [
+      {
+        "id": "dev",
+        "default": true,
+        "identity": {
+          "name": "OpenMe",
+          "theme": "protocol droid",
+          "emoji": "🤖"
+        }
+      }
+    ]
+  },
+  "commands": {
+    "native": "auto",
+    "nativeSkills": "auto",
+    "restart": true,
+    "ownerDisplay": "raw"
+  },
+  "channels": {
+    "box-im": {
+      "loggedIn": true,
+      "deviceId": "453eff58-745d-41ae-b52e-dd964b0c453c",
+      "ownerAuth": {
+        "openid": "oFchIwSqiMlkEHdGH7q-_B6bi77c",
+        "userId": 322,
+        "accessToken": "",
+        "tokenKey": "sk-Q2VWSLflzZEX1W2ME5709fEe504a4e0583E0B3D7B9261f8d",
+        "nodeId": "453eff58-745d-41ae-b52e-dd964b0c453c"
+      },
+      "accounts": {
+        "main": {
+          "enabled": true,
+          "accessToken": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJhdWQiOiIzNTgiLCJleHAiOjE4MDYxMjI0NTcsImluZm8iOiJ7XCJ0ZXJtaW5hbFwiOjcsXCJ1c2VySWRcIjozNTh9In0.g07ty2mIyekrsSjm9zne_-cgbRN_OtOKlrx4CXW-_z8",
+          "userId": 358,
+          "botName": "OpenClaw 助手",
+          "headImage": "",
+          "model": ""
+        },
+        "bot-mn5mai9klaax": {
+          "enabled": true,
+          "accessToken": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJhdWQiOiIzODciLCJleHAiOjE4MDYxMjI0NTgsImluZm8iOiJ7XCJ0ZXJtaW5hbFwiOjcsXCJ1c2VySWRcIjozODd9In0.sDrSrWbpZYkrSNG7SAg752OdGFqyhraEHp92-sjezGo",
+          "userId": 387,
+          "botName": "交通地图",
+          "headImage": "",
+          "model": ""
+        }
+      },
+      "imPlatformUserId": 322
+    }
+  },
+  "gateway": {
+    "mode": "local",
+    "bind": "lan",
+    "controlUi": {
+      "allowedOrigins": [
+        "https://im.shadanai.com",
+        "https://shadanai.com",
+        "https://18789-322.vnc.shadanai.com",
+        "https://18789-322.vnc.im.shadanai.com"
+      ],
+      "dangerouslyAllowHostHeaderOriginFallback": true,
+      "dangerouslyDisableDeviceAuth": true
+    },
+    "auth": {
+      "mode": "token",
+      "token": "276f6078de595da4b3402eea9ed9c0e61dbf7612b8f705cc31d65d6104aaef75"
+    },
+    "tls": {
+      "enabled": true,
+      "autoGenerate": true,
+      "certPath": "~/.openclaw/certs/localhost.pem",
+      "keyPath": "~/.openclaw/certs/localhost-key.pem"
+    }
+  },
+  "plugins": {
+    "allow": ["box-im"],
+    "entries": {
+      "box-im": {
+        "enabled": true
+      }
+    }
+  }
+}

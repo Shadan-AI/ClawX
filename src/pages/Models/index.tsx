@@ -179,7 +179,7 @@ export function Models() {
         restartMarker,
       });
       try {
-        const entries = await hostApiFetch<UsageHistoryEntry[]>('/api/usage/recent-token-history');
+        const entries = await hostApiFetch<UsageHistoryEntry[]>('/api/usage/recent-token-history?limit=200');
         if (usageFetchGenerationRef.current !== generation) return;
 
         const normalized = Array.isArray(entries) ? entries : [];
@@ -396,14 +396,14 @@ export function Models() {
                       <div
                         key={`${entry.sessionId}-${entry.timestamp}`}
                         data-testid="token-usage-entry"
-                        className="rounded-2xl bg-transparent border border-black/10 dark:border-white/10 p-5 hover:bg-black/5 dark:hover:bg-white/5 transition-colors"
+                        className="rounded-xl bg-card/50 border border-border/60 p-5 hover:bg-accent/30 hover:border-border transition-all duration-200 backdrop-blur-sm shadow-sm hover:shadow"
                       >
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <p className="font-semibold text-[15px] text-foreground truncate">
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="min-w-0 flex-1">
+                            <p className="font-semibold text-[15px] text-foreground truncate leading-tight">
                               {entry.model || t('dashboard:recentTokenHistory.unknownModel')}
                             </p>
-                            <p className="text-[13px] text-muted-foreground truncate mt-0.5">
+                            <p className="text-[13px] text-muted-foreground/80 truncate mt-1">
                               {[formatUsageSource(entry.provider), formatUsageSource(entry.agentId), entry.sessionId].filter(Boolean).join(' • ')}
                             </p>
                           </div>
@@ -412,41 +412,55 @@ export function Models() {
                               {formatUsageTotal(entry)}
                             </p>
                             {entry.usageStatus === 'missing' && (
-                              <p className="text-[12px] text-muted-foreground mt-0.5">
+                              <p className="text-[12px] text-muted-foreground/70 mt-0.5">
                                 {t('dashboard:recentTokenHistory.noUsage')}
                               </p>
                             )}
                             {entry.usageStatus === 'error' && (
-                              <p className="text-[12px] text-red-500 dark:text-red-400 mt-0.5">
+                              <p className="text-[12px] text-destructive/90 mt-0.5">
                                 {t('dashboard:recentTokenHistory.usageParseError')}
                               </p>
                             )}
-                            <p className="text-[12px] text-muted-foreground mt-0.5">
+                            <p className="text-[12px] text-muted-foreground/70 mt-1">
                               {formatUsageTimestamp(entry.timestamp)}
                             </p>
                           </div>
                         </div>
-                        <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5 text-[12.5px] font-medium text-muted-foreground">
+                        <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2 text-[13px] font-medium">
                           {entry.usageStatus === 'available' || entry.usageStatus === undefined ? (
                             <>
-                              <span className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-sky-500"></div>{t('dashboard:recentTokenHistory.input', { value: formatTokenCount(entry.inputTokens) })}</span>
-                              <span className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-violet-500"></div>{t('dashboard:recentTokenHistory.output', { value: formatTokenCount(entry.outputTokens) })}</span>
+                              <span className="flex items-center gap-2">
+                                <div className="w-2.5 h-2.5 rounded-full bg-sky-500 shadow-sm"></div>
+                                <span className="text-foreground/80">{t('dashboard:recentTokenHistory.input', { value: formatTokenCount(entry.inputTokens) })}</span>
+                              </span>
+                              <span className="flex items-center gap-2">
+                                <div className="w-2.5 h-2.5 rounded-full bg-violet-500 shadow-sm"></div>
+                                <span className="text-foreground/80">{t('dashboard:recentTokenHistory.output', { value: formatTokenCount(entry.outputTokens) })}</span>
+                              </span>
                               {entry.cacheReadTokens > 0 && (
-                                <span className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-amber-500"></div>{t('dashboard:recentTokenHistory.cacheRead', { value: formatTokenCount(entry.cacheReadTokens) })}</span>
+                                <span className="flex items-center gap-2">
+                                  <div className="w-2.5 h-2.5 rounded-full bg-amber-500 shadow-sm"></div>
+                                  <span className="text-foreground/80">{t('dashboard:recentTokenHistory.cacheRead', { value: formatTokenCount(entry.cacheReadTokens) })}</span>
+                                </span>
                               )}
                               {entry.cacheWriteTokens > 0 && (
-                                <span className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-amber-500"></div>{t('dashboard:recentTokenHistory.cacheWrite', { value: formatTokenCount(entry.cacheWriteTokens) })}</span>
+                                <span className="flex items-center gap-2">
+                                  <div className="w-2.5 h-2.5 rounded-full bg-orange-500 shadow-sm"></div>
+                                  <span className="text-foreground/80">{t('dashboard:recentTokenHistory.cacheWrite', { value: formatTokenCount(entry.cacheWriteTokens) })}</span>
+                                </span>
                               )}
                             </>
                           ) : (
-                            <span className="text-[12px]">
+                            <span className="text-[13px] text-muted-foreground">
                               {entry.usageStatus === 'missing'
                                 ? t('dashboard:recentTokenHistory.noUsage')
                                 : t('dashboard:recentTokenHistory.usageParseError')}
                             </span>
                           )}
                           {typeof entry.costUsd === 'number' && Number.isFinite(entry.costUsd) && (
-                            <span className="flex items-center gap-1.5 ml-auto text-foreground/80 bg-black/5 dark:bg-white/5 px-2 py-0.5 rounded-md">{t('dashboard:recentTokenHistory.cost', { amount: entry.costUsd.toFixed(4) })}</span>
+                            <span className="flex items-center gap-2 ml-auto text-foreground font-semibold bg-primary/10 px-3 py-1 rounded-lg border border-primary/20">
+                              ${entry.costUsd.toFixed(4)}
+                            </span>
                           )}
                           {devModeUnlocked && entry.content && (
                             <Button

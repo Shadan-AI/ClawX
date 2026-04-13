@@ -18,6 +18,11 @@ import {
   ExternalLink,
   Trash2,
   Cpu,
+  Search,
+  X,
+  Edit2,
+  Check,
+  Loader2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useSettingsStore } from '@/stores/settings';
@@ -170,6 +175,9 @@ export function Sidebar() {
 
   const { t } = useTranslation(['common', 'chat']);
   const [sessionToDelete, setSessionToDelete] = useState<{ key: string; label: string } | null>(null);
+  const [sessionToRename, setSessionToRename] = useState<{ key: string; label: string } | null>(null);
+  const [renameInput, setRenameInput] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
   const [nowMs, setNowMs] = useState(INITIAL_NOW_MS);
 
   useEffect(() => {
@@ -187,6 +195,19 @@ export function Sidebar() {
     () => Object.fromEntries((agents ?? []).map((agent) => [agent.id, agent.name])),
     [agents],
   );
+
+  // Filter sessions based on search query
+  const filteredSessions = useMemo(() => {
+    if (!searchQuery.trim()) return sessions;
+    const query = searchQuery.toLowerCase();
+    return sessions.filter((s) => {
+      const label = getSessionLabel(s.key, s.displayName, s.label).toLowerCase();
+      const agentId = getAgentIdFromSessionKey(s.key);
+      const agentName = (agentNameById[agentId] || agentId).toLowerCase();
+      return label.includes(query) || agentName.includes(query);
+    });
+  }, [sessions, searchQuery, sessionLabels, agentNameById]);
+
   const sessionBuckets: Array<{ key: SessionBucketKey; label: string; sessions: typeof sessions }> = [
     { key: 'today', label: t('chat:historyBuckets.today'), sessions: [] },
     { key: 'yesterday', label: t('chat:historyBuckets.yesterday'), sessions: [] },
@@ -200,12 +221,29 @@ export function Sidebar() {
     (typeof sessionBuckets)[number]
   >;
 
-  for (const session of [...sessions].sort((a, b) =>
+  for (const session of [...filteredSessions].sort((a, b) =>
     (sessionLastActivity[b.key] ?? 0) - (sessionLastActivity[a.key] ?? 0)
   )) {
     const bucketKey = getSessionBucket(sessionLastActivity[session.key] ?? 0, nowMs);
     sessionBucketMap[bucketKey].sessions.push(session);
   }
+
+  const handleRenameSession = async (sessionKey: string, newLabel: string) => {
+    if (!newLabel.trim()) return;
+    try {
+      // Update session label via API
+      await hostApiFetch('/api/sessions/rename', {
+        method: 'POST',
+        body: JSON.stringify({ sessionKey, label: newLabel }),
+      });
+      // Update local state
+      useChatStore.getState().sessionLabels[sessionKey] = newLabel;
+      setSessionToRename(null);
+      setRenameInput('');
+    } catch (err) {
+      console.error('Failed to rename session:', err);
+    }
+  };
 
   const navItems = [
     { to: '/models', icon: <Cpu className="h-[18px] w-[18px]" strokeWidth={2} />, label: t('sidebar.models'), testId: 'sidebar-nav-models' },
@@ -279,63 +317,187 @@ export function Sidebar() {
 
       {/* Session list — below Settings, only when expanded */}
       {!sidebarCollapsed && sessions.length > 0 && (
-        <div className="mt-4 flex-1 overflow-y-auto overflow-x-hidden px-2 pb-2 space-y-0.5">
-          {sessionBuckets.map((bucket) => (
-            bucket.sessions.length > 0 ? (
-              <div key={bucket.key} className="pt-2">
-                <div className="px-2.5 pb-1 text-[11px] font-medium text-muted-foreground/60 tracking-tight">
-                  {bucket.label}
-                </div>
-                {bucket.sessions.map((s) => {
-                  const agentId = getAgentIdFromSessionKey(s.key);
-                  const agentName = agentNameById[agentId] || agentId;
-                  return (
-                    <div key={s.key} className="group relative flex items-center">
-                      <button
-                        onClick={() => { switchSession(s.key); navigate('/'); }}
-                        className={cn(
-                          'w-full text-left rounded-lg px-2.5 py-1.5 text-[13px] transition-colors pr-7',
-                          'hover:bg-black/5 dark:hover:bg-white/5',
-                          isOnChat && currentSessionKey === s.key
-                            ? 'bg-black/5 dark:bg-white/10 text-foreground font-medium'
-                            : 'text-foreground/75',
-                        )}
-                      >
-                        <div className="flex min-w-0 items-center gap-2">
-                          <span className="shrink-0 rounded-full bg-black/[0.04] px-2 py-0.5 text-[10px] font-medium text-foreground/70 dark:bg-white/[0.08]">
-                            {agentName}
-                          </span>
-                          <span className="truncate">{getSessionLabel(s.key, s.displayName, s.label)}</span>
-                        </div>
-                      </button>
-                      <button
-                        aria-label="Delete session"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setSessionToDelete({
-                            key: s.key,
-                            label: getSessionLabel(s.key, s.displayName, s.label),
-                          });
-                        }}
-                        className={cn(
-                          'absolute right-1 flex items-center justify-center rounded p-0.5 transition-opacity',
-                          'opacity-0 group-hover:opacity-100',
-                          'text-muted-foreground hover:text-destructive hover:bg-destructive/10',
-                        )}
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                  );
-                })}
+        <div className="mt-4 flex-1 flex flex-col overflow-hidden px-2 pb-2">
+          {/* Search box */}
+          <div className="relative mb-2">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+            <input
+              type="text"
+              placeholder={t('chat:searchSessions')}
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className={cn(
+                'w-full rounded-lg border border-border bg-background/50 pl-8 pr-8 py-1.5 text-[13px]',
+                'placeholder:text-muted-foreground/60',
+                'focus:outline-none focus:ring-1 focus:ring-ring',
+              )}
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery('')}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+
+          {/* Sessions list */}
+          <div className="flex-1 overflow-y-auto overflow-x-hidden space-y-0.5">
+            {filteredSessions.length === 0 ? (
+              <div className="px-2.5 py-4 text-center text-[13px] text-muted-foreground">
+                {t('chat:noSessionsFound')}
               </div>
-            ) : null
-          ))}
+            ) : (
+              sessionBuckets.map((bucket) => (
+                bucket.sessions.length > 0 ? (
+                  <div key={bucket.key} className="pt-2">
+                    <div className="px-2.5 pb-1 text-[11px] font-medium text-muted-foreground/60 tracking-tight">
+                      {bucket.label}
+                    </div>
+                    {bucket.sessions.map((s) => {
+                      const agentId = getAgentIdFromSessionKey(s.key);
+                      const agentName = agentNameById[agentId] || agentId;
+                      const isRenaming = sessionToRename?.key === s.key;
+                      
+                      return (
+                        <div key={s.key} className="group relative flex items-center">
+                          {isRenaming ? (
+                            <div className="w-full flex items-center gap-1 px-2.5 py-1.5">
+                              <input
+                                type="text"
+                                value={renameInput}
+                                onChange={(e) => setRenameInput(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    void handleRenameSession(s.key, renameInput);
+                                  } else if (e.key === 'Escape') {
+                                    setSessionToRename(null);
+                                    setRenameInput('');
+                                  }
+                                }}
+                                autoFocus
+                                className="flex-1 rounded border border-border bg-background px-2 py-0.5 text-[13px] focus:outline-none focus:ring-1 focus:ring-ring"
+                              />
+                              <button
+                                onClick={() => void handleRenameSession(s.key, renameInput)}
+                                className="p-0.5 text-green-600 hover:text-green-700"
+                              >
+                                <Check className="h-3.5 w-3.5" />
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setSessionToRename(null);
+                                  setRenameInput('');
+                                }}
+                                className="p-0.5 text-muted-foreground hover:text-foreground"
+                              >
+                                <X className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                          ) : (
+                            <>
+                              <button
+                                onClick={() => { switchSession(s.key); navigate('/'); }}
+                                className={cn(
+                                  'w-full text-left rounded-lg px-2.5 py-1.5 text-[13px] transition-colors pr-14',
+                                  'hover:bg-black/5 dark:hover:bg-white/5',
+                                  isOnChat && currentSessionKey === s.key
+                                    ? 'bg-black/5 dark:bg-white/10 text-foreground font-medium'
+                                    : 'text-foreground/75',
+                                )}
+                              >
+                                <div className="flex min-w-0 items-center gap-2">
+                                  <span className="shrink-0 rounded-full bg-black/[0.04] px-2 py-0.5 text-[10px] font-medium text-foreground/70 dark:bg-white/[0.08]">
+                                    {agentName}
+                                  </span>
+                                  <span className="truncate">{getSessionLabel(s.key, s.displayName, s.label)}</span>
+                                </div>
+                              </button>
+                              <div className="absolute right-1 flex items-center gap-0.5 opacity-0 group-hover:opacity-100">
+                                <button
+                                  aria-label="Rename session"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSessionToRename({
+                                      key: s.key,
+                                      label: getSessionLabel(s.key, s.displayName, s.label),
+                                    });
+                                    setRenameInput(getSessionLabel(s.key, s.displayName, s.label));
+                                  }}
+                                  className={cn(
+                                    'flex items-center justify-center rounded p-0.5 transition-colors',
+                                    'text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/10',
+                                  )}
+                                >
+                                  <Edit2 className="h-3.5 w-3.5" />
+                                </button>
+                                <button
+                                  aria-label="Delete session"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSessionToDelete({
+                                      key: s.key,
+                                      label: getSessionLabel(s.key, s.displayName, s.label),
+                                    });
+                                  }}
+                                  className={cn(
+                                    'flex items-center justify-center rounded p-0.5 transition-colors',
+                                    'text-muted-foreground hover:text-destructive hover:bg-destructive/10',
+                                  )}
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : null
+              ))
+            )}
+          </div>
         </div>
       )}
 
       {/* Footer */}
       <div className="p-2 mt-auto">
+        {/* Gateway Status */}
+        <div className={cn(
+          'flex items-center gap-2.5 rounded-lg px-2.5 py-2 mb-1 text-[13px]',
+          sidebarCollapsed ? 'justify-center px-0' : '',
+        )}>
+          {gatewayStatus.state === 'running' && (
+            <>
+              <div className="relative flex shrink-0 items-center justify-center">
+                <span className="h-2 w-2 rounded-full bg-green-500" />
+                <span className="absolute h-2 w-2 rounded-full bg-green-500 animate-ping opacity-60" />
+              </div>
+              {!sidebarCollapsed && <span className="text-green-600 dark:text-green-500 font-medium">{t('sidebar.gatewayRunning')}</span>}
+            </>
+          )}
+          {(gatewayStatus.state === 'starting' || gatewayStatus.state === 'reconnecting') && (
+            <>
+              <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-yellow-500" />
+              {!sidebarCollapsed && <span className="text-yellow-600 dark:text-yellow-400 font-medium">{t('sidebar.gatewayStarting')}</span>}
+            </>
+          )}
+          {gatewayStatus.state === 'error' && (
+            <>
+              <span className="h-2 w-2 rounded-full bg-red-500 shrink-0" />
+              {!sidebarCollapsed && <span className="text-red-600 dark:text-red-400 font-medium">{t('sidebar.gatewayError')}</span>}
+            </>
+          )}
+          {(gatewayStatus.state === 'stopped' || gatewayStatus.state === 'idle' || (!gatewayStatus.state)) && (
+            <>
+              <span className="h-2 w-2 rounded-full bg-muted-foreground/40 shrink-0" />
+              {!sidebarCollapsed && <span className="text-muted-foreground font-medium">{t('sidebar.gatewayStopped')}</span>}
+            </>
+          )}
+        </div>
+
         <NavLink
             to="/settings"
             data-testid="sidebar-nav-settings"

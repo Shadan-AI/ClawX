@@ -91,25 +91,30 @@ async function listRecentSessionFiles(): Promise<Array<{ filePath: string; sessi
 
 export async function getRecentTokenUsageHistory(limit?: number): Promise<TokenUsageHistoryEntry[]> {
   const files = await listRecentSessionFiles();
-  const results: TokenUsageHistoryEntry[] = [];
   const maxEntries = typeof limit === 'number' && Number.isFinite(limit)
     ? Math.max(Math.floor(limit), 0)
-    : Number.POSITIVE_INFINITY;
+    : 200; // default cap to avoid reading all files
 
-  for (const file of files) {
-    if (results.length >= maxEntries) break;
-    try {
-      const content = await readFile(file.filePath, 'utf8');
-      const entries = parseUsageEntriesFromJsonl(content, {
-        sessionId: file.sessionId,
-        agentId: file.agentId,
-      }, Number.isFinite(maxEntries) ? maxEntries - results.length : undefined);
-      results.push(...entries);
-    } catch (error) {
-      logger.debug(`Failed to read token usage transcript ${file.filePath}:`, error);
-    }
-  }
+  // Only read the most recent files needed
+  const filesToRead = files.slice(0, Math.min(files.length, maxEntries * 2));
 
+  // Read files concurrently
+  const allEntries = await Promise.all(
+    filesToRead.map(async (file) => {
+      try {
+        const content = await readFile(file.filePath, 'utf8');
+        return parseUsageEntriesFromJsonl(content, {
+          sessionId: file.sessionId,
+          agentId: file.agentId,
+        });
+      } catch (error) {
+        logger.debug(`Failed to read token usage transcript ${file.filePath}:`, error);
+        return [];
+      }
+    })
+  );
+
+  const results = allEntries.flat();
   results.sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
-  return Number.isFinite(maxEntries) ? results.slice(0, maxEntries) : results;
+  return results.slice(0, maxEntries);
 }

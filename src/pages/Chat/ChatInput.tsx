@@ -13,7 +13,6 @@ import { Textarea } from '@/components/ui/textarea';
 import { hostApiFetch } from '@/lib/host-api';
 import { invokeIpc } from '@/lib/api-client';
 import { cn } from '@/lib/utils';
-import { useGatewayStore } from '@/stores/gateway';
 import { useAgentsStore } from '@/stores/agents';
 import { useChatStore } from '@/stores/chat';
 import { useModelsStore } from '@/stores/models';
@@ -39,6 +38,8 @@ interface ChatInputProps {
   disabled?: boolean;
   sending?: boolean;
   isEmpty?: boolean;
+  isExpanded?: boolean;
+  onFocusChange?: (focused: boolean) => void;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -85,7 +86,7 @@ function readFileAsBase64(file: globalThis.File): Promise<string> {
 
 // ── Component ────────────────────────────────────────────────────
 
-export function ChatInput({ onSend, onStop, disabled = false, sending = false, isEmpty = false }: ChatInputProps) {
+export function ChatInput({ onSend, onStop, disabled = false, sending = false, isExpanded = true, onFocusChange }: ChatInputProps) {
   const { t } = useTranslation('chat');
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState<FileAttachment[]>([]);
@@ -94,7 +95,6 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const pickerRef = useRef<HTMLDivElement>(null);
   const isComposingRef = useRef(false);
-  const gatewayStatus = useGatewayStore((s) => s.status);
   const agents = useAgentsStore((s) => s.agents);
   const currentAgentId = useChatStore((s) => s.currentAgentId);
   const currentAgentName = useMemo(
@@ -121,10 +121,14 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
   // Auto-resize textarea
   useEffect(() => {
     if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto';
-      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 200)}px`;
+      if (isExpanded) {
+        textareaRef.current.style.height = 'auto';
+        textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 200)}px`;
+      } else {
+        textareaRef.current.style.height = '40px';
+      }
     }
-  }, [input]);
+  }, [input, isExpanded]);
 
   // Focus textarea on mount (avoids Windows focus loss after session delete + native dialog)
   useEffect(() => {
@@ -305,7 +309,6 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
   }, []);
 
   const allReady = attachments.length === 0 || attachments.every(a => a.status === 'ready');
-  const hasFailedAttachments = attachments.some((a) => a.status === 'error');
   const canSend = (input.trim() || attachments.length > 0) && allReady && !disabled && !sending;
   const canStop = sending && !disabled && !!onStop;
 
@@ -407,8 +410,8 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
   return (
     <div
       className={cn(
-        "p-4 pb-6 w-full mx-auto transition-all duration-300",
-        isEmpty ? "max-w-3xl" : "max-w-4xl"
+        "w-full mx-auto transition-all duration-300 ease-out bg-transparent",
+        isExpanded ? "max-w-3xl p-4 pb-4 scale-100" : "max-w-xl px-3 py-1.5 scale-95"
       )}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
@@ -417,7 +420,10 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
       <div className="w-full">
         {/* Attachment Previews */}
         {attachments.length > 0 && (
-          <div className="flex gap-2 mb-3 flex-wrap">
+          <div className={cn(
+            "flex gap-2 mb-3 flex-wrap transition-all duration-300",
+            !isExpanded && "opacity-0 h-0 mb-0 overflow-hidden"
+          )}>
             {attachments.map((att) => (
               <AttachmentPreview
                 key={att.id}
@@ -429,9 +435,16 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
         )}
 
         {/* Input Row */}
-        <div className={`relative bg-white dark:bg-card rounded-[28px] shadow-sm border p-1.5 transition-all ${dragOver ? 'border-primary ring-1 ring-primary' : 'border-black/10 dark:border-white/10'}`}>
+        <div className={cn(
+          "relative bg-white/90 dark:bg-card/90 backdrop-blur-sm rounded-[28px] shadow-sm border transition-all duration-300 ease-out",
+          dragOver ? 'border-primary ring-2 ring-primary/30' : 'border-black/8 dark:border-white/10 focus-within:border-black/20 dark:focus-within:border-white/20 focus-within:shadow-lg focus-within:shadow-black/5 dark:focus-within:shadow-white/5',
+          isExpanded ? "shadow-lg p-2.5" : "shadow-sm p-1"
+        )}>
           {selectedTarget && (
-            <div className="px-2.5 pt-2 pb-1">
+            <div className={cn(
+              "px-2.5 pt-2 pb-1 transition-all duration-300",
+              !isExpanded && "opacity-0 h-0 py-0 overflow-hidden"
+            )}>
               <button
                 type="button"
                 onClick={() => setTargetAgentId(null)}
@@ -510,6 +523,8 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                   isComposingRef.current = false;
                 }}
                 onPaste={handlePaste}
+                onFocus={() => onFocusChange?.(true)}
+                onBlur={() => onFocusChange?.(false)}
                 placeholder={disabled ? t('composer.gatewayDisconnectedPlaceholder') : ''}
                 disabled={disabled}
                 className="min-h-[40px] max-h-[200px] resize-none border-0 focus-visible:ring-0 focus-visible:ring-offset-0 shadow-none bg-transparent py-2.5 px-2 text-[15px] placeholder:text-muted-foreground/60 leading-relaxed"
@@ -585,33 +600,6 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
               )}
             </Button>
           </div>
-        </div>
-        <div className="mt-2.5 flex items-center justify-between gap-2 text-[11px] text-muted-foreground/60 px-4">
-          <div className="flex items-center gap-1.5">
-            <div className={cn("w-1.5 h-1.5 rounded-full", gatewayStatus.state === 'running' ? "bg-green-500/80" : "bg-red-500/80")} />
-            <span>
-              {t('composer.gatewayStatus', {
-                state: gatewayStatus.state === 'running'
-                  ? t('composer.gatewayConnected')
-                  : gatewayStatus.state,
-                port: gatewayStatus.port,
-                pid: gatewayStatus.pid ? `| pid: ${gatewayStatus.pid}` : '',
-              })}
-            </span>
-          </div>
-          {hasFailedAttachments && (
-            <Button
-              variant="link"
-              size="sm"
-              className="h-auto p-0 text-[11px]"
-              onClick={() => {
-                setAttachments((prev) => prev.filter((att) => att.status !== 'error'));
-                void pickFiles();
-              }}
-            >
-              {t('composer.retryFailedAttachments')}
-            </Button>
-          )}
         </div>
       </div>
     </div>

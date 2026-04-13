@@ -68,5 +68,7 @@
         "withinTwoWeeks": "2週間以内",
         "withinMonth": "1か月以内",
         "older": "1か月より前"
-    }
+    },
+    "searchSessions": "セッションを検索...",
+    "noSessionsFound": "セッションが見つかりません"
 }

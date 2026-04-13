@@ -8,6 +8,7 @@ import type { ErrorInfo, ReactNode } from 'react';
 import { Toaster } from 'sonner';
 import i18n from './i18n';
 import { MainLayout } from './components/layout/MainLayout';
+import { ContextMenu } from './components/common/ContextMenu';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { Models } from './pages/Models';
 import { Chat } from './pages/Chat';
@@ -250,6 +251,9 @@ function App() {
           closeButton
           style={{ zIndex: 99999 }}
         />
+
+        {/* Global context menu */}
+        <ContextMenu />
       </TooltipProvider>
     </ErrorBoundary>
   );

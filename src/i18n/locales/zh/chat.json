@@ -68,5 +68,7 @@
         "withinTwoWeeks": "两周内",
         "withinMonth": "一个月内",
         "older": "一个月之前"
-    }
+    },
+    "searchSessions": "搜索会话...",
+    "noSessionsFound": "未找到会话"
 }

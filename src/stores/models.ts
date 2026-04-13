@@ -153,7 +153,10 @@ export const useModelsStore = create<ModelState>((set, get) => ({
       const { useChatStore } = await import('./chat');
       const sessionKey = useChatStore.getState().currentSessionKey;
       if (sessionKey) {
+        // Save to localStorage immediately
         get().setSessionModel(sessionKey, modelId);
+        
+        // Update gateway session
         await invokeIpc('gateway:rpc', 'sessions.patch', {
           key: sessionKey,
           model: `shadan/${modelId}`,
