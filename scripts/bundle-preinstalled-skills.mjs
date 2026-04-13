@@ -82,6 +82,9 @@ async function extractArchive(archiveFileName, cwd) {
 
 async function fetchSparseRepo(repo, ref, paths, checkoutDir) {
   const remote = `https://github.com/${repo}.git`;
+  // Clean up any leftover directory from a previous failed run to avoid
+  // "remote origin already exists" errors on git remote add.
+  rmSync(checkoutDir, { recursive: true, force: true });
   mkdirSync(checkoutDir, { recursive: true });
   const gitCheckoutDir = toGitPath(checkoutDir);
   const archiveFileName = '.subset.tar';
