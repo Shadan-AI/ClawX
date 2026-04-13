@@ -44,6 +44,33 @@ const GATEWAY_FETCH_PRELOAD_SOURCE = `'use strict';
       var cp = require('child_process');
       if (!cp.__clawxPatched) {
         cp.__clawxPatched = true;
+
+        // PowerShell UTF-8 encoding fix: on Chinese Windows, PowerShell outputs
+        // GBK-encoded text by default, but OpenClaw decodes with UTF-8, causing
+        // garbled Chinese characters in file cards. Inject UTF-8 encoding prefix
+        // into PowerShell commands so output is UTF-8.
+        var PS_NAMES = ['powershell', 'powershell.exe', 'pwsh', 'pwsh.exe'];
+        var PS_UTF8_PREFIX = '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8; ';
+        var PS_CMD_FLAGS = ['-command', '-c'];
+
+        function isPowerShell(cmd) {
+          if (!cmd || typeof cmd !== 'string') return false;
+          var base = cmd.replace(/\\\\/g, '/').split('/').pop().toLowerCase();
+          return PS_NAMES.indexOf(base) !== -1;
+        }
+
+        function injectPsUtf8(spawnArgs) {
+          for (var i = 0; i < spawnArgs.length; i++) {
+            if (PS_CMD_FLAGS.indexOf(spawnArgs[i].toLowerCase()) !== -1 && i + 1 < spawnArgs.length) {
+              var cmdVal = spawnArgs[i + 1];
+              if (typeof cmdVal === 'string' && cmdVal.indexOf('[Console]::OutputEncoding') === -1) {
+                spawnArgs[i + 1] = PS_UTF8_PREFIX + cmdVal;
+              }
+              break;
+            }
+          }
+        }
+
         ['spawn', 'exec', 'execFile', 'fork', 'spawnSync', 'execSync', 'execFileSync'].forEach(function(method) {
           var original = cp[method];
           if (typeof original !== 'function') return;
@@ -65,6 +92,13 @@ const GATEWAY_FETCH_PRELOAD_SOURCE = `'use strict';
                 args.splice(args.length - 1, 0, opts);
               } else {
                 args.push(opts);
+              }
+            }
+            // Inject UTF-8 encoding for PowerShell spawn/spawnSync commands
+            if (method === 'spawn' || method === 'spawnSync') {
+              var cmd = args[0];
+              if (isPowerShell(cmd) && Array.isArray(args[1])) {
+                injectPsUtf8(args[1]);
               }
             }
             return original.apply(this, args);
@@ -117,22 +151,18 @@ export async function launchGatewayProcess(options: {
   const lastSpawnSummary = `mode=${mode}, entry="${entryScript}", args="${options.sanitizeSpawnArgs(gatewayArgs).join(' ')}", cwd="${openclawDir}"`;
 
   const runtimeEnv = { ...forkEnv };
-  // Only apply the fetch/child_process preload in dev mode.
-  // In packaged builds Electron's UtilityProcess rejects NODE_OPTIONS
-  // with --require, logging "Most NODE_OPTIONs are not supported in
-  // packaged apps" and the preload never loads.
-  if (!app.isPackaged) {
-    try {
-      const preloadPath = ensureGatewayFetchPreload();
-      if (existsSync(preloadPath)) {
-        runtimeEnv.NODE_OPTIONS = appendNodeRequireToNodeOptions(
-          runtimeEnv.NODE_OPTIONS,
-          preloadPath,
-        );
-      }
-    } catch (err) {
-      logger.warn('Failed to set up OpenRouter headers preload:', err);
+  // Load preload in all environments (not just dev) — it contains the
+  // PowerShell UTF-8 encoding fix needed for correct Chinese text output.
+  try {
+    const preloadPath = ensureGatewayFetchPreload();
+    if (existsSync(preloadPath)) {
+      runtimeEnv.NODE_OPTIONS = appendNodeRequireToNodeOptions(
+        runtimeEnv.NODE_OPTIONS,
+        preloadPath,
+      );
     }
+  } catch (err) {
+    logger.warn('Failed to set up Gateway preload:', err);
   }
 
   return await new Promise<{ child: Electron.UtilityProcess; lastSpawnSummary: string }>((resolve, reject) => {

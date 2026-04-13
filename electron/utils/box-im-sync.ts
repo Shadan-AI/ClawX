@@ -7,6 +7,37 @@
  */
 import { readOpenClawConfig, writeOpenClawConfig } from './channel-config';
 import { logger } from './logger';
+import { mkdir, writeFile, readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
+
+/**
+ * Update IDENTITY.md for a bot with its nickName.
+ * This ensures each digital worker has a proper identity file in their workspace.
+ */
+async function updateAgentIdentityMd(agentId: string, nickName: string, workspace?: string): Promise<void> {
+  try {
+    const wsDir = workspace || join(homedir(), `.openclaw/workspace-${agentId}`);
+    await mkdir(wsDir, { recursive: true });
+    const identityPath = join(wsDir, 'IDENTITY.md');
+
+    // Read existing content if any, otherwise use template
+    let content: string;
+    try {
+      content = await readFile(identityPath, 'utf-8');
+      // Replace the Name line
+      content = content.replace(/^- \*\*Name:\*\*.+$/m, `- **Name:** ${nickName}`);
+    } catch {
+      // File doesn't exist, create from template
+      content = `# IDENTITY.md - Who Am I?\n\n- **Name:** ${nickName}\n- **Creature:** AI digital worker\n- **Vibe:** Professional, helpful, focused on tasks.\n`;
+    }
+
+    await writeFile(identityPath, content, 'utf-8');
+    logger.info(`[box-im] Updated IDENTITY.md for agent ${agentId} with name: ${nickName}`);
+  } catch (err) {
+    logger.warn(`[box-im] Failed to update IDENTITY.md for agent ${agentId}:`, err);
+  }
+}
 
 // ── Constants ────────────────────────────────────────────────────
 
@@ -298,6 +329,15 @@ export async function syncBots(): Promise<BoxImSyncResult> {
     }
 
     await saveBoxImAccounts(newAccounts);
+
+    // Update IDENTITY.md for each bot with their nickName
+    for (const bot of bots) {
+      const agentId = bot.openclawAgentId || bot.userName || `bot-${bot.id}`;
+      const acct = newAccounts[agentId];
+      const nickName = bot.nickName || agentId;
+      const workspace = acct ? `${process.env.HOME || process.env.USERPROFILE || homedir()}/.openclaw/workspace-${agentId}` : undefined;
+      await updateAgentIdentityMd(agentId, nickName, workspace);
+    }
 
     try {
       const friendResp = await fetch(`${apiUrl}/friend/list`, {

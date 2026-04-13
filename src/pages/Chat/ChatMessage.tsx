@@ -305,10 +305,31 @@ function ToolStatusBar({
 function AssistantHoverBar({ text, timestamp }: { text: string; timestamp?: number }) {
   const [copied, setCopied] = useState(false);
 
-  const copyContent = useCallback(() => {
-    navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const copyContent = useCallback(async () => {
+    try {
+      // Ensure newlines are preserved when copying
+      // Use ClipboardItem API for better cross-platform support
+      if (navigator.clipboard && window.ClipboardItem) {
+        const blob = new Blob([text], { type: 'text/plain' });
+        const item = new ClipboardItem({ 'text/plain': blob });
+        await navigator.clipboard.write([item]);
+      } else {
+        // Fallback to writeText
+        await navigator.clipboard.writeText(text);
+      }
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy text:', err);
+      // Fallback: try simple writeText
+      try {
+        await navigator.clipboard.writeText(text);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      } catch {
+        // Silent fail
+      }
+    }
   }, [text]);
 
   return (
