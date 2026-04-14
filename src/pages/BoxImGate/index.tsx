@@ -8,6 +8,8 @@ import { useTranslation } from 'react-i18next';
 import { motion, AnimatePresence } from 'framer-motion';
 import { RefreshCw, Loader2, CheckCircle2, XCircle } from 'lucide-react';
 import { TitleBar } from '@/components/layout/TitleBar';
+import { BrandLogo } from '@/components/common/BrandLogo';
+import logoSrc from '@/assets/logo-128.png';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useSettingsStore } from '@/stores/settings';
@@ -461,6 +463,10 @@ export function BoxImGate() {
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background text-foreground">
       <TitleBar />
+      {/* 品牌 Logo 在标题栏下方左上角 */}
+      <div className="absolute top-10 left-4 z-10 py-2">
+        <BrandLogo logoSrc={logoSrc} className="text-foreground" />
+      </div>
       <div className="flex-1 overflow-auto">
         <div className="mx-auto max-w-md p-8 pt-16">
           {status !== 'need_register' && (
