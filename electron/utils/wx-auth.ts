@@ -236,20 +236,17 @@ export async function registerNewUser(
   const loginUser = loginData?.data;
   if (!loginUser?.accessToken || !loginUser?.tokenKey) throw new Error('注册成功但登录失败，请重新扫码登录');
 
-  // 4. Bind openid to the newly registered account via PUT /user/update
-  const updateRes = await fetch(`${apiUrl}/user/update`, {
+  // 4. Bind openid via PUT /user/update2 (no auth required, matches im-web Login.vue flow)
+  const updateRes = await fetch(`${apiUrl}/user/update2`, {
     method: 'PUT',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': loginUser.accessToken,
-    },
-    body: JSON.stringify({ id: loginUser.id, openid, nickName, headImage: avatar }),
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: loginUser.id, userName, phone, openid, nickName }),
     signal: AbortSignal.timeout(10_000),
   });
+  const updateText = await updateRes.text().catch(() => '');
+  console.log(`[registerNewUser] update2 status=${updateRes.status} body=${updateText}`);
   if (!updateRes.ok) {
-    console.warn(`[registerNewUser] bind openid failed: ${updateRes.status} (non-fatal, login still works)`);
-  } else {
-    console.log('[registerNewUser] openid bound successfully');
+    console.warn(`[registerNewUser] update2 failed: ${updateRes.status} ${updateText}`);
   }
   return {
     userId: loginUser.id ?? 0,
