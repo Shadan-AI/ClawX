@@ -29,6 +29,7 @@ export function UpdateSettings() {
     isInitialized,
     autoInstallCountdown,
     pendingAutoDownloadConfirm,
+    pendingInstallConfirm,
     init,
     checkForUpdates,
     downloadUpdate,
@@ -36,6 +37,7 @@ export function UpdateSettings() {
     cancelAutoInstall,
     clearError,
     clearPendingAutoDownloadConfirm,
+    clearPendingInstallConfirm,
   } = useUpdateStore();
 
   // Initialize on mount
@@ -164,6 +166,20 @@ export function UpdateSettings() {
           void downloadUpdate();
         }}
         onCancel={clearPendingAutoDownloadConfirm}
+      />
+
+      {/* Install confirmation dialog after download completes */}
+      <ConfirmDialog
+        open={pendingInstallConfirm}
+        title={t('updates.installConfirmTitle', { version: updateInfo?.version ?? '' })}
+        message={t('updates.installConfirmMessage', { version: updateInfo?.version ?? '' })}
+        confirmLabel={t('updates.action.install')}
+        cancelLabel={t('common:actions.later')}
+        onConfirm={() => {
+          clearPendingInstallConfirm();
+          installUpdate();
+        }}
+        onCancel={clearPendingInstallConfirm}
       />
       {/* Current Version */}
       <div className="flex items-center justify-between">

@@ -35,7 +35,8 @@
         "restart": "Restart",
         "show": "Show",
         "hide": "Hide",
-        "clear": "Clear"
+        "clear": "Clear",
+        "later": "Later"
     },
     "status": {
         "running": "Running",

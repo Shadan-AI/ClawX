@@ -184,7 +184,9 @@
     "errorDetails": "Error Details:",
     "help": "When auto-update is enabled, updates are downloaded and installed automatically.",
     "autoDownloadConfirmTitle": "New version v{{version}} available",
-    "autoDownloadConfirmMessage": "Version v{{version}} is available. Download it now?"
+    "autoDownloadConfirmMessage": "Version v{{version}} is available. Download it now?",
+    "installConfirmTitle": "v{{version}} ready to install",
+    "installConfirmMessage": "Version v{{version}} has been downloaded. Install and restart now?"
   },
   "advanced": {
     "title": "Advanced",

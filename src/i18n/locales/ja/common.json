@@ -35,7 +35,8 @@
         "restart": "再起動",
         "show": "表示",
         "hide": "非表示",
-        "clear": "クリア"
+        "clear": "クリア",
+        "later": "後で"
     },
     "status": {
         "running": "実行中",
