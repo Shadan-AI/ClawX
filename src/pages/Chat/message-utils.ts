@@ -22,6 +22,8 @@ function cleanUserText(text: string): string {
     .replace(/^Conversation info\s*\([^)]*\):\s*\{[\s\S]*?\}\s*/i, '')
     // Remove Gateway timestamp prefix like [Fri 2026-02-13 22:39 GMT+8]
     .replace(/^\[(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\s+[^\]]+\]\s*/i, '')
+    // Clean up excessive newlines: replace 3+ consecutive newlines with just 2
+    .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
 
@@ -49,7 +51,9 @@ export function extractText(message: RawMessage | unknown): string {
         }
       }
     }
-    const combined = parts.join('\n\n');
+    // For user messages, use single newline; for assistant messages, use double newline for paragraph breaks
+    const separator = isUser ? '\n' : '\n\n';
+    const combined = parts.join(separator);
     result = combined.trim().length > 0 ? combined : '';
   } else if (typeof msg.text === 'string') {
     // Fallback: try .text field

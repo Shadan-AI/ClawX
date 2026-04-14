@@ -259,9 +259,8 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
               handleGatewayNotification(payload);
             },
           ));
-          unsubscribers.push(subscribeHostEvent('gateway:chat-message', (payload) => {
-            handleGatewayChatMessage(payload);
-          }));
+          // Note: gateway:chat-message is redundant with gateway:notification
+          // and has been removed to prevent duplicate message processing
           unsubscribers.push(subscribeHostEvent<{ channelId?: string; status?: string }>(
             'gateway:channel-status',
             (update) => {

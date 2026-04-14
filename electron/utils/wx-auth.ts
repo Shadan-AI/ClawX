@@ -10,6 +10,7 @@ import { networkInterfaces } from 'node:os';
 import { syncBots } from './box-im-sync';
 import { ensureVncOriginsInConfig } from './openclaw-auth';
 import { getSetting } from './store';
+import { storeApiKey } from './secure-storage';
 
 const WX_API = 'https://shadan.web.service.thinkgs.cn/jeecg-boot/sys';
 const DEFAULT_API_URL = 'https://im.shadanai.com/api';
@@ -237,14 +238,22 @@ export async function persistLoginResult(
 
   await writeOpenClawConfig(cfg);
 
-  // 4. Sync bot accounts (best-effort)
+  // 4. Store API key to secure storage so Gateway can load it
+  try {
+    await storeApiKey('shadan', tokenKey);
+    console.log('[wx-auth] Stored shadan API key to secure storage');
+  } catch (err) {
+    console.warn('[wx-auth] Failed to store API key (non-fatal):', err);
+  }
+
+  // 5. Sync bot accounts (best-effort)
   try {
     await syncBots();
   } catch (err) {
     console.warn('[wx-auth] Bot sync failed (non-fatal):', err);
   }
 
-  // 5. Inject user-specific VNC origins into gateway.controlUi.allowedOrigins (best-effort)
+  // 6. Inject user-specific VNC origins into gateway.controlUi.allowedOrigins (best-effort)
   if (userId && userId > 0) {
     try {
       await ensureVncOriginsInConfig(userId, 18789);

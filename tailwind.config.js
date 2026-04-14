@@ -63,6 +63,28 @@ module.exports = {
           from: { height: 'var(--radix-accordion-content-height)' },
           to: { height: '0' },
         },
+        'shake': {
+          '0%, 100%': { transform: 'translate(0, 0)' },
+          '10%': { transform: 'translate(calc(-1.5px * var(--shake-intensity, 1)), calc(-1px * var(--shake-intensity, 1)))' },
+          '20%': { transform: 'translate(calc(1.5px * var(--shake-intensity, 1)), calc(1px * var(--shake-intensity, 1)))' },
+          '30%': { transform: 'translate(calc(-1.5px * var(--shake-intensity, 1)), calc(1px * var(--shake-intensity, 1)))' },
+          '40%': { transform: 'translate(calc(1.5px * var(--shake-intensity, 1)), calc(-1px * var(--shake-intensity, 1)))' },
+          '50%': { transform: 'translate(calc(-1px * var(--shake-intensity, 1)), calc(1.5px * var(--shake-intensity, 1)))' },
+          '60%': { transform: 'translate(calc(1px * var(--shake-intensity, 1)), calc(-1.5px * var(--shake-intensity, 1)))' },
+          '70%': { transform: 'translate(calc(-1px * var(--shake-intensity, 1)), calc(-1px * var(--shake-intensity, 1)))' },
+          '80%': { transform: 'translate(calc(1px * var(--shake-intensity, 1)), calc(1px * var(--shake-intensity, 1)))' },
+          '90%': { transform: 'translate(calc(-0.5px * var(--shake-intensity, 1)), 0)' },
+        },
+        'particle': {
+          '0%': { 
+            transform: 'translateY(0) scale(1)',
+            opacity: '1',
+          },
+          '100%': { 
+            transform: 'translateY(-40px) scale(0)',
+            opacity: '0',
+          },
+        },
       },
       animation: {
         'accordion-down': 'accordion-down 0.2s ease-out',

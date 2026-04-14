@@ -6,6 +6,7 @@
  */
 import { useEffect, useState, useCallback, useLayoutEffect } from 'react';
 import { AlertCircle, Loader2, Sparkles } from 'lucide-react';
+import { AnimatePresence, motion } from 'framer-motion';
 import { useChatStore, type RawMessage } from '@/stores/chat';
 import { useGatewayStore } from '@/stores/gateway';
 import { useAgentsStore } from '@/stores/agents';
@@ -48,9 +49,9 @@ export function Chat() {
   const [isInputFocused, setIsInputFocused] = useState(false);
   const isInputExpanded = isAtBottom || isInputFocused;
 
-  // Debug log
+  // Debug: 监控状态变化
   useEffect(() => {
-    console.log('[Chat] Input state:', { isAtBottom, isInputFocused, isInputExpanded });
+    console.log('[Chat] State:', { isAtBottom, isInputFocused, isInputExpanded });
   }, [isAtBottom, isInputFocused, isInputExpanded]);
 
   const scrollToBottom = useCallback(() => {
@@ -59,36 +60,61 @@ export function Chat() {
     }
   }, [scrollRef]);
 
-  useEffect(() => {
-    if (isInputFocused) {
-      scrollToBottom();
-    }
-  }, [isInputFocused, scrollToBottom]);
-
-  const handleScroll = useCallback(() => {
+  // 检查是否在底部
+  const checkIsAtBottom = useCallback(() => {
     if (scrollRef.current) {
       const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
-      const isBottom = scrollHeight - scrollTop - clientHeight < 100;
+      // 如果内容高度小于等于容器高度，说明没有滚动条，视为在底部
+      if (scrollHeight <= clientHeight) {
+        console.log('[Chat] No scroll needed, setting isAtBottom=true');
+        setIsAtBottom(true);
+        return true;
+      }
+      const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+      const isBottom = distanceFromBottom < 50;
+      console.log('[Chat] Scroll check:', { scrollTop, scrollHeight, clientHeight, distanceFromBottom, isBottom });
       setIsAtBottom(isBottom);
-      console.log('[Chat] Scroll:', { scrollTop, scrollHeight, clientHeight, isBottom });
+      return isBottom;
     }
+    return true;
   }, [scrollRef]);
+
+  // 当输入框获得焦点时，不自动滚动，只更新展开状态
+  // 用户可能正在查看历史消息，不应该强制滚动到底部
+
+  // 监听滚动事件
+  const handleScroll = useCallback(() => {
+    checkIsAtBottom();
+  }, [checkIsAtBottom]);
 
   useEffect(() => {
     const scrollElement = scrollRef.current;
     if (scrollElement) {
       scrollElement.addEventListener('scroll', handleScroll);
+      // 初始化时检查一次
+      checkIsAtBottom();
       return () => scrollElement.removeEventListener('scroll', handleScroll);
     }
-  }, [handleScroll, scrollRef]);
+  }, [handleScroll, scrollRef, checkIsAtBottom]);
 
+  // 会话切换或消息变化时，重新检查滚动位置
   useLayoutEffect(() => {
-    if (scrollRef.current) {
-      const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
-      const isBottom = scrollHeight - scrollTop - clientHeight < 100;
-      setIsAtBottom(isBottom);
-    }
-  }, [currentSessionKey, scrollRef]);
+    checkIsAtBottom();
+  }, [currentSessionKey, messages.length, checkIsAtBottom]);
+
+  // 监听内容区域的高度变化（例如展开/收起 thinking 卡片）
+  useEffect(() => {
+    const contentElement = contentRef.current;
+    if (!contentElement) return;
+
+    const resizeObserver = new ResizeObserver(() => {
+      // 内容高度变化时，重新检查是否在底部
+      checkIsAtBottom();
+    });
+
+    resizeObserver.observe(contentElement);
+    return () => resizeObserver.disconnect();
+  }, [contentRef, checkIsAtBottom]);
 
   // Load data when gateway is running.
   // When the store already holds messages for this session (i.e. the user
@@ -107,6 +133,10 @@ export function Chat() {
     void fetchAgents();
   }, [fetchAgents]);
 
+  // Fetch models on mount
+  useEffect(() => {
+    void useModelsStore.getState().fetchModels();
+  }, []);
 
   // Sync model display when session changes (agent switch / session switch)
   useEffect(() => {
@@ -141,57 +171,103 @@ export function Chat() {
   const shouldRenderStreaming = sending && (hasStreamText || hasStreamThinking || hasStreamTools || hasStreamImages || hasStreamToolStatus);
   const hasAnyStreamContent = hasStreamText || hasStreamThinking || hasStreamTools || hasStreamImages || hasStreamToolStatus;
 
-  const isEmpty = messages.length === 0 && !sending;
+  const isEmpty = messages.length === 0 && !sending && !loading;
+  const isLoading = loading && messages.length === 0 && !sending;
+
+  // 点击消息区域时，让输入框失去焦点（收起输入框）
+  const handleMessagesAreaClick = useCallback(() => {
+    if (isInputFocused) {
+      setIsInputFocused(false);
+    }
+  }, [isInputFocused]);
 
   return (
     <div className={cn("relative flex flex-col -m-6 transition-colors duration-500 dark:bg-background")} style={{ height: 'calc(100vh - 2.5rem)' }}>
       {/* Messages Area */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-4 pb-40">
-        <div ref={contentRef} className="max-w-4xl mx-auto space-y-5">
-          {isEmpty ? (
-            <WelcomeScreen />
-          ) : (
-            <>
-              {messages.map((msg, idx) => (
-                <ChatMessage
-                  key={msg.id || `msg-${idx}`}
-                  message={msg}
-                  showThinking={showThinking}
-                />
-              ))}
+      <div 
+        ref={scrollRef} 
+        className="flex-1 overflow-y-auto px-4 py-4 pb-40"
+        onClick={handleMessagesAreaClick}
+      >
+        <div ref={contentRef} className="max-w-4xl mx-auto space-y-5 relative">
+          <AnimatePresence mode="wait">
+            {isLoading ? (
+              <motion.div
+                key="loading"
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                transition={{ duration: 0.2 }}
+                className="flex items-center justify-center min-h-[60vh]"
+              >
+                <div className="flex flex-col items-center gap-4">
+                  <div className="relative">
+                    <div className="w-12 h-12 rounded-full border-4 border-primary/20"></div>
+                    <div className="absolute inset-0 w-12 h-12 rounded-full border-4 border-primary border-t-transparent animate-spin"></div>
+                  </div>
+                  <p className="text-sm text-muted-foreground animate-pulse">加载消息中...</p>
+                </div>
+              </motion.div>
+            ) : isEmpty ? (
+              <motion.div
+                key="welcome"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+              >
+                <WelcomeScreen />
+              </motion.div>
+            ) : (
+              <motion.div
+                key={currentSessionKey}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+                className="space-y-5"
+              >
+                {messages.map((msg, idx) => (
+                  <ChatMessage
+                    key={msg.id || `msg-${idx}`}
+                    message={msg}
+                    showThinking={showThinking}
+                  />
+                ))}
 
-              {/* Streaming message */}
-              {shouldRenderStreaming && (
-                <ChatMessage
-                  message={(streamMsg
-                    ? {
-                        ...(streamMsg as Record<string, unknown>),
-                        role: (typeof streamMsg.role === 'string' ? streamMsg.role : 'assistant') as RawMessage['role'],
-                        content: streamMsg.content ?? streamText,
-                        timestamp: streamMsg.timestamp ?? streamingTimestamp,
-                      }
-                    : {
-                        role: 'assistant',
-                        content: streamText,
-                        timestamp: streamingTimestamp,
-                      }) as RawMessage}
-                  showThinking={showThinking}
-                  isStreaming
-                  streamingTools={streamingTools}
-                />
-              )}
+                {/* Streaming message */}
+                {shouldRenderStreaming && (
+                  <ChatMessage
+                    message={(streamMsg
+                      ? {
+                          ...(streamMsg as Record<string, unknown>),
+                          role: (typeof streamMsg.role === 'string' ? streamMsg.role : 'assistant') as RawMessage['role'],
+                          content: streamMsg.content ?? streamText,
+                          timestamp: streamMsg.timestamp ?? streamingTimestamp,
+                        }
+                      : {
+                          role: 'assistant',
+                          content: streamText,
+                          timestamp: streamingTimestamp,
+                        }) as RawMessage}
+                    showThinking={showThinking}
+                    isStreaming
+                    streamingTools={streamingTools}
+                  />
+                )}
 
-              {/* Activity indicator: waiting for next AI turn after tool execution */}
-              {sending && pendingFinal && !shouldRenderStreaming && (
-                <ActivityIndicator phase="tool_processing" />
-              )}
+                {/* Activity indicator: waiting for next AI turn after tool execution */}
+                {sending && pendingFinal && !shouldRenderStreaming && (
+                  <ActivityIndicator phase="tool_processing" />
+                )}
 
-              {/* Typing indicator when sending but no stream content yet */}
-              {sending && !pendingFinal && !hasAnyStreamContent && (
-                <TypingIndicator />
-              )}
-            </>
-          )}
+                {/* Typing indicator when sending but no stream content yet */}
+                {sending && !pendingFinal && !hasAnyStreamContent && (
+                  <TypingIndicator />
+                )}
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       </div>
 

@@ -94,7 +94,9 @@ export async function handleFileRoutes(
         await fsP.copyFile(filePath, stagedPath);
         const s = await fsP.stat(stagedPath);
         const mimeType = getMimeType(ext);
-        const fileName = filePath.split(/[\\/]/).pop() || 'file';
+        // Extract file name using path.basename for proper encoding handling
+        const { basename } = await import('node:path');
+        const fileName = basename(filePath);
         const preview = mimeType.startsWith('image/')
           ? await generateImagePreview(stagedPath, mimeType)
           : null;

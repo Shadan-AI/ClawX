@@ -204,10 +204,10 @@ function SkillDetailDialog({ skill, isOpen, onClose, onToggle, onUninstall, onOp
               {skill.name}
             </h2>
             <div className="flex items-center justify-center gap-2.5 mb-6 opacity-80">
-              <Badge variant="secondary" className="font-mono text-[11px] font-medium px-3 py-0.5 rounded-full bg-black/[0.04] dark:bg-white/[0.08] hover:bg-black/[0.08] dark:hover:bg-white/[0.12] border-0 shadow-none text-foreground/70 transition-colors">
+              <Badge variant="secondary" className="text-[11px] font-medium px-3 py-0.5 rounded-full bg-black/[0.04] dark:bg-white/[0.08] hover:bg-black/[0.08] dark:hover:bg-white/[0.12] border-0 shadow-none text-foreground/70 transition-colors whitespace-nowrap">
                 v{skill.version}
               </Badge>
-              <Badge variant="secondary" className="font-mono text-[11px] font-medium px-3 py-0.5 rounded-full bg-black/[0.04] dark:bg-white/[0.08] hover:bg-black/[0.08] dark:hover:bg-white/[0.12] border-0 shadow-none text-foreground/70 transition-colors">
+              <Badge variant="secondary" className="text-[11px] font-medium px-3 py-0.5 rounded-full bg-black/[0.04] dark:bg-white/[0.08] hover:bg-black/[0.08] dark:hover:bg-white/[0.12] border-0 shadow-none text-foreground/70 transition-colors whitespace-nowrap">
                 {skill.isCore ? t('detail.coreSystem') : skill.isBundled ? t('detail.bundled') : t('detail.userInstalled')}
               </Badge>
             </div>
@@ -815,8 +815,8 @@ export function Skills() {
                     onClick={() => setSelectedSkill(skill)}
                   >
                     <div className="flex items-start gap-4 flex-1 overflow-hidden pr-4">
-                      <div className="h-10 w-10 shrink-0 flex items-center justify-center text-2xl bg-black/5 dark:bg-white/5 border border-black/5 dark:border-white/10 rounded-xl overflow-hidden">
-                        {skill.icon || '🧩'}
+                      <div className="h-12 w-12 shrink-0 flex items-center justify-center text-2xl bg-black/5 dark:bg-white/5 border border-black/5 dark:border-white/10 rounded-xl">
+                        <span className="block text-center leading-none">{skill.icon || '🧩'}</span>
                       </div>
                       <div className="flex flex-col overflow-hidden">
                         <div className="flex items-center gap-2 mb-1">
@@ -836,7 +836,7 @@ export function Skills() {
                           {skill.description}
                         </p>
                         <div className="mt-1 flex items-center gap-2 text-[11px] text-foreground/55">
-                          <Badge variant="secondary" className="px-1.5 py-0 h-5 text-[10px] font-medium bg-black/5 dark:bg-white/10 border-0 shadow-none">
+                          <Badge variant="secondary" className="px-2 py-0 h-5 text-[10px] font-medium bg-black/5 dark:bg-white/10 border-0 shadow-none whitespace-nowrap inline-flex items-center">
                             {resolveSkillSourceLabel(skill, t)}
                           </Badge>
                           <span className="truncate font-mono">
@@ -895,8 +895,8 @@ export function Skills() {
                         onClick={() => invokeIpc('shell:openExternal', `https://clawhub.ai/s/${skill.slug}`)}
                       >
                         <div className="flex items-start gap-4 flex-1 overflow-hidden pr-4">
-                          <div className="h-10 w-10 shrink-0 flex items-center justify-center text-xl bg-black/5 dark:bg-white/5 border border-black/5 dark:border-white/10 rounded-xl overflow-hidden">
-                            📦
+                          <div className="h-12 w-12 shrink-0 flex items-center justify-center text-2xl bg-black/5 dark:bg-white/5 border border-black/5 dark:border-white/10 rounded-xl">
+                            <span className="block text-center leading-none">📦</span>
                           </div>
                           <div className="flex flex-col overflow-hidden">
                             <div className="flex items-center gap-2 mb-1">
@@ -990,8 +990,8 @@ export function Skills() {
                         className="group flex flex-row items-center justify-between py-3.5 px-3 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition-colors border-b border-black/5 dark:border-white/5 last:border-0"
                       >
                         <div className="flex items-start gap-4 flex-1 overflow-hidden pr-4 min-w-0">
-                          <div className="h-10 w-10 shrink-0 flex items-center justify-center text-xl bg-black/5 dark:bg-white/5 border border-black/5 dark:border-white/10 rounded-xl overflow-hidden">
-                            🏪
+                          <div className="h-12 w-12 shrink-0 flex items-center justify-center text-2xl bg-black/5 dark:bg-white/5 border border-black/5 dark:border-white/10 rounded-xl">
+                            <span className="block text-center leading-none">🏪</span>
                           </div>
                           <div className="flex flex-col overflow-hidden min-w-0">
                             <h3 className="text-[15px] font-semibold text-foreground truncate">{row.displayName}</h3>

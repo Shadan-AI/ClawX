@@ -3,7 +3,7 @@
  * Renders user / assistant / system / toolresult messages
  * with markdown, thinking sections, images, and tool cards.
  */
-import { useState, useCallback, useEffect, memo } from 'react';
+import { useState, useCallback, useEffect, memo, useRef } from 'react';
 import { Sparkles, Copy, Check, ChevronDown, ChevronRight, Wrench, FileText, Film, Music, FileArchive, File, X, FolderOpen, ZoomIn, Loader2, CheckCircle2, AlertCircle } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -307,15 +307,19 @@ function AssistantHoverBar({ text, timestamp }: { text: string; timestamp?: numb
 
   const copyContent = useCallback(async () => {
     try {
+      // Clean up excessive newlines: replace 3+ consecutive newlines with just 2
+      // This preserves paragraph breaks while removing extra spacing from multi-block content
+      const cleanedText = text.replace(/\n{3,}/g, '\n\n');
+      
       // Ensure newlines are preserved when copying
       // Use ClipboardItem API for better cross-platform support
       if (navigator.clipboard && window.ClipboardItem) {
-        const blob = new Blob([text], { type: 'text/plain' });
+        const blob = new Blob([cleanedText], { type: 'text/plain' });
         const item = new ClipboardItem({ 'text/plain': blob });
         await navigator.clipboard.write([item]);
       } else {
         // Fallback to writeText
-        await navigator.clipboard.writeText(text);
+        await navigator.clipboard.writeText(cleanedText);
       }
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
@@ -323,7 +327,8 @@ function AssistantHoverBar({ text, timestamp }: { text: string; timestamp?: numb
       console.error('Failed to copy text:', err);
       // Fallback: try simple writeText
       try {
-        await navigator.clipboard.writeText(text);
+        const cleanedText = text.replace(/\n{3,}/g, '\n\n');
+        await navigator.clipboard.writeText(cleanedText);
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
       } catch {
@@ -360,6 +365,24 @@ function MessageBubble({
   isUser: boolean;
   isStreaming: boolean;
 }) {
+  const handleCopy = useCallback((e: React.ClipboardEvent) => {
+    if (!isUser) return;
+    
+    // Get the selected text
+    const selection = window.getSelection();
+    if (!selection) return;
+    
+    const selectedText = selection.toString();
+    if (!selectedText) return;
+    
+    // Clean up the text: trim whitespace and remove excessive newlines
+    const cleanedText = selectedText.trim().replace(/\n{3,}/g, '\n\n');
+    
+    // Override the clipboard data
+    e.preventDefault();
+    e.clipboardData.setData('text/plain', cleanedText);
+  }, [isUser]);
+
   return (
     <div
       className={cn(
@@ -369,9 +392,10 @@ function MessageBubble({
           ? 'bg-[#0a84ff] text-white shadow-sm'
           : 'bg-black/5 dark:bg-white/5 text-foreground',
       )}
+      onCopy={handleCopy}
     >
       {isUser ? (
-        <p className="whitespace-pre-wrap break-words break-all text-sm">{text}</p>
+        <p className="whitespace-pre-line break-words break-all text-sm">{text}</p>
       ) : (
         <div className="prose prose-sm dark:prose-invert max-w-none break-words break-all">
           <ReactMarkdown
@@ -420,23 +444,42 @@ function MessageBubble({
 
 function ThinkingBlock({ content }: { content: string }) {
   const [expanded, setExpanded] = useState(false);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const [contentHeight, setContentHeight] = useState(0);
+
+  useEffect(() => {
+    if (contentRef.current) {
+      setContentHeight(contentRef.current.scrollHeight);
+    }
+  }, [content]);
 
   return (
-    <div className="w-full rounded-xl border border-black/10 dark:border-white/10 bg-black/5 dark:bg-white/5 text-[14px]">
+    <div className="w-full rounded-xl border border-black/10 dark:border-white/10 bg-black/5 dark:bg-white/5 text-[14px] overflow-hidden">
       <button
         className="flex items-center gap-2 w-full px-3 py-2 text-muted-foreground hover:text-foreground transition-colors"
         onClick={() => setExpanded(!expanded)}
       >
-        {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+        <ChevronDown 
+          className={cn(
+            "h-3.5 w-3.5 transition-transform duration-200",
+            !expanded && "-rotate-90"
+          )} 
+        />
         <span className="font-medium">Thinking</span>
       </button>
-      {expanded && (
-        <div className="px-3 pb-3 text-muted-foreground">
+      <div 
+        className="transition-all duration-300 ease-in-out overflow-hidden"
+        style={{ 
+          maxHeight: expanded ? `${contentHeight}px` : '0px',
+          opacity: expanded ? 1 : 0
+        }}
+      >
+        <div ref={contentRef} className="px-3 pb-3 text-muted-foreground">
           <div className="prose prose-sm dark:prose-invert max-w-none opacity-75">
             <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
           </div>
         </div>
-      )}
+      </div>
     </div>
   );
 }
@@ -630,9 +673,17 @@ function ImageLightbox({
 
 function ToolCard({ name, input }: { name: string; input: unknown }) {
   const [expanded, setExpanded] = useState(false);
+  const contentRef = useRef<HTMLPreElement>(null);
+  const [contentHeight, setContentHeight] = useState(0);
+
+  useEffect(() => {
+    if (contentRef.current) {
+      setContentHeight(contentRef.current.scrollHeight);
+    }
+  }, [input]);
 
   return (
-    <div className="rounded-xl border border-black/10 dark:border-white/10 bg-black/5 dark:bg-white/5 text-[14px]">
+    <div className="rounded-xl border border-black/10 dark:border-white/10 bg-black/5 dark:bg-white/5 text-[14px] overflow-hidden">
       <button
         className="flex items-center gap-2 w-full px-3 py-1.5 text-muted-foreground hover:text-foreground transition-colors"
         onClick={() => setExpanded(!expanded)}
@@ -640,12 +691,25 @@ function ToolCard({ name, input }: { name: string; input: unknown }) {
         <CheckCircle2 className="h-3.5 w-3.5 text-green-500 shrink-0" />
         <Wrench className="h-3 w-3 shrink-0 opacity-60" />
         <span className="font-mono text-xs">{name}</span>
-        {expanded ? <ChevronDown className="h-3 w-3 ml-auto" /> : <ChevronRight className="h-3 w-3 ml-auto" />}
+        <ChevronDown 
+          className={cn(
+            "h-3 w-3 ml-auto transition-transform duration-200",
+            !expanded && "-rotate-90"
+          )} 
+        />
       </button>
-      {expanded && input != null && (
-        <pre className="px-3 pb-2 text-xs text-muted-foreground overflow-x-auto">
-          {typeof input === 'string' ? input : JSON.stringify(input, null, 2) as string}
-        </pre>
+      {input != null && (
+        <div 
+          className="transition-all duration-300 ease-in-out overflow-hidden"
+          style={{ 
+            maxHeight: expanded ? `${contentHeight}px` : '0px',
+            opacity: expanded ? 1 : 0
+          }}
+        >
+          <pre ref={contentRef} className="px-3 pb-2 text-xs text-muted-foreground overflow-x-auto">
+            {typeof input === 'string' ? input : JSON.stringify(input, null, 2) as string}
+          </pre>
+        </div>
       )}
     </div>
   );

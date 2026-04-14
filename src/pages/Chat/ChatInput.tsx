@@ -7,9 +7,11 @@
  * are sent with the message (no base64 over WebSocket).
  */
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { SendHorizontal, Square, X, Paperclip, FileText, Film, Music, FileArchive, File, Loader2, AtSign, ChevronDown, Check } from 'lucide-react';
+import { SendHorizontal, Square, X, Paperclip, FileText, Film, Music, FileArchive, File, Loader2, AtSign, ChevronDown, Check, RefreshCw, Brain, Bot } from 'lucide-react';
+import { AnimatePresence, motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { hostApiFetch } from '@/lib/host-api';
 import { invokeIpc } from '@/lib/api-client';
 import { cn } from '@/lib/utils';
@@ -118,14 +120,24 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const modelMenuRef = useRef<HTMLDivElement>(null);
 
-  // Auto-resize textarea
+  // Debug: 监控模型数据
+  useEffect(() => {
+    console.log('[ChatInput] Models:', models.length, 'Current:', currentModelId, 'Model:', currentModel?.name);
+  }, [models, currentModelId, currentModel]);
+
+  const refresh = useChatStore((s) => s.refresh);
+  const loading = useChatStore((s) => s.loading);
+  const showThinking = useChatStore((s) => s.showThinking);
+  const toggleThinking = useChatStore((s) => s.toggleThinking);
+
+  // Auto-resize textarea (only when expanded)
   useEffect(() => {
     if (textareaRef.current) {
       if (isExpanded) {
         textareaRef.current.style.height = 'auto';
         textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 200)}px`;
       } else {
-        textareaRef.current.style.height = '40px';
+        textareaRef.current.style.height = '44px';
       }
     }
   }, [input, isExpanded]);
@@ -407,17 +419,128 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
     [stageBufferFiles],
   );
 
+  // ── Typing particles + shake ──────────────────────────────────
+  const inputBoxRef = useRef<HTMLDivElement>(null);
+  const [shakeIntensity, setShakeIntensity] = useState(1); // 抖动强度倍数
+  const lastInputTimeRef = useRef(0);
+  const shakeDecayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [particles, setParticles] = useState<Array<{ id: number; x: number; y: number; color: string; size: number }>>([]);
+  const particleIdRef = useRef(0);
+
+  const spawnParticles = useCallback(() => {
+    if (!inputBoxRef.current) return;
+    const rect = inputBoxRef.current.getBoundingClientRect();
+    const colors = ['#f43f5e', '#8b5cf6', '#3b82f6', '#10b981', '#f59e0b', '#ec4899', '#06b6d4'];
+    const newParticles = Array.from({ length: 3 }, () => ({
+      id: particleIdRef.current++,
+      x: rect.left + Math.random() * rect.width,
+      y: rect.top + Math.random() * 20,
+      color: colors[Math.floor(Math.random() * colors.length)],
+      size: 4 + Math.random() * 6,
+    }));
+    setParticles(prev => [...prev.slice(-15), ...newParticles]);
+    setTimeout(() => {
+      setParticles(prev => prev.filter(p => !newParticles.some(np => np.id === p.id)));
+    }, 700);
+  }, []);
+
+  const handleInputChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const prev = input;
+    setInput(e.target.value);
+    // 任何内容变化都触发抖动（增加或删除）
+    if (e.target.value.length !== prev.length) {
+      const now = Date.now();
+      const timeSinceLastInput = now - lastInputTimeRef.current;
+      
+      // 如果在 150ms 内连续输入，增加强度；否则重置为基础强度
+      if (timeSinceLastInput < 150 && timeSinceLastInput > 0) {
+        setShakeIntensity(prev => Math.min(prev + 0.6, 3.5)); // 最大 3.5 倍强度
+      } else {
+        setShakeIntensity(1); // 基础强度 1x（慢速输入）
+      }
+      
+      lastInputTimeRef.current = now;
+      
+      // 触发抖动：移除动画类，强制重排，然后重新添加
+      if (inputBoxRef.current) {
+        inputBoxRef.current.classList.remove('animate-[shake_0.15s_ease-in-out]');
+        // 强制浏览器重排（reflow）
+        void inputBoxRef.current.offsetWidth;
+        inputBoxRef.current.classList.add('animate-[shake_0.15s_ease-in-out]');
+      }
+      
+      spawnParticles();
+      
+      // 500ms 后逐渐衰减强度
+      if (shakeDecayTimerRef.current) {
+        clearTimeout(shakeDecayTimerRef.current);
+      }
+      shakeDecayTimerRef.current = setTimeout(() => {
+        setShakeIntensity(1);
+      }, 500);
+    }
+  }, [input, spawnParticles]);
+
   return (
     <div
       className={cn(
         "w-full mx-auto transition-all duration-300 ease-out bg-transparent",
-        isExpanded ? "max-w-3xl p-4 pb-4 scale-100" : "max-w-xl px-3 py-1.5 scale-95"
+        isExpanded ? "max-w-3xl p-4 pb-4" : "max-w-2xl px-4 py-2"
       )}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
       <div className="w-full">
+        {/* Toolbar - only shown when expanded */}
+        {isExpanded && (
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5 rounded-full border border-black/10 bg-white/70 dark:bg-white/5 px-3 py-1.5 text-[12px] font-medium text-foreground/80 dark:border-white/10">
+                <Bot className="h-3.5 w-3.5 text-primary" />
+                <span>{t('toolbar.currentAgent', { agent: currentAgentName })}</span>
+              </div>
+            </div>
+            <div className="flex items-center gap-1">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7"
+                    onClick={() => refresh()}
+                    disabled={loading}
+                  >
+                    <RefreshCw className={cn('h-3.5 w-3.5', loading && 'animate-spin')} />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>{t('toolbar.refresh')}</p>
+                </TooltipContent>
+              </Tooltip>
+
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className={cn(
+                      'h-7 w-7',
+                      showThinking && 'bg-primary/10 text-primary',
+                    )}
+                    onClick={toggleThinking}
+                  >
+                    <Brain className="h-3.5 w-3.5" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>{showThinking ? t('toolbar.hideThinking') : t('toolbar.showThinking')}</p>
+                </TooltipContent>
+              </Tooltip>
+            </div>
+          </div>
+        )}
+
         {/* Attachment Previews */}
         {attachments.length > 0 && (
           <div className={cn(
@@ -434,174 +557,291 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
           </div>
         )}
 
-        {/* Input Row */}
-        <div className={cn(
-          "relative bg-white/90 dark:bg-card/90 backdrop-blur-sm rounded-[28px] shadow-sm border transition-all duration-300 ease-out",
-          dragOver ? 'border-primary ring-2 ring-primary/30' : 'border-black/8 dark:border-white/10 focus-within:border-black/20 dark:focus-within:border-white/20 focus-within:shadow-lg focus-within:shadow-black/5 dark:focus-within:shadow-white/5',
-          isExpanded ? "shadow-lg p-2.5" : "shadow-sm p-1"
-        )}>
-          {selectedTarget && (
-            <div className={cn(
-              "px-2.5 pt-2 pb-1 transition-all duration-300",
-              !isExpanded && "opacity-0 h-0 py-0 overflow-hidden"
-            )}>
-              <button
-                type="button"
-                onClick={() => setTargetAgentId(null)}
-                className="inline-flex items-center gap-1.5 rounded-full border border-primary/20 bg-primary/5 px-3 py-1 text-[13px] font-medium text-foreground transition-colors hover:bg-primary/10"
-                title={t('composer.clearTarget')}
+        {/* Input Box */}
+        <div 
+          ref={inputBoxRef}
+          className={cn(
+            "relative bg-white dark:bg-card rounded-[28px] shadow-sm border transition-all duration-300 ease-out",
+            dragOver ? 'border-primary ring-2 ring-primary/30' : 'border-black/8 dark:border-white/10 focus-within:border-black/20 dark:focus-within:border-white/20 focus-within:shadow-lg focus-within:shadow-black/5 dark:focus-within:shadow-white/5',
+            isExpanded ? "shadow-md p-2" : "p-1"
+          )}
+          style={{
+            '--shake-intensity': shakeIntensity,
+            transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.2s ease-out',
+          } as React.CSSProperties}
+        >
+          <AnimatePresence mode="wait">
+            {selectedTarget && (
+              <motion.div
+                key={selectedTarget.id}
+                initial={{ opacity: 0, y: -8, scale: 0.95 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -8, scale: 0.95 }}
+                transition={{ duration: 0.2, ease: 'easeOut' }}
+                className={cn(
+                  "px-2.5 pt-2 pb-1",
+                  !isExpanded && "opacity-0 h-0 py-0 overflow-hidden"
+                )}
               >
-                <span>{t('composer.targetChip', { agent: selectedTarget.name })}</span>
-                <X className="h-3.5 w-3.5 text-muted-foreground" />
-              </button>
+                <button
+                  type="button"
+                  onClick={() => setTargetAgentId(null)}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-primary/20 bg-primary/5 px-3 py-1 text-[13px] font-medium text-foreground transition-all duration-200 hover:bg-primary/10 hover:scale-105 active:scale-95"
+                  title={t('composer.clearTarget')}
+                >
+                  <span>{t('composer.targetChip', { agent: selectedTarget.name })}</span>
+                  <X className="h-3.5 w-3.5 text-muted-foreground" />
+                </button>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {/* Collapsed layout: single row with buttons + textarea + send */}
+          {!isExpanded && (
+            <div className="flex items-center gap-1">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="shrink-0 h-9 w-9 rounded-full text-muted-foreground hover:bg-black/5 dark:hover:bg-white/10 hover:text-foreground"
+                onClick={pickFiles}
+                disabled={disabled || sending}
+                title={t('composer.attachFiles')}
+              >
+                <Paperclip className="h-4 w-4" />
+              </Button>
+
+              <div className="flex-1 relative">
+                <Textarea
+                  ref={textareaRef}
+                  value={input}
+                  onChange={handleInputChange}
+                  onKeyDown={handleKeyDown}
+                  onCompositionStart={() => { isComposingRef.current = true; }}
+                  onCompositionEnd={() => { isComposingRef.current = false; }}
+                  onPaste={handlePaste}
+                  onFocus={() => onFocusChange?.(true)}
+                  onBlur={() => onFocusChange?.(false)}
+                  placeholder={disabled ? t('composer.gatewayDisconnectedPlaceholder') : ''}
+                  disabled={disabled}
+                  className="resize-none border-0 focus-visible:ring-0 focus-visible:ring-offset-0 shadow-none bg-transparent px-1 placeholder:text-muted-foreground/60 !min-h-[44px] h-[44px] overflow-hidden !py-[11px] text-base leading-normal"
+                  rows={1}
+                />
+              </div>
+
+              <Button
+                onClick={sending ? handleStop : handleSend}
+                disabled={sending ? !canStop : !canSend}
+                size="icon"
+                className={cn(
+                  "shrink-0 h-9 w-9 rounded-full transition-all duration-300 active:scale-90",
+                  (sending || canSend)
+                    ? 'bg-black/5 dark:bg-white/10 text-foreground hover:bg-black/10 dark:hover:bg-white/20'
+                    : 'text-muted-foreground/50 hover:bg-transparent bg-transparent',
+                )}
+                variant="ghost"
+                title={sending ? t('composer.stop') : t('composer.send')}
+              >
+                {sending ? (
+                  <Square className="h-4 w-4" fill="currentColor" />
+                ) : (
+                  <SendHorizontal className="h-4 w-4" strokeWidth={2} />
+                )}
+              </Button>
             </div>
           )}
 
-          <div className="flex items-end gap-1.5">
-            {/* Attach Button */}
-            <Button
-              variant="ghost"
-              size="icon"
-              className="shrink-0 h-10 w-10 rounded-full text-muted-foreground hover:bg-black/5 dark:hover:bg-white/10 hover:text-foreground transition-colors"
-              onClick={pickFiles}
-              disabled={disabled || sending}
-              title={t('composer.attachFiles')}
-            >
-              <Paperclip className="h-4 w-4" />
-            </Button>
-
-            {showAgentPicker && (
-              <div ref={pickerRef} className="relative shrink-0">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className={cn(
-                    'h-10 w-10 rounded-full text-muted-foreground hover:bg-black/5 dark:hover:bg-white/10 hover:text-foreground transition-colors',
-                    (pickerOpen || selectedTarget) && 'bg-primary/10 text-primary hover:bg-primary/20'
-                  )}
-                  onClick={() => setPickerOpen((open) => !open)}
-                  disabled={disabled || sending}
-                  title={t('composer.pickAgent')}
-                >
-                  <AtSign className="h-4 w-4" />
-                </Button>
-                {pickerOpen && (
-                  <div className="absolute left-0 bottom-full z-20 mb-2 w-72 overflow-hidden rounded-2xl border border-black/10 bg-white p-1.5 shadow-xl dark:border-white/10 dark:bg-card">
-                    <div className="px-3 py-2 text-[11px] font-medium text-muted-foreground/80">
-                      {t('composer.agentPickerTitle', { currentAgent: currentAgentName })}
-                    </div>
-                    <div className="max-h-64 overflow-y-auto">
-                      {mentionableAgents.map((agent) => (
-                        <AgentPickerItem
-                          key={agent.id}
-                          agent={agent}
-                          selected={agent.id === targetAgentId}
-                          onSelect={() => {
-                            setTargetAgentId(agent.id);
-                            setPickerOpen(false);
-                            textareaRef.current?.focus();
-                          }}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                )}
+          {/* Expanded layout: textarea on top, buttons on bottom row */}
+          {isExpanded && (
+            <div className="flex flex-col">
+              {/* Textarea - full width, taller */}
+              <div className="relative px-2 pt-2">
+                <Textarea
+                  ref={textareaRef}
+                  value={input}
+                  onChange={handleInputChange}
+                  onKeyDown={handleKeyDown}
+                  onCompositionStart={() => { isComposingRef.current = true; }}
+                  onCompositionEnd={() => { isComposingRef.current = false; }}
+                  onPaste={handlePaste}
+                  onFocus={() => onFocusChange?.(true)}
+                  onBlur={() => onFocusChange?.(false)}
+                  placeholder={disabled ? t('composer.gatewayDisconnectedPlaceholder') : ''}
+                  disabled={disabled}
+                  className="resize-none border-0 focus-visible:ring-0 focus-visible:ring-offset-0 shadow-none bg-transparent px-1 placeholder:text-muted-foreground/60 min-h-[36px] max-h-[200px] py-1.5 text-base leading-relaxed w-full"
+                  rows={1}
+                />
               </div>
-            )}
 
-            {/* Textarea */}
-            <div className="flex-1 relative">
-              <Textarea
-                ref={textareaRef}
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={handleKeyDown}
-                onCompositionStart={() => {
-                  isComposingRef.current = true;
-                }}
-                onCompositionEnd={() => {
-                  isComposingRef.current = false;
-                }}
-                onPaste={handlePaste}
-                onFocus={() => onFocusChange?.(true)}
-                onBlur={() => onFocusChange?.(false)}
-                placeholder={disabled ? t('composer.gatewayDisconnectedPlaceholder') : ''}
-                disabled={disabled}
-                className="min-h-[40px] max-h-[200px] resize-none border-0 focus-visible:ring-0 focus-visible:ring-offset-0 shadow-none bg-transparent py-2.5 px-2 text-[15px] placeholder:text-muted-foreground/60 leading-relaxed"
-                rows={1}
-              />
-            </div>
-
-            {/* Model Picker */}
-            {models.length > 0 && (
-              <div ref={modelMenuRef} className="relative shrink-0">
-                <button
-                  type="button"
-                  aria-haspopup="listbox"
-                  aria-expanded={modelMenuOpen}
-                  onClick={() => setModelMenuOpen((open) => !open)}
-                  className={cn(
-                    'flex items-center gap-1 rounded-full border border-black/10 bg-black/5 dark:bg-white/10 px-3 py-2 text-[12px] font-medium text-foreground/80 dark:border-white/10',
-                    'focus:outline-none focus:ring-1 focus:ring-ring/50 transition-all duration-200',
-                    modelMenuOpen && 'ring-1 ring-ring/50',
-                  )}
-                >
-                  <span className="truncate max-w-[100px]">
-                    {currentModel?.name || currentModelId || t('selectModel')}
-                  </span>
-                  <ChevronDown className={cn('h-3.5 w-3.5 text-muted-foreground shrink-0 transition-transform duration-200', modelMenuOpen && 'rotate-180')} />
-                </button>
-                {modelMenuOpen && (
-                  <div
-                    role="listbox"
-                    className="absolute z-50 right-0 bottom-full mb-2 min-w-[160px] rounded-lg border border-border bg-popover shadow-lg animate-in fade-in-0 zoom-in-95 duration-150 max-h-48 overflow-auto py-1"
+              {/* Bottom row: left buttons + right send/model */}
+              <div className="flex items-center justify-between px-1 pb-1">
+                {/* Left: attach + @ */}
+                <div className="flex items-center gap-0.5">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-9 w-9 rounded-full text-muted-foreground hover:bg-black/5 dark:hover:bg-white/10 hover:text-foreground"
+                    onClick={pickFiles}
+                    disabled={disabled || sending}
+                    title={t('composer.attachFiles')}
                   >
-                    {models.map((model) => {
-                      const isSelected = model.id === currentModelId;
-                      return (
-                        <button
-                          key={model.id}
-                          type="button"
-                          role="option"
-                          aria-selected={isSelected}
-                          onClick={() => { setCurrentModel(model.id); setModelMenuOpen(false); }}
-                          className={cn(
-                            'w-full px-3 py-2 text-left text-[12px] flex items-center justify-between gap-2',
-                            'hover:bg-accent transition-colors duration-150',
-                            isSelected && 'bg-accent/60',
-                          )}
-                        >
-                          <span className="truncate">{model.name || model.id}</span>
-                          {isSelected && <Check className="h-3.5 w-3.5 text-primary shrink-0" />}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            )}
+                    <Paperclip className="h-5 w-5" />
+                  </Button>
 
-            {/* Send Button */}
-            <Button
-              onClick={sending ? handleStop : handleSend}
-              size="icon"
-              className={`shrink-0 h-10 w-10 rounded-full transition-colors ${
-                (sending || canSend)
-                  ? 'bg-black/5 dark:bg-white/10 text-foreground hover:bg-black/10 dark:hover:bg-white/20'
-                  : 'text-muted-foreground/50 hover:bg-transparent bg-transparent'
-              }`}
-              variant="ghost"
-              title={sending ? t('composer.stop') : t('composer.send')}
-            >
-              {sending ? (
-                <Square className="h-4 w-4" fill="currentColor" />
-              ) : (
-                <SendHorizontal className="h-[18px] w-[18px]" strokeWidth={2} />
-              )}
-            </Button>
-          </div>
+                  {showAgentPicker && (
+                    <div ref={pickerRef} className="relative">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className={cn(
+                          'h-9 w-9 rounded-full text-muted-foreground hover:bg-black/5 dark:hover:bg-white/10 hover:text-foreground transition-colors',
+                          (pickerOpen || selectedTarget) && 'bg-primary/10 text-primary hover:bg-primary/20'
+                        )}
+                        onClick={() => setPickerOpen((open) => !open)}
+                        disabled={disabled || sending}
+                        title={t('composer.pickAgent')}
+                      >
+                        <AtSign className="h-4 w-4" />
+                      </Button>
+                      <AnimatePresence>
+                        {pickerOpen && (
+                          <motion.div
+                            initial={{ opacity: 0, y: 8, scale: 0.95 }}
+                            animate={{ opacity: 1, y: 0, scale: 1 }}
+                            exit={{ opacity: 0, y: 8, scale: 0.95 }}
+                            transition={{ duration: 0.15, ease: 'easeOut' }}
+                            className="absolute left-0 bottom-full z-20 mb-2 w-72 overflow-hidden rounded-2xl border border-black/10 bg-white p-1.5 shadow-xl dark:border-white/10 dark:bg-card"
+                          >
+                            <div className="px-3 py-2 text-[11px] font-medium text-muted-foreground/80">
+                              {t('composer.agentPickerTitle', { currentAgent: currentAgentName })}
+                            </div>
+                            <div className="max-h-64 overflow-y-auto">
+                              {mentionableAgents.map((agent) => (
+                                <AgentPickerItem
+                                  key={agent.id}
+                                  agent={agent}
+                                  selected={agent.id === targetAgentId}
+                                  onSelect={() => {
+                                    setTargetAgentId(agent.id);
+                                    setPickerOpen(false);
+                                    textareaRef.current?.focus();
+                                  }}
+                                />
+                              ))}
+                            </div>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </div>
+                  )}
+                </div>
+
+                {/* Right: model picker + send */}
+                <div className="flex items-center gap-1.5">
+                  {models.length > 0 && (
+                    <div ref={modelMenuRef} className="relative">
+                      <button
+                        type="button"
+                        aria-haspopup="listbox"
+                        aria-expanded={modelMenuOpen}
+                        onClick={() => {
+                          console.log('[ChatInput] Model menu clicked, current state:', modelMenuOpen);
+                          setModelMenuOpen((open) => !open);
+                        }}
+                        className={cn(
+                          'flex items-center gap-1 rounded-full border border-black/10 bg-black/5 dark:bg-white/10 px-3 py-2 text-[12px] font-medium text-foreground/80 dark:border-white/10',
+                          'focus:outline-none focus:ring-1 focus:ring-ring/50 transition-all duration-200',
+                          modelMenuOpen && 'ring-1 ring-ring/50'
+                        )}
+                      >
+                        <span className="truncate max-w-[100px]">
+                          {currentModel?.name || currentModelId || t('selectModel')}
+                        </span>
+                        <ChevronDown className={cn('h-3.5 w-3.5 text-muted-foreground shrink-0 transition-transform duration-200', modelMenuOpen && 'rotate-180')} />
+                      </button>
+                      <AnimatePresence>
+                        {modelMenuOpen && (
+                          <motion.div
+                            initial={{ opacity: 0, y: 8, scale: 0.95 }}
+                            animate={{ opacity: 1, y: 0, scale: 1 }}
+                            exit={{ opacity: 0, y: 8, scale: 0.95 }}
+                            transition={{ duration: 0.15, ease: 'easeOut' }}
+                            role="listbox"
+                            className="absolute z-50 right-0 bottom-full mb-2 min-w-[160px] rounded-lg border border-border bg-popover shadow-lg max-h-48 overflow-auto py-1"
+                          >
+                            {models.map((model) => {
+                              const isSelected = model.id === currentModelId;
+                              return (
+                                <button
+                                  key={model.id}
+                                  type="button"
+                                  role="option"
+                                  aria-selected={isSelected}
+                                  onClick={() => { 
+                                    console.log('[ChatInput] Switching to model:', model.id, model.name);
+                                    setCurrentModel(model.id); 
+                                    setModelMenuOpen(false); 
+                                  }}
+                                  className={cn(
+                                    'w-full px-3 py-2 text-left text-[12px] flex items-center justify-between gap-2',
+                                    'hover:bg-accent transition-colors duration-150',
+                                    isSelected && 'bg-accent/60'
+                                  )}
+                                >
+                                  <span className="truncate">{model.name || model.id}</span>
+                                  {isSelected && <Check className="h-3.5 w-3.5 text-primary shrink-0" />}
+                                </button>
+                              );
+                            })}
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </div>
+                  )}
+
+                  <Button
+                    onClick={sending ? handleStop : handleSend}
+                    disabled={sending ? !canStop : !canSend}
+                    size="icon"
+                    className={cn(
+                      "h-9 w-9 shrink-0 rounded-full transition-all duration-300 active:scale-90",
+                      (sending || canSend)
+                        ? 'bg-black/5 dark:bg-white/10 text-foreground hover:bg-black/10 dark:hover:bg-white/20'
+                        : 'text-muted-foreground/50 hover:bg-transparent bg-transparent',
+                    )}
+                    variant="ghost"
+                    title={sending ? t('composer.stop') : t('composer.send')}
+                  >
+                    {sending ? (
+                      <Square className="h-4 w-4" fill="currentColor" />
+                    ) : (
+                      <SendHorizontal className="h-4 w-4" strokeWidth={2} />
+                    )}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
+
+      {/* Typing particles */}
+      {particles.length > 0 && (
+        <div className="fixed inset-0 pointer-events-none z-[9999]">
+          {particles.map(p => (
+            <div
+              key={p.id}
+              className="absolute rounded-full animate-[particle_0.7s_ease-out_forwards]"
+              style={{
+                left: p.x,
+                top: p.y,
+                width: p.size,
+                height: p.size,
+                backgroundColor: p.color,
+              }}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -618,47 +858,50 @@ function AttachmentPreview({
   const isImage = attachment.mimeType.startsWith('image/') && attachment.preview;
 
   return (
-    <div className="relative group rounded-lg overflow-hidden border border-border">
-      {isImage ? (
-        // Image thumbnail
-        <div className="w-16 h-16">
-          <img
-            src={attachment.preview!}
-            alt={attachment.fileName}
-            className="w-full h-full object-cover"
-          />
-        </div>
-      ) : (
-        // Generic file card
-        <div className="flex items-center gap-2 px-3 py-2 bg-muted/50 max-w-[200px]">
-          <FileIcon mimeType={attachment.mimeType} className="h-5 w-5 shrink-0 text-muted-foreground" />
-          <div className="min-w-0 overflow-hidden">
-            <p className="text-xs font-medium truncate">{attachment.fileName}</p>
-            <p className="text-[10px] text-muted-foreground">
-              {attachment.fileSize > 0 ? formatFileSize(attachment.fileSize) : '...'}
-            </p>
+    <div className="relative group">
+      <div className="rounded-lg overflow-hidden border border-border">
+        {isImage ? (
+          // Image thumbnail
+          <div className="w-16 h-16">
+            <img
+              src={attachment.preview!}
+              alt={attachment.fileName}
+              className="w-full h-full object-cover"
+            />
           </div>
-        </div>
-      )}
+        ) : (
+          // Generic file card
+          <div className="flex items-center gap-2 px-3 py-2 bg-muted/50 max-w-[200px]">
+            <FileIcon mimeType={attachment.mimeType} className="h-5 w-5 shrink-0 text-muted-foreground" />
+            <div className="min-w-0 overflow-hidden">
+              <p className="text-xs font-medium truncate">{attachment.fileName}</p>
+              <p className="text-[10px] text-muted-foreground">
+                {attachment.fileSize > 0 ? formatFileSize(attachment.fileSize) : '...'}
+              </p>
+            </div>
+          </div>
+        )}
 
-      {/* Staging overlay */}
-      {attachment.status === 'staging' && (
-        <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
-          <Loader2 className="h-4 w-4 text-white animate-spin" />
-        </div>
-      )}
+        {/* Staging overlay */}
+        {attachment.status === 'staging' && (
+          <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
+            <Loader2 className="h-4 w-4 text-white animate-spin" />
+          </div>
+        )}
 
-      {/* Error overlay */}
-      {attachment.status === 'error' && (
-        <div className="absolute inset-0 bg-destructive/20 flex items-center justify-center">
-          <span className="text-[10px] text-destructive font-medium px-1">Error</span>
-        </div>
-      )}
+        {/* Error overlay */}
+        {attachment.status === 'error' && (
+          <div className="absolute inset-0 bg-destructive/20 flex items-center justify-center">
+            <span className="text-[10px] text-destructive font-medium px-1">Error</span>
+          </div>
+        )}
+      </div>
 
-      {/* Remove button */}
+      {/* Remove button - outside the overflow-hidden container */}
       <button
         onClick={onRemove}
-        className="absolute -top-1 -right-1 bg-destructive text-destructive-foreground rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
+        className="absolute -top-2 -right-2 bg-destructive text-destructive-foreground rounded-full p-1 shadow-md opacity-0 group-hover:opacity-100 transition-opacity hover:scale-110"
+        aria-label="Remove attachment"
       >
         <X className="h-3 w-3" />
       </button>
