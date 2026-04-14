@@ -6,6 +6,7 @@ import { useEffect, useCallback } from 'react';
 import { Download, RefreshCw, Loader2, Rocket, XCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { useUpdateStore } from '@/stores/update';
 import { useTranslation } from 'react-i18next';
 
@@ -27,12 +28,14 @@ export function UpdateSettings() {
     error,
     isInitialized,
     autoInstallCountdown,
+    pendingAutoDownloadConfirm,
     init,
     checkForUpdates,
     downloadUpdate,
     installUpdate,
     cancelAutoInstall,
     clearError,
+    clearPendingAutoDownloadConfirm,
   } = useUpdateStore();
 
   // Initialize on mount
@@ -149,6 +152,19 @@ export function UpdateSettings() {
 
   return (
     <div className="space-y-4">
+      {/* Auto-download confirmation dialog */}
+      <ConfirmDialog
+        open={pendingAutoDownloadConfirm}
+        title={t('updates.autoDownloadConfirmTitle', { version: updateInfo?.version ?? '' })}
+        message={t('updates.autoDownloadConfirmMessage', { version: updateInfo?.version ?? '' })}
+        confirmLabel={t('updates.action.download')}
+        cancelLabel={t('common:actions.cancel')}
+        onConfirm={() => {
+          clearPendingAutoDownloadConfirm();
+          void downloadUpdate();
+        }}
+        onCancel={clearPendingAutoDownloadConfirm}
+      />
       {/* Current Version */}
       <div className="flex items-center justify-between">
         <div className="space-y-1">
