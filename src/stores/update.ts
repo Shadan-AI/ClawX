@@ -111,6 +111,15 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
       set({ autoInstallCountdown: cancelled ? null : seconds });
     });
 
+    window.electron.ipcRenderer.on('update:prompt-install', (data) => {
+      const { version } = data as { version?: string };
+      const versionStr = version ? ` v${version}` : '';
+      // Show a confirm dialog to ask user if they want to install now
+      if (window.confirm(`新版本${versionStr}已下载完成，是否立即安装并重启？`)) {
+        void invokeIpc('update:install');
+      }
+    });
+
     set({ isInitialized: true });
 
     // Apply persisted settings from the settings store

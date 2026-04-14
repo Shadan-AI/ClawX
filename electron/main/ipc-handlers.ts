@@ -484,6 +484,7 @@ function registerUnifiedRequestHandlers(gatewayManager: GatewayManager): void {
             const enable = typeof payload === 'boolean' ? payload : payload?.enable;
             if (typeof enable !== 'boolean') throw new Error('Invalid update.setAutoDownload payload');
             appUpdater.setAutoDownload(enable);
+            await setSetting('autoDownloadUpdate', enable);
             data = { success: true };
             break;
           }
