@@ -74,6 +74,7 @@ import {
   pollWxScan,
   findOrCreateImUser,
   bindPhoneAndRegister,
+  registerNewUser,
   sendSmsCode,
   persistLoginResult,
 } from '../utils/wx-auth';
@@ -806,6 +807,16 @@ function registerWxAuthHandlers(): void {
     try {
       await persistLoginResult(tokenKey, userId, openid, nickname, avatar, accessToken);
       return { success: true };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+  });
+
+  ipcMain.handle('wx-auth:register', async (_, openid: string, userName: string, nickName: string, password: string, phone: string, code: string, avatar?: string) => {
+    try {
+      const result = await registerNewUser(openid, userName, nickName, password, phone, code, avatar);
+      // Note: persistLoginResult is called by the frontend via wx-auth:persistLogin (through handleLoginSuccess)
+      return { success: true, ...result };
     } catch (err) {
       return { success: false, error: String(err) };
     }

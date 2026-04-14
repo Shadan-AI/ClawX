@@ -15,7 +15,7 @@ import { invokeIpc } from '@/lib/api-client';
 
 interface QrScene { ticket: string; sceneId: string }
 
-type ScanStatus = 'idle' | 'scanning' | 'scanned' | 'success' | 'expired' | 'need_phone';
+type ScanStatus = 'idle' | 'scanning' | 'scanned' | 'success' | 'expired' | 'need_phone' | 'need_register';
 
 export function BoxImGate() {
   const { t } = useTranslation('boxImGate');
@@ -37,6 +37,12 @@ export function BoxImGate() {
   const [bindLoading, setBindLoading] = useState(false);
   const [smsError, setSmsError] = useState<string | null>(null);
   const [countdown, setCountdown] = useState(0);
+  // Registration form fields (need_register flow)
+  const [regUserName, setRegUserName] = useState('');
+  const [regNickName, setRegNickName] = useState('');
+  const [regPassword, setRegPassword] = useState('');
+  const [regConfirmPassword, setRegConfirmPassword] = useState('');
+  const [regLoading, setRegLoading] = useState(false);
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const attemptsRef = useRef(0);
@@ -54,6 +60,18 @@ export function BoxImGate() {
     setQrScene(null);
     setStatus('idle');
     setNickname(null);
+    // Reset all form state so re-scan starts clean
+    setPhone('');
+    setSmsCode('');
+    setSmsError(null);
+    setCountdown(0);
+    setPendingOpenid(null);
+    setPendingNickname(null);
+    setPendingAvatar(null);
+    setRegUserName('');
+    setRegNickName('');
+    setRegPassword('');
+    setRegConfirmPassword('');
     attemptsRef.current = 0;
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
 
@@ -108,6 +126,7 @@ export function BoxImGate() {
         const userRes = await invokeIpc<{
           success: boolean;
           needPhone?: boolean;
+          isNewUser?: boolean;
           tokenKey?: string;
           userId?: number;
           openid?: string;
@@ -125,7 +144,14 @@ export function BoxImGate() {
           setPendingOpenid(userRes.openid ?? res.openid);
           setPendingNickname(userRes.nickname ?? res.nickname ?? null);
           setPendingAvatar(userRes.avatar ?? res.avatar ?? null);
-          setStatus('need_phone');
+          if (userRes.isNewUser) {
+            // Brand-new user — show full registration form
+            setRegNickName(userRes.nickname ?? res.nickname ?? '');
+            setStatus('need_register');
+          } else {
+            // Existing account without phone — just bind phone
+            setStatus('need_phone');
+          }
         } else if (userRes.tokenKey) {
           await handleLoginSuccess(userRes.tokenKey, res.nickname, res.openid, res.avatar, undefined, userRes.userId);
         }
@@ -214,6 +240,36 @@ export function BoxImGate() {
     }
   };
 
+  const handleRegister = async () => {
+    if (!regUserName.trim()) { setSmsError('请输入用户名'); return; }
+    if (!regNickName.trim()) { setSmsError('请输入昵称'); return; }
+    if (regPassword.length < 5) { setSmsError('密码长度至少5位'); return; }
+    if (regPassword !== regConfirmPassword) { setSmsError('两次密码输入不一致'); return; }
+    if (!/^1[3-9]\d{9}$/.test(phone)) { setSmsError('请输入正确的手机号格式'); return; }
+    if (!smsCode) { setSmsError('请输入验证码'); return; }
+    if (!pendingOpenid) return;
+    setRegLoading(true);
+    setSmsError(null);
+    try {
+      const res = await invokeIpc<{ success: boolean; tokenKey?: string; userId?: number; accessToken?: string; error?: string }>(
+        'wx-auth:register',
+        pendingOpenid,
+        regUserName.trim(),
+        regNickName.trim(),
+        regPassword,
+        phone,
+        smsCode,
+        pendingAvatar ?? undefined,
+      );
+      if (!res.success) throw new Error(res.error || '注册失败');
+      if (res.tokenKey) await handleLoginSuccess(res.tokenKey, regNickName, pendingOpenid, pendingAvatar ?? undefined, res.accessToken, res.userId);
+    } catch (err) {
+      setSmsError(err instanceof Error ? err.message : '注册失败，请重试');
+    } finally {
+      setRegLoading(false);
+    }
+  };
+
   const handleSkip = () => {
     markBoxImGateComplete();
     navigate('/setup', { replace: true });
@@ -258,9 +314,6 @@ export function BoxImGate() {
           <div className="flex flex-col items-center gap-2">
             <Button variant="ghost" size="sm" onClick={() => void fetchQrCode()}>
               <RefreshCw className="h-4 w-4 mr-2" />{t('refreshQrCode')}
-            </Button>
-            <Button variant="ghost" size="sm" className="text-muted-foreground/60 hover:text-muted-foreground" onClick={handleSkip}>
-              {t('skip')}
             </Button>
           </div>
         </motion.div>
@@ -324,6 +377,77 @@ export function BoxImGate() {
             {smsError && <p className="text-sm text-red-400">{smsError}</p>}
             <Button className="w-full" onClick={() => void handleBindPhone()} disabled={bindLoading || !phone || !smsCode}>
               {bindLoading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}确认绑定
+            </Button>
+            <Button variant="ghost" size="sm" className="w-full" onClick={() => void fetchQrCode()}>重新扫码</Button>
+          </div>
+        </motion.div>
+      );
+    }
+
+    if (status === 'need_register') {
+      return (
+        <motion.div key="need_register" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-4">
+          <div className="text-center">
+            <h2 className="text-xl font-semibold mb-1">注册账号</h2>
+            <p className="text-muted-foreground text-sm">扫码成功，完善信息完成注册</p>
+          </div>
+          <div className="space-y-3">
+            <Input
+              placeholder="用户名（登录使用）"
+              value={regUserName}
+              onChange={(e) => setRegUserName(e.target.value)}
+              maxLength={64}
+            />
+            <Input
+              placeholder="昵称"
+              value={regNickName}
+              onChange={(e) => setRegNickName(e.target.value)}
+              maxLength={64}
+            />
+            <Input
+              type="password"
+              placeholder="密码（至少5位）"
+              value={regPassword}
+              onChange={(e) => setRegPassword(e.target.value)}
+              maxLength={20}
+            />
+            <Input
+              type="password"
+              placeholder="确认密码"
+              value={regConfirmPassword}
+              onChange={(e) => setRegConfirmPassword(e.target.value)}
+              maxLength={20}
+            />
+            <Input
+              placeholder="手机号"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              maxLength={11}
+            />
+            <div className="flex gap-2">
+              <Input
+                placeholder="验证码"
+                value={smsCode}
+                onChange={(e) => setSmsCode(e.target.value)}
+                maxLength={6}
+                className="flex-1"
+              />
+              <Button
+                variant="outline"
+                onClick={() => void handleSendSms()}
+                disabled={smsLoading || countdown > 0}
+                className="shrink-0 min-w-[100px]"
+              >
+                {smsLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : countdown > 0 ? `${countdown}s后重发` : '发送验证码'}
+              </Button>
+            </div>
+            {smsError && <p className="text-sm text-red-400">{smsError}</p>}
+            <Button
+              className="w-full"
+              onClick={() => void handleRegister()}
+              disabled={regLoading}
+            >
+              {regLoading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}注册
             </Button>
             <Button variant="ghost" size="sm" className="w-full" onClick={() => void fetchQrCode()}>重新扫码</Button>
           </div>

@@ -85,7 +85,7 @@ export async function pollWxScan(sceneId: string): Promise<PollResult> {
 
 export type FindOrCreateResult =
   | { needPhone: false; userId: number; accessToken: string; tokenKey: string }
-  | { needPhone: true; openid: string; nickname?: string; avatar?: string };
+  | { needPhone: true; isNewUser: boolean; openid: string; nickname?: string; avatar?: string };
 
 export async function findOrCreateImUser(
   openid: string,
@@ -103,8 +103,14 @@ export async function findOrCreateImUser(
   const data = (await res.json()) as { data?: { id?: number; phone?: string; accessToken?: string; tokenKey?: string } };
   const user = data?.data;
 
-  if (!user || !user.phone) {
-    return { needPhone: true, openid, nickname, avatar };
+  if (!user) {
+    // No account at all — needs full registration
+    return { needPhone: true, isNewUser: true, openid, nickname, avatar };
+  }
+
+  if (!user.phone) {
+    // Account exists but no phone bound
+    return { needPhone: true, isNewUser: false, openid, nickname, avatar };
   }
 
   return {
@@ -165,6 +171,90 @@ export async function bindPhoneAndRegister(
     userId: user.id ?? 0,
     accessToken: user.accessToken ?? '',
     tokenKey: user.tokenKey ?? '',
+  };
+}
+
+// ── Register new user ────────────────────────────────────────────
+
+/**
+ * Full registration flow for brand-new users (no existing account).
+ * 1. Verify SMS code
+ * 2. POST /register with userName, nickName, password, phone, openid
+ * 3. findUserByOpenid to get the token
+ */
+export async function registerNewUser(
+  openid: string,
+  userName: string,
+  nickName: string,
+  password: string,
+  phone: string,
+  code: string,
+  avatar?: string,
+  apiUrl = DEFAULT_API_URL,
+): Promise<{ userId: number; accessToken: string; tokenKey: string }> {
+  // 1. Verify SMS code
+  const verifyRes = await fetch(`${WX_API}/verifySms`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mobile: phone, code }),
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!verifyRes.ok) throw new Error(`verifySms failed: ${verifyRes.status}`);
+  const verifyData = (await verifyRes.json()) as { success?: boolean; message?: string };
+  if (!verifyData?.success) throw new Error(verifyData?.message || '验证码错误');
+
+  // 2. Register account (POST /register with openid)
+  const regRes = await fetch(`${apiUrl}/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ userName, nickName, password, confirmPassword: password, phone, openid, terminalNo: 0 }),
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!regRes.ok) {
+    const errText = await regRes.text().catch(() => '');
+    let errMsg = '注册失败，请重试';
+    try { const j = JSON.parse(errText) as { message?: string }; if (j.message) errMsg = j.message; } catch { /* ignore */ }
+    throw new Error(errMsg);
+  }
+  const regData = (await regRes.json()) as { success?: boolean; message?: string; code?: number };
+  console.log('[registerNewUser] /register response:', JSON.stringify(regData));
+  // Handle both { success: false } and { code: non-200 } style error responses
+  if (regData?.success === false || (regData?.code !== undefined && regData.code !== 200 && regData.code !== 0)) {
+    throw new Error(regData?.message || '注册失败，请重试');
+  }
+
+  // 3. Login with userName+password to get token
+  const loginRes = await fetch(`${apiUrl}/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ userName, password, terminal: 0, terminalNo: 0 }),
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!loginRes.ok) throw new Error(`login after register failed: ${loginRes.status}`);
+  const loginData = (await loginRes.json()) as { data?: { id?: number; accessToken?: string; tokenKey?: string } };
+  console.log('[registerNewUser] /login response:', JSON.stringify(loginData));
+  const loginUser = loginData?.data;
+  if (!loginUser?.accessToken || !loginUser?.tokenKey) throw new Error('注册成功但登录失败，请重新扫码登录');
+
+  // 4. Bind openid to the newly registered account via PUT /user/update
+  const updateRes = await fetch(`${apiUrl}/user/update`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': loginUser.accessToken,
+    },
+    body: JSON.stringify({ id: loginUser.id, openid, nickName, headImage: avatar }),
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!updateRes.ok) {
+    console.warn(`[registerNewUser] bind openid failed: ${updateRes.status} (non-fatal, login still works)`);
+  } else {
+    console.log('[registerNewUser] openid bound successfully');
+  }
+  return {
+    userId: loginUser.id ?? 0,
+    accessToken: loginUser.accessToken ?? '',
+    tokenKey: loginUser.tokenKey,
   };
 }
 

@@ -127,6 +127,7 @@ const electronAPI = {
         'wx-auth:sendSms',
         'wx-auth:bindPhone',
         'wx-auth:persistLogin',
+        'wx-auth:register',
         // Logs
         'log:getRecent',
         'log:readFile',
