@@ -292,6 +292,24 @@ export async function saveBoxImAccounts(accounts: Record<string, BoxImAccount>):
   const oldBindings = ((cfg as any).bindings ?? []) as Binding[];
   (cfg as any).bindings = reconcileBindings(oldBindings, Object.keys(accounts));
 
+  // Pre-create agent directories so Gateway can initialize them on startup.
+  // Without these dirs, Gateway skips the agent and the channel plugin never starts.
+  for (const entry of newList) {
+    if (!entry.agentDir) continue;
+    try {
+      await mkdir(entry.agentDir, { recursive: true });
+      // Seed a minimal auth-profiles.json so Gateway recognizes this as a valid agent
+      const authProfilesPath = join(entry.agentDir, 'auth-profiles.json');
+      try {
+        await readFile(authProfilesPath, 'utf-8');
+      } catch {
+        await writeFile(authProfilesPath, JSON.stringify({ version: 1, profiles: {} }, null, 2), 'utf-8');
+      }
+    } catch (err) {
+      logger.warn(`[box-im] Failed to pre-create agent dir ${entry.agentDir}:`, err);
+    }
+  }
+
   await writeOpenClawConfig(cfg);
   logger.info(`[box-im] Saved ${Object.keys(accounts).length} accounts, ${newList.length} agents`);
 }

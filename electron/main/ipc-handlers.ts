@@ -136,7 +136,7 @@ export function registerIpcHandlers(
   registerBoxImConfigHandlers();
 
   // WeChat QR auth handlers (direct HTTP, no Gateway dependency)
-  registerWxAuthHandlers();
+  registerWxAuthHandlers(gatewayManager);
 
   // Cron task handlers (proxy to Gateway RPC)
   registerCronHandlers(gatewayManager);
@@ -759,7 +759,7 @@ function registerBoxImConfigHandlers(): void {
   });
 }
 
-function registerWxAuthHandlers(): void {
+function registerWxAuthHandlers(gatewayManager: GatewayManager): void {
   ipcMain.handle('wx-auth:createScene', async () => {
     try {
       return { success: true, ...(await createWxScene()) };
@@ -806,6 +806,9 @@ function registerWxAuthHandlers(): void {
   ipcMain.handle('wx-auth:persistLogin', async (_, tokenKey: string, userId?: number, openid?: string, nickname?: string, avatar?: string, accessToken?: string) => {
     try {
       await persistLoginResult(tokenKey, userId, openid, nickname, avatar, accessToken);
+      // Restart Gateway after syncBots has created agent dirs + written config,
+      // so the box-im plugin picks up the new accounts on the very first boot.
+      gatewayManager.debouncedRestart(3000);
       return { success: true };
     } catch (err) {
       return { success: false, error: String(err) };

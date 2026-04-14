@@ -463,10 +463,12 @@ export function BoxImGate() {
       <TitleBar />
       <div className="flex-1 overflow-auto">
         <div className="mx-auto max-w-md p-8 pt-16">
-          <div className="text-center mb-8">
-            <h1 className="text-2xl font-semibold mb-2">{t('title')}</h1>
-            <p className="text-muted-foreground">{t('subtitle')}</p>
-          </div>
+          {status !== 'need_register' && (
+            <div className="text-center mb-8">
+              <h1 className="text-2xl font-semibold mb-2">{t('title')}</h1>
+              <p className="text-muted-foreground">{t('subtitle')}</p>
+            </div>
+          )}
           <AnimatePresence mode="wait">
             {renderContent()}
           </AnimatePresence>

@@ -248,6 +248,34 @@ export async function registerNewUser(
   if (!updateRes.ok) {
     console.warn(`[registerNewUser] update2 failed: ${updateRes.status} ${updateText}`);
   }
+
+  // 5. Auto-create a default digital worker (bot) for the new user.
+  //    POST /bot/register — writes is_bot, openclaw_agent_id, owner_id, node_id, model
+  //    into im_user. syncBots() in persistLoginResult will then pull it into openclaw.json.
+  try {
+    const nodeId = await getOrCreateDeviceId(loginUser.id);
+    const defaultAgentId = `agent_${loginUser.id}`;
+    const botRes = await fetch(`${apiUrl}/bot/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Token-Key': loginUser.tokenKey },
+      body: JSON.stringify({
+        agentId: defaultAgentId,
+        nickName: `${nickName}的数字员工`,
+        headImage: avatar ?? '',
+        model: 'glm-5',
+        nodeId,
+      }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    const botData = (await botRes.json()) as { code?: number; message?: string };
+    console.log('[registerNewUser] /bot/register response:', JSON.stringify(botData));
+    if (botData?.code !== 200) {
+      console.warn('[registerNewUser] bot register non-200:', botData?.message);
+    }
+  } catch (err) {
+    console.warn('[registerNewUser] auto bot creation failed (non-fatal):', err);
+  }
+
   return {
     userId: loginUser.id ?? 0,
     accessToken: loginUser.accessToken ?? '',
@@ -293,7 +321,8 @@ export async function persistLoginResult(
       ownerAuth: {
         openid: openid ?? '',
         userId: userId ?? 0,
-        accessToken: accessToken ?? '',
+        // accessToken (JWT) intentionally omitted — box-im plugin uses Token-Key header
+        // which requires sk-xxx format. tokenKey is the correct credential for /bot/register.
         tokenKey,
         nickname: nickname ?? '',
         avatar: avatar ?? '',
@@ -333,14 +362,7 @@ export async function persistLoginResult(
     console.warn('[wx-auth] Failed to store API key (non-fatal):', err);
   }
 
-  // 5. Sync bot accounts (best-effort)
-  try {
-    await syncBots();
-  } catch (err) {
-    console.warn('[wx-auth] Bot sync failed (non-fatal):', err);
-  }
-
-  // 6. Inject user-specific VNC origins into gateway.controlUi.allowedOrigins (best-effort)
+  // 5. Inject user-specific VNC origins (uses withConfigLock + readOpenClawJson)
   if (userId && userId > 0) {
     try {
       await ensureVncOriginsInConfig(userId, 18789);
@@ -349,12 +371,19 @@ export async function persistLoginResult(
     }
   }
 
-  // 6. Register device with IM server so it can build the iframe URL:
-  //    https://<accessip>:18789/#token=<gatewayToken>
+  // 6. Register device with IM server
   try {
     await registerDeviceWithImServer(tokenKey, nodeId, userId);
   } catch (err) {
     console.warn('[wx-auth] Device registration failed (non-fatal):', err);
+  }
+
+  // 7. Sync bot accounts LAST — must run after all other writeOpenClawConfig/writeOpenClawJson
+  //    calls to avoid race-condition overwrites of channels.box-im.accounts.
+  try {
+    await syncBots();
+  } catch (err) {
+    console.warn('[wx-auth] Bot sync failed (non-fatal):', err);
   }
 }
 
