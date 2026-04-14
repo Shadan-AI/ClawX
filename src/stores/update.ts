@@ -38,6 +38,10 @@ interface UpdateState {
   isInitialized: boolean;
   /** Seconds remaining before auto-install, or null if inactive. */
   autoInstallCountdown: number | null;
+  /** Whether to show the auto-download confirmation dialog. */
+  pendingAutoDownloadConfirm: boolean;
+  /** Whether to show the install-now confirmation dialog after download completes. */
+  pendingInstallConfirm: boolean;
 
   // Actions
   init: () => Promise<void>;
@@ -48,6 +52,8 @@ interface UpdateState {
   setChannel: (channel: 'stable' | 'beta' | 'dev') => Promise<void>;
   setAutoDownload: (enable: boolean) => Promise<void>;
   clearError: () => void;
+  clearPendingAutoDownloadConfirm: () => void;
+  clearPendingInstallConfirm: () => void;
 }
 
 export const useUpdateStore = create<UpdateState>((set, get) => ({
@@ -58,6 +64,8 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
   error: null,
   isInitialized: false,
   autoInstallCountdown: null,
+  pendingAutoDownloadConfirm: false,
+  pendingInstallConfirm: false,
 
   init: async () => {
     if (get().isInitialized) return;
@@ -104,6 +112,19 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
         progress: status.progress || null,
         error: status.error || null,
       });
+
+      // When a new version is found and auto-download is enabled, prompt the user
+      if (status.status === 'available') {
+        const { autoDownloadUpdate } = useSettingsStore.getState();
+        if (autoDownloadUpdate) {
+          set({ pendingAutoDownloadConfirm: true });
+        }
+      }
+
+      // When download completes, prompt the user to install
+      if (status.status === 'downloaded') {
+        set({ pendingInstallConfirm: true });
+      }
     });
 
     window.electron.ipcRenderer.on('update:auto-install-countdown', (data) => {
@@ -209,10 +230,18 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
   setAutoDownload: async (enable) => {
     try {
       await invokeIpc('update:setAutoDownload', enable);
+      // If enabling and a new version is already available, prompt immediately
+      if (enable && get().status === 'available') {
+        set({ pendingAutoDownloadConfirm: true });
+      }
     } catch (error) {
       console.error('Failed to set auto-download:', error);
     }
   },
 
   clearError: () => set({ error: null, status: 'idle' }),
+
+  clearPendingAutoDownloadConfirm: () => set({ pendingAutoDownloadConfirm: false }),
+
+  clearPendingInstallConfirm: () => set({ pendingInstallConfirm: false }),
 }));

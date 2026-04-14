@@ -181,7 +181,11 @@
     "currentVersion": "現在のバージョン",
     "whatsNew": "更新内容：",
     "errorDetails": "エラー詳細：",
-    "help": "自動アップデートが有効な場合、更新は自動的にダウンロードされインストールされます。"
+    "help": "自動アップデートが有効な場合、更新は自動的にダウンロードされインストールされます。",
+    "autoDownloadConfirmTitle": "新バージョン v{{version}} が見つかりました",
+    "autoDownloadConfirmMessage": "v{{version}} が利用可能です。今すぐダウンロードしますか？",
+    "installConfirmTitle": "v{{version}} のダウンロード完了",
+    "installConfirmMessage": "v{{version}} のダウンロードが完了しました。今すぐインストールして再起動しますか？"
   },
   "advanced": {
     "title": "詳細設定",
