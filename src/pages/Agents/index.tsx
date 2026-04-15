@@ -256,7 +256,10 @@ export function Agents() {
           </Button>
         </div>
 
-        <div className="flex-1 overflow-y-auto pr-2 pb-10 min-h-0 -mr-2">
+        <div className={cn(
+          "flex-1 min-h-0",
+          viewMode === 'organization' ? '' : 'overflow-y-auto pr-2 pb-10 -mr-2'
+        )}>
           {viewMode === 'list' ? (
             <>
               {gatewayStatus.state !== 'running' && (
