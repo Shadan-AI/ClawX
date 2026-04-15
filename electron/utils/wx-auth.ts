@@ -260,7 +260,7 @@ export async function registerNewUser(
       headers: { 'Content-Type': 'application/json', 'Token-Key': loginUser.tokenKey },
       body: JSON.stringify({
         agentId: defaultAgentId,
-        nickName: `${nickName}的数字员工`,
+        nickName: 'OpenClaw助手',
         headImage: avatar ?? '',
         model: 'glm-5',
         nodeId,

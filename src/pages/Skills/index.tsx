@@ -420,6 +420,7 @@ export function Skills() {
   const [marketQuery, setMarketQuery] = useState('');
   const [skillsTab, setSkillsTab] = useState<'installed' | 'official' | 'market'>('installed');
   const [selectedSkill, setSelectedSkill] = useState<Skill | null>(null);
+  const [localInstalledSlugs, setLocalInstalledSlugs] = useState<Set<string>>(new Set());
 
   const isGatewayRunning = gatewayStatus.state === 'running';
   const [showGatewayWarning, setShowGatewayWarning] = useState(false);
@@ -586,6 +587,7 @@ export function Skills() {
     try {
       await installSkill(slug);
       await enableSkill(slug);
+      setLocalInstalledSlugs((prev) => new Set(prev).add(slug));
       toast.success(t('toast.installed'));
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
@@ -604,6 +606,7 @@ export function Skills() {
       if (s) {
         await enableSkill(s.id);
       }
+      setLocalInstalledSlugs((prev) => new Set(prev).add(slug));
       toast.success(t('toast.installed'));
     } catch (err) {
       toast.error(t('toast.failedInstall') + ': ' + String(err));
@@ -886,7 +889,7 @@ export function Skills() {
               {!searching && searchResults.length > 0 && (
                 <div className="flex flex-col gap-1">
                   {searchResults.map((skill) => {
-                    const isInstalled = safeSkills.some((s) => s.id === skill.slug || s.name === skill.name);
+                    const isInstalled = safeSkills.some((s) => s.id === skill.slug || s.name === skill.name) || localInstalledSlugs.has(skill.slug);
                     const isInstallLoading = !!installing[skill.slug];
                     return (
                       <div
@@ -982,7 +985,7 @@ export function Skills() {
                   {marketResults.map((row) => {
                     const isInstalled = safeSkills.some(
                       (s) => s.slug === row.slug || s.id === row.slug || s.name === row.displayName,
-                    );
+                    ) || localInstalledSlugs.has(row.slug);
                     const busy = !!installing[`market:${row.slug}`];
                     return (
                       <div

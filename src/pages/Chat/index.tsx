@@ -273,8 +273,8 @@ export function Chat() {
 
       {/* Input Area - Floating */}
       <div className="absolute bottom-0 left-0 right-0 z-10 pointer-events-none">
-        {/* Error bar */}
-        {error && (
+        {/* Error bar — hide "Gateway stopped" since it's a normal shutdown event */}
+        {error && !error.includes('Gateway stopped') && (
           <div className="pointer-events-auto px-4 py-2 bg-destructive/10 border-y border-destructive/20">
             <div className="max-w-4xl mx-auto flex items-center justify-between">
               <p className="text-sm text-destructive flex items-center gap-2">

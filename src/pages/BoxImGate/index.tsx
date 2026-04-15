@@ -39,11 +39,7 @@ export function BoxImGate() {
   const [bindLoading, setBindLoading] = useState(false);
   const [smsError, setSmsError] = useState<string | null>(null);
   const [countdown, setCountdown] = useState(0);
-  // Registration form fields (need_register flow)
-  const [regUserName, setRegUserName] = useState('');
-  const [regNickName, setRegNickName] = useState('');
-  const [regPassword, setRegPassword] = useState('');
-  const [regConfirmPassword, setRegConfirmPassword] = useState('');
+  // Registration form fields (need_register flow) — auto-generated, no longer shown to user
   const [regLoading, setRegLoading] = useState(false);
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -70,10 +66,6 @@ export function BoxImGate() {
     setPendingOpenid(null);
     setPendingNickname(null);
     setPendingAvatar(null);
-    setRegUserName('');
-    setRegNickName('');
-    setRegPassword('');
-    setRegConfirmPassword('');
     attemptsRef.current = 0;
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
 
@@ -147,8 +139,7 @@ export function BoxImGate() {
           setPendingNickname(userRes.nickname ?? res.nickname ?? null);
           setPendingAvatar(userRes.avatar ?? res.avatar ?? null);
           if (userRes.isNewUser) {
-            // Brand-new user — show full registration form
-            setRegNickName(userRes.nickname ?? res.nickname ?? '');
+            // Brand-new user — show phone binding only
             setStatus('need_register');
           } else {
             // Existing account without phone — just bind phone
@@ -243,28 +234,28 @@ export function BoxImGate() {
   };
 
   const handleRegister = async () => {
-    if (!regUserName.trim()) { setSmsError('请输入用户名'); return; }
-    if (!regNickName.trim()) { setSmsError('请输入昵称'); return; }
-    if (regPassword.length < 5) { setSmsError('密码长度至少5位'); return; }
-    if (regPassword !== regConfirmPassword) { setSmsError('两次密码输入不一致'); return; }
     if (!/^1[3-9]\d{9}$/.test(phone)) { setSmsError('请输入正确的手机号格式'); return; }
     if (!smsCode) { setSmsError('请输入验证码'); return; }
     if (!pendingOpenid) return;
     setRegLoading(true);
     setSmsError(null);
+    // 自动生成用户名、昵称、密码
+    const autoUserName = `wx_${pendingOpenid.slice(-8)}`;
+    const autoNickName = pendingNickname ?? `用户${phone.slice(-4)}`;
+    const autoPassword = `Wx${pendingOpenid.slice(-6)}!`;
     try {
       const res = await invokeIpc<{ success: boolean; tokenKey?: string; userId?: number; accessToken?: string; error?: string }>(
         'wx-auth:register',
         pendingOpenid,
-        regUserName.trim(),
-        regNickName.trim(),
-        regPassword,
+        autoUserName,
+        autoNickName,
+        autoPassword,
         phone,
         smsCode,
         pendingAvatar ?? undefined,
       );
       if (!res.success) throw new Error(res.error || '注册失败');
-      if (res.tokenKey) await handleLoginSuccess(res.tokenKey, regNickName, pendingOpenid, pendingAvatar ?? undefined, res.accessToken, res.userId);
+      if (res.tokenKey) await handleLoginSuccess(res.tokenKey, autoNickName, pendingOpenid, pendingAvatar ?? undefined, res.accessToken, res.userId);
     } catch (err) {
       setSmsError(err instanceof Error ? err.message : '注册失败，请重试');
     } finally {
@@ -390,36 +381,10 @@ export function BoxImGate() {
       return (
         <motion.div key="need_register" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-4">
           <div className="text-center">
-            <h2 className="text-xl font-semibold mb-1">注册账号</h2>
-            <p className="text-muted-foreground text-sm">扫码成功，完善信息完成注册</p>
+            <h2 className="text-xl font-semibold mb-1">完成注册</h2>
+            <p className="text-muted-foreground text-sm">扫码成功，绑定手机号即可完成注册</p>
           </div>
           <div className="space-y-3">
-            <Input
-              placeholder="用户名（登录使用）"
-              value={regUserName}
-              onChange={(e) => setRegUserName(e.target.value)}
-              maxLength={64}
-            />
-            <Input
-              placeholder="昵称"
-              value={regNickName}
-              onChange={(e) => setRegNickName(e.target.value)}
-              maxLength={64}
-            />
-            <Input
-              type="password"
-              placeholder="密码（至少5位）"
-              value={regPassword}
-              onChange={(e) => setRegPassword(e.target.value)}
-              maxLength={20}
-            />
-            <Input
-              type="password"
-              placeholder="确认密码"
-              value={regConfirmPassword}
-              onChange={(e) => setRegConfirmPassword(e.target.value)}
-              maxLength={20}
-            />
             <Input
               placeholder="手机号"
               value={phone}
