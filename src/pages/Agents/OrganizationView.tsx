@@ -41,9 +41,15 @@ export function OrganizationView() {
   const [newDeptName, setNewDeptName] = useState('');
   const [editingDept, setEditingDept] = useState<{ id: string; name: string } | null>(null);
   const [draggingBot, setDraggingBot] = useState<string | null>(null);
+  const [dragPosition, setDragPosition] = useState<{ x: number; y: number } | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; deptId: string } | null>(null);
   const [botContextMenu, setBotContextMenu] = useState<{ x: number; y: number; botId: string } | null>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<{ 
+    title: string; 
+    message: string; 
+    onConfirm: () => void;
+  } | null>(null);
   
   const { departments, assignments, addDepartment, updateDepartment, deleteDepartment, assignAgent, unassignAgent } = useOrganizationStore();
   const { agents } = useAgentsStore();
@@ -362,6 +368,27 @@ export function OrganizationView() {
     
     graph.resetCells(cells);
     
+    // 添加节点进入动画
+    setTimeout(() => {
+      cells.forEach((cell, index) => {
+        setTimeout(() => {
+          if (cell.isNode()) {
+            const currentPos = cell.position();
+            cell.position(currentPos.x, currentPos.y - 20, { silent: true });
+            cell.attr('body/opacity', 0);
+            cell.transition('position', currentPos, {
+              duration: 400,
+              timing: 'ease-out',
+            });
+            cell.transition('attrs/body/opacity', 1, {
+              duration: 300,
+              timing: 'ease-out',
+            });
+          }
+        }, index * 30);
+      });
+    }, 0);
+    
     // 布局
     const nodes = graph.getNodes();
     const edges = graph.getEdges();
@@ -415,13 +442,18 @@ export function OrganizationView() {
     const dept = departments.find((d) => d.id === deptId);
     if (!dept) return;
     
-    if (confirm(`确定要删除"${dept.name}"吗？子部门和员工分配也会被清除。`)) {
-      deleteDepartment(deptId);
-      if (selectedDept === deptId) {
-        setSelectedDept(null);
-      }
-      toast.success('部门已删除');
-    }
+    setConfirmDialog({
+      title: '删除部门',
+      message: `确定要删除"${dept.name}"吗？子部门和员工分配也会被清除。`,
+      onConfirm: () => {
+        deleteDepartment(deptId);
+        if (selectedDept === deptId) {
+          setSelectedDept(null);
+        }
+        toast.success('部门已删除');
+        setConfirmDialog(null);
+      },
+    });
   }, [departments, deleteDepartment, selectedDept]);
   
   // 重命名部门
@@ -437,21 +469,23 @@ export function OrganizationView() {
     const agent = agents.find((a) => a.id === botId);
     if (!agent) return;
     
-    if (confirm(`确定要将"${agent.name}"从部门中移除吗？`)) {
-      unassignAgent(botId);
-      toast.success('员工已移除');
-    }
+    unassignAgent(botId);
+    toast.success('员工已移除');
   }, [agents, unassignAgent]);
   
   // 拖拽开始
   const handleDragStart = useCallback((e: React.DragEvent, botId: string) => {
     e.dataTransfer.setData('botId', botId);
+    e.dataTransfer.effectAllowed = 'move';
     setDraggingBot(botId);
+    setDragPosition({ x: e.clientX, y: e.clientY });
   }, []);
   
   // 拖拽结束
   const handleDragEnd = useCallback(() => {
     setDraggingBot(null);
+    setDragPosition(null);
+    setDropTarget(null);
   }, []);
   
   // 拖拽到画布
@@ -487,6 +521,8 @@ export function OrganizationView() {
   // 拖拽经过画布时高亮目标部门
   const handleCanvasDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
+    setDragPosition({ x: e.clientX, y: e.clientY });
+    
     if (!draggingBot || !graphRef.current) return;
     
     const graph = graphRef.current;
@@ -800,6 +836,43 @@ export function OrganizationView() {
             </motion.div>
           )}
         </AnimatePresence>
+        
+        {/* 拖动预览 */}
+        <AnimatePresence>
+          {draggingBot && dragPosition && (
+            <motion.div
+              initial={{ opacity: 0, scale: 0.8 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.8 }}
+              style={{
+                position: 'fixed',
+                left: dragPosition.x,
+                top: dragPosition.y,
+                pointerEvents: 'none',
+                zIndex: 9999,
+              }}
+              className="transform -translate-x-1/2 -translate-y-1/2"
+            >
+              <motion.div
+                animate={{ 
+                  rotate: [0, 5, -5, 0],
+                  scale: [1, 1.05, 1],
+                }}
+                transition={{ duration: 0.5, repeat: Infinity }}
+                className="p-3 rounded-xl border-2 border-blue-500 bg-white dark:bg-gray-800 shadow-2xl"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white text-[15px] font-bold">
+                    {getEmoji(draggingBot)}
+                  </div>
+                  <div className="text-[13px] font-semibold text-foreground">
+                    {agents.find((a) => a.id === draggingBot)?.name}
+                  </div>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </motion.div>
       
       {/* 重命名对话框 */}
@@ -843,6 +916,49 @@ export function OrganizationView() {
                   className="h-9 text-[13px] font-medium rounded-full px-4"
                 >
                   确定
+                </Button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* 确认对话框 */}
+      <AnimatePresence>
+        {confirmDialog && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+            onClick={() => setConfirmDialog(null)}
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-[#f3f1e9] dark:bg-gray-800 rounded-3xl p-6 w-full max-w-md shadow-2xl"
+            >
+              <h3 className="text-xl font-serif font-normal tracking-tight text-foreground mb-3">
+                {confirmDialog.title}
+              </h3>
+              <p className="text-[14px] text-muted-foreground mb-6">
+                {confirmDialog.message}
+              </p>
+              <div className="flex gap-3 justify-end">
+                <Button
+                  variant="outline"
+                  onClick={() => setConfirmDialog(null)}
+                  className="h-10 text-[13px] font-medium rounded-full px-6"
+                >
+                  取消
+                </Button>
+                <Button
+                  onClick={confirmDialog.onConfirm}
+                  className="h-10 text-[13px] font-medium rounded-full px-6 bg-red-600 hover:bg-red-700"
+                >
+                  确定删除
                 </Button>
               </div>
             </motion.div>
