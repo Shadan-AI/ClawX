@@ -111,13 +111,18 @@ export function getPreloadPath(): string {
 /**
  * Get OpenClaw package directory
  * - Production (packaged): from resources/openclaw (copied by electron-builder extraResources)
- * - Development: prefer @shadanai/openclaw, fall back to openclaw
+ * - Development: use local openme/openme directory
  */
 export function getOpenClawDir(): string {
   if (getElectronApp().isPackaged) {
     return join(process.resourcesPath, 'openclaw');
   }
-  // Development: prefer private fork, fall back to public package
+  // Development: use local openme/openme directory
+  const localOpenmeDir = join(__dirname, '../../../../openme/openme');
+  if (existsSync(localOpenmeDir)) {
+    return localOpenmeDir;
+  }
+  // Fallback to node_modules if local openme not found
   const privateDir = join(__dirname, '../../node_modules/@shadanai/openclaw');
   if (existsSync(privateDir)) {
     return privateDir;

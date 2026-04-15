@@ -1,6 +1,6 @@
 import { app, utilityProcess } from 'electron';
 import { existsSync, writeFileSync } from 'fs';
-import path from 'path';
+import path, { delimiter, join } from 'path';
 import type { GatewayLaunchContext } from './config-sync';
 import type { GatewayLifecycleState } from './process-policy';
 import { logger } from '../utils/logger';
@@ -151,6 +151,16 @@ export async function launchGatewayProcess(options: {
   const lastSpawnSummary = `mode=${mode}, entry="${entryScript}", args="${options.sanitizeSpawnArgs(gatewayArgs).join(' ')}", cwd="${openclawDir}"`;
 
   const runtimeEnv = { ...forkEnv };
+  
+  // Add NODE_PATH for pnpm module resolution when using local openme
+  const openclawNodeModules = join(openclawDir, 'node_modules');
+  if (existsSync(openclawNodeModules)) {
+    const existingNodePath = runtimeEnv.NODE_PATH || '';
+    runtimeEnv.NODE_PATH = existingNodePath
+      ? `${openclawNodeModules}${delimiter}${existingNodePath}`
+      : openclawNodeModules;
+  }
+  
   // Load preload in all environments (not just dev) — it contains the
   // PowerShell UTF-8 encoding fix needed for correct Chinese text output.
   try {
