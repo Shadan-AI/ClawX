@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, Bot, Check, Plus, RefreshCw, Settings2, Trash2, X, Layout, Puzzle } from 'lucide-react';
+import { AlertCircle, Bot, Check, Plus, RefreshCw, Settings2, Trash2, X, Layout, Puzzle, Building2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -30,6 +30,7 @@ import wecomIcon from '@/assets/channels/wecom.svg';
 import qqIcon from '@/assets/channels/qq.svg';
 import { TemplateManagementDialog } from '@/components/agents/TemplateManagementDialog';
 import { SkillsConfigurationView } from './SkillsConfigurationView';
+import { OrganizationView } from './OrganizationView';
 
 interface ChannelAccountItem {
   accountId: string;
@@ -116,7 +117,7 @@ export function Agents() {
   const [activeAgentId, setActiveAgentId] = useState<string | null>(null);
   const [agentToDelete, setAgentToDelete] = useState<AgentSummary | null>(null);
   const [showTemplateDialog, setShowTemplateDialog] = useState(false);
-  const [viewMode, setViewMode] = useState<'list' | 'skills'>('list');
+  const [viewMode, setViewMode] = useState<'list' | 'skills' | 'organization'>('list');
 
   const fetchChannelAccounts = useCallback(async () => {
     try {
@@ -245,6 +246,14 @@ export function Agents() {
             <Puzzle className="h-4 w-4 mr-2" />
             技能配置
           </Button>
+          <Button
+            variant={viewMode === 'organization' ? 'default' : 'outline'}
+            onClick={() => setViewMode('organization')}
+            className="h-10 text-sm font-medium rounded-full px-6"
+          >
+            <Building2 className="h-4 w-4 mr-2" />
+            组织架构
+          </Button>
         </div>
 
         <div className="flex-1 overflow-y-auto pr-2 pb-10 min-h-0 -mr-2">
@@ -280,11 +289,13 @@ export function Agents() {
                 ))}
               </div>
             </>
-          ) : (
+          ) : viewMode === 'skills' ? (
             <SkillsConfigurationView
               employees={agents}
               onRefresh={handleRefresh}
             />
+          ) : (
+            <OrganizationView />
           )}
         </div>
       </div>

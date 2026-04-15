@@ -1,6 +1,6 @@
 {
     "name": "openme",
-    "version": "0.6.6",
+    "version": "0.6.9",
     "pnpm": {
         "onlyBuiltDependencies": [
             "@discordjs/opus",
@@ -70,8 +70,11 @@
         "postversion": "git push && git push --tags"
     },
     "dependencies": {
+        "@antv/x6": "^3.1.7",
+        "@rollup/rollup-win32-x64-msvc": "^4.60.1",
         "@sinclair/typebox": "^0.34.48",
         "clawhub": "^0.5.0",
+        "dagre": "^0.8.5",
         "electron-store": "^11.0.2",
         "electron-updater": "^6.8.3",
         "lru-cache": "^11.2.6",
@@ -96,13 +99,12 @@
         "@radix-ui/react-tabs": "^1.1.13",
         "@radix-ui/react-toast": "^1.2.15",
         "@radix-ui/react-tooltip": "^1.2.8",
-        "@rollup/rollup-win32-x64-msvc": "^4.60.1",
-        "@shadanai/openclaw": "latest",
+        "@shadanai/openclaw": "2026.4.7-1",
         "@soimy/dingtalk": "^3.5.1",
-        "@tanstack/react-virtual": "^3.13.23",
         "@tencent-weixin/openclaw-weixin": "^2.1.1",
         "@testing-library/jest-dom": "^6.9.1",
         "@testing-library/react": "^16.3.2",
+        "@types/dagre": "^0.7.54",
         "@types/node": "^25.3.0",
         "@types/react": "^19.2.14",
         "@types/react-dom": "^19.2.3",
