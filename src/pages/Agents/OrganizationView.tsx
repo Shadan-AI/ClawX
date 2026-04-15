@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Graph } from '@antv/x6';
 import dagre from 'dagre';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Building2, Plus, Trash2, Edit2, Users, Bot } from 'lucide-react';
+import { Building2, Plus, Trash2, Edit2, Users, Bot, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useOrganizationStore } from '@/stores/organization';
