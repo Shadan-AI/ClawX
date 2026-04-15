@@ -9,6 +9,7 @@ import {
   resolveAccountIdForAgent,
   updateAgentModel,
   updateAgentName,
+  updateAgentSkills,
 } from '../../utils/agent-config';
 import { deleteChannelAccountConfig } from '../../utils/channel-config';
 import { syncAgentModelOverrideToRuntime, syncAllProviderAuthToRuntime } from '../../services/providers/provider-runtime-sync';
@@ -165,6 +166,18 @@ export async function handleAgentRoutes(
           console.warn('[agents] Failed to sync runtime after updating agent model:', syncError);
         }
         scheduleGatewayReload(ctx, 'update-agent-model');
+        sendJson(res, 200, { success: true, ...snapshot });
+      } catch (error) {
+        sendJson(res, 500, { success: false, error: String(error) });
+      }
+      return true;
+    }
+
+    if (parts.length === 2 && parts[1] === 'skills') {
+      try {
+        const body = await parseJsonBody<{ skills: string[] }>(req);
+        const agentId = decodeURIComponent(parts[0]);
+        const snapshot = await updateAgentSkills(agentId, body.skills || []);
         sendJson(res, 200, { success: true, ...snapshot });
       } catch (error) {
         sendJson(res, 500, { success: false, error: String(error) });

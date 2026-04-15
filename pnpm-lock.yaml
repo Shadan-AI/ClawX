@@ -86,12 +86,18 @@ importers:
       '@radix-ui/react-tooltip':
         specifier: ^1.2.8
         version: 1.2.8(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+      '@rollup/rollup-win32-x64-msvc':
+        specifier: ^4.60.1
+        version: 4.60.1
       '@shadanai/openclaw':
         specifier: latest
         version: 2026.4.7-1(@napi-rs/canvas@0.1.97)(encoding@0.1.13)
       '@soimy/dingtalk':
         specifier: ^3.5.1
         version: 3.5.1(openclaw@2026.4.1(@napi-rs/canvas@0.1.97)(encoding@0.1.13))
+      '@tanstack/react-virtual':
+        specifier: ^3.13.23
+        version: 3.13.23(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@tencent-weixin/openclaw-weixin':
         specifier: ^2.1.1
         version: 2.1.1
@@ -2219,6 +2225,11 @@ packages:
     cpu: [x64]
     os: [win32]
 
+  '@rollup/rollup-win32-x64-msvc@4.60.1':
+    resolution: {integrity: sha512-lWMnixq/QzxyhTV6NjQJ4SFo1J6PvOX8vUx5Wb4bBPsEb+8xZ89Bz6kOXpfXj9ak9AHTQVQzlgzBEc1SyM27xQ==}
+    cpu: [x64]
+    os: [win32]
+
   '@shadanai/openclaw@2026.4.7-1':
     resolution: {integrity: sha512-r/e6RuvaeKAWkcXKrz+5+bc7srT9OeGpYjkQSHF3yFYrOToCSCWDMot1vJernDlkUiGTve0AZkEBXWgKoLnH6Q==}
     engines: {node: '>=22.16.0'}
@@ -2586,6 +2597,15 @@ packages:
   '@szmarczak/http-timer@4.0.6':
     resolution: {integrity: sha512-4BAffykYOgO+5nzBWYwE3W90sBgLJoUPRWWcL8wlyiM8IB8ipJz3UMJ9KXQd1RKQXpKp8Tutn80HZtWsu2u76w==}
     engines: {node: '>=10'}
+
+  '@tanstack/react-virtual@3.13.23':
+    resolution: {integrity: sha512-XnMRnHQ23piOVj2bzJqHrRrLg4r+F86fuBcwteKfbIjJrtGxb4z7tIvPVAe4B+4UVwo9G4Giuz5fmapcrnZ0OQ==}
+    peerDependencies:
+      react: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
+      react-dom: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
+
+  '@tanstack/virtual-core@3.13.23':
+    resolution: {integrity: sha512-zSz2Z2HNyLjCplANTDyl3BcdQJc2k1+yyFoKhNRmCr7V7dY8o8q5m8uFTI1/Pg1kL+Hgrz6u3Xo6eFUB7l66cg==}
 
   '@telegraf/types@7.1.0':
     resolution: {integrity: sha512-kGevOIbpMcIlCDeorKGpwZmdH7kHbqlk/Yj6dEpJMKEQw5lk0KVQY0OLXaCswy8GqlIVLd5625OB+rAntP9xVw==}
@@ -8951,6 +8971,8 @@ snapshots:
   '@rollup/rollup-win32-x64-msvc@4.60.0':
     optional: true
 
+  '@rollup/rollup-win32-x64-msvc@4.60.1': {}
+
   '@shadanai/openclaw@2026.4.7-1(@napi-rs/canvas@0.1.97)(encoding@0.1.13)':
     dependencies:
       '@agentclientprotocol/sdk': 0.16.1(zod@4.3.6)
@@ -9600,6 +9622,14 @@ snapshots:
   '@szmarczak/http-timer@4.0.6':
     dependencies:
       defer-to-connect: 2.0.1
+
+  '@tanstack/react-virtual@3.13.23(react-dom@19.2.4(react@19.2.4))(react@19.2.4)':
+    dependencies:
+      '@tanstack/virtual-core': 3.13.23
+      react: 19.2.4
+      react-dom: 19.2.4(react@19.2.4)
+
+  '@tanstack/virtual-core@3.13.23': {}
 
   '@telegraf/types@7.1.0':
     optional: true

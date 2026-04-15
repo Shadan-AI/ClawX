@@ -57,6 +57,7 @@ export interface BotInfo {
   accessToken?: string | null;
   model?: string;
   deviceNodeId?: string;
+  skills?: string[];
 }
 
 export interface BoxImSyncResult {
@@ -199,6 +200,7 @@ export async function fetchBotsFromApi(apiUrl: string, tokenKey: string): Promis
     accessToken: b.accessToken ?? null,
     model: b.model ?? undefined,
     deviceNodeId: b.deviceNodeId ?? b.nodeId ?? undefined,
+    skills: b.skills ? (typeof b.skills === 'string' ? JSON.parse(b.skills) : b.skills) : undefined,
   }));
 }
 
@@ -218,6 +220,7 @@ function buildAccountsFromBots(
       botName: bot.nickName,
       headImage: bot.headImage ?? '',
       model: bot.model ?? '',
+      skills: bot.skills ?? existing[agentId]?.skills ?? undefined,
     };
   }
   return accounts;
@@ -245,6 +248,10 @@ function reconcileAgents(
         existing.name = existing.name || acct.botName || agentId;
       } else {
         existing.name = acct.botName || agentId;
+        // 从数据库同步 skills（数据库优先）
+        if (acct.skills) {
+          existing.skills = acct.skills;
+        }
         result.push(existing);
       }
     } else {
@@ -254,6 +261,7 @@ function reconcileAgents(
         name: acct.botName || agentId,
         workspace: `${home}/.openclaw/workspace-${agentId}`,
         agentDir: `${home}/.openclaw/agents/${agentId}/agent`,
+        skills: acct.skills,
       });
     }
   }

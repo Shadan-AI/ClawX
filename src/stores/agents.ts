@@ -10,6 +10,7 @@ interface AgentsState {
   configuredChannelTypes: string[];
   channelOwners: Record<string, string>;
   channelAccountOwners: Record<string, string>;
+  agentSkills: Record<string, string[]>; // agentId -> skillIds
   loading: boolean;
   error: string | null;
   fetchAgents: () => Promise<void>;
@@ -19,6 +20,7 @@ interface AgentsState {
   deleteAgent: (agentId: string) => Promise<void>;
   assignChannel: (agentId: string, channelType: ChannelType) => Promise<void>;
   removeChannel: (agentId: string, channelType: ChannelType) => Promise<void>;
+  updateAgentSkills: (agentId: string, skillIds: string[]) => Promise<void>;
   clearError: () => void;
 }
 
@@ -33,13 +35,14 @@ function applySnapshot(snapshot: AgentsSnapshot | undefined) {
   } : {};
 }
 
-export const useAgentsStore = create<AgentsState>((set) => ({
+export const useAgentsStore = create<AgentsState>((set, get) => ({
   agents: [],
   defaultAgentId: 'main',
   defaultModelRef: null,
   configuredChannelTypes: [],
   channelOwners: {},
   channelAccountOwners: {},
+  agentSkills: {},
   loading: false,
   error: null,
 
@@ -47,8 +50,18 @@ export const useAgentsStore = create<AgentsState>((set) => ({
     set({ loading: true, error: null });
     try {
       const snapshot = await hostApiFetch<AgentsSnapshot & { success?: boolean }>('/api/agents');
+      
+      // 从 agents 中提取 skills 到 agentSkills
+      const agentSkills: Record<string, string[]> = {};
+      snapshot.agents?.forEach(agent => {
+        if (agent.skills && Array.isArray(agent.skills)) {
+          agentSkills[agent.id] = agent.skills;
+        }
+      });
+      
       set({
         ...applySnapshot(snapshot),
+        agentSkills,
         loading: false,
       });
     } catch (error) {
@@ -141,6 +154,65 @@ export const useAgentsStore = create<AgentsState>((set) => ({
       );
       set(applySnapshot(snapshot));
     } catch (error) {
+      set({ error: String(error) });
+      throw error;
+    }
+  },
+
+  updateAgentSkills: async (agentId: string, skillIds: string[]) => {
+    set({ error: null });
+    try {
+      console.log('[agents] updateAgentSkills called:', { agentId, skillIds });
+      
+      // 1. 保存到本地配置文件
+      const snapshot = await hostApiFetch<AgentsSnapshot & { success?: boolean }>(
+        `/api/agents/${encodeURIComponent(agentId)}/skills`,
+        {
+          method: 'PUT',
+          body: JSON.stringify({ skills: skillIds }),
+        }
+      );
+      
+      console.log('[agents] Skills saved to config file');
+      
+      // 2. 同步到数据库（如果有对应的 Box-IM 数字员工）
+      try {
+        const { useModelsStore } = await import('./models');
+        const digitalEmployees = useModelsStore.getState().digitalEmployees;
+        
+        // 如果 digitalEmployees 为空，先获取一次
+        if (digitalEmployees.length === 0) {
+          console.log('[agents] digitalEmployees is empty, fetching...');
+          await useModelsStore.getState().fetchDigitalEmployees();
+        }
+        
+        const employee = useModelsStore.getState().digitalEmployees.find(e => e.openclawAgentId === agentId);
+        
+        if (employee) {
+          console.log('[agents] Found matching Box-IM employee:', employee.id, employee.nickName);
+          console.log('[agents] Saving skills to database...');
+          await useModelsStore.getState().updateEmployeeSkills(employee.id, skillIds);
+          console.log('[agents] Skills saved to database');
+        } else {
+          console.log('[agents] No matching Box-IM employee found for agentId:', agentId);
+        }
+      } catch (dbError) {
+        // 数据库同步失败不影响配置文件保存
+        console.warn('[agents] Failed to sync skills to database:', dbError);
+      }
+      
+      // 3. 更新本地状态
+      set((state) => ({
+        ...applySnapshot(snapshot),
+        agentSkills: {
+          ...state.agentSkills,
+          [agentId]: skillIds,
+        },
+      }));
+      
+      console.log('[agents] Local state updated');
+    } catch (error) {
+      console.error('[agents] updateAgentSkills error:', error);
       set({ error: String(error) });
       throw error;
     }

@@ -19,6 +19,7 @@ export interface DigitalEmployee {
   openclawAgentId: string;
   model: string;
   nodeId: string;
+  skills?: string | string[]; // 可以是 JSON 字符串或数组
 }
 
 export interface ModelState {
@@ -37,6 +38,7 @@ export interface ModelState {
   checkLoginStatus: () => Promise<boolean>;
   logout: () => Promise<void>;
   fetchDigitalEmployees: () => Promise<void>;
+  updateEmployeeSkills: (employeeId: number, skills: string[]) => Promise<void>;
   getAgentDefaultModel: (agentId: string) => string | null;
   getSessionModel: (sessionKey: string) => string | null;
   setSessionModel: (sessionKey: string, modelId: string) => void;
@@ -218,10 +220,133 @@ export const useModelsStore = create<ModelState>((set, get) => ({
 
   fetchDigitalEmployees: async () => {
     try {
-      const data = await hostApiFetch<{ bots?: DigitalEmployee[] }>('/plugins/box-im/bots');
-      set({ digitalEmployees: (data.bots || []) as DigitalEmployee[] });
-    } catch {
+      console.log('[models] Fetching digital employees...');
+      
+      // 直接调用 im-platform API，绕过 Gateway
+      const tokenKey = await getTokenKey();
+      if (!tokenKey) {
+        console.log('[models] No tokenKey, skipping fetch');
+        set({ digitalEmployees: [] });
+        return;
+      }
+      
+      const apiUrl = 'https://im.shadanai.com/api';
+      const response = await fetch(`${apiUrl}/bot/list`, {
+        method: 'GET',
+        headers: {
+          'Token-Key': tokenKey,
+          'Content-Type': 'application/json',
+        },
+      });
+      
+      if (!response.ok) {
+        throw new Error(`API request failed: ${response.status}`);
+      }
+      
+      const result = await response.json();
+      console.log('[models] Digital employees response:', result);
+      
+      if (result.code !== 200) {
+        throw new Error(`API error: ${result.message}`);
+      }
+      
+      const employees = (result.data || []).map((emp: any) => {
+        // 解析 skills 字段（可能是 JSON 字符串或数组）
+        let skillsArray: string[] = [];
+        if (emp.skills) {
+          if (typeof emp.skills === 'string') {
+            try {
+              skillsArray = JSON.parse(emp.skills);
+            } catch {
+              skillsArray = [];
+            }
+          } else if (Array.isArray(emp.skills)) {
+            skillsArray = emp.skills;
+          }
+        }
+        
+        return {
+          id: emp.id,
+          userName: emp.userName || '',
+          nickName: emp.nickName || '',
+          headImage: emp.headImage || '',
+          openclawAgentId: emp.openclawAgentId || emp.agentId || emp.userName || '',
+          model: emp.model || '',
+          nodeId: emp.nodeId || '',
+          skills: skillsArray,
+        };
+      }) as DigitalEmployee[];
+      
+      console.log('[models] Parsed employees:', employees);
+      console.log('[models] Employee count:', employees.length);
+      set({ digitalEmployees: employees });
+      
+      // 同步技能到 agents store
+      const { useAgentsStore } = await import('./agents');
+      const agentSkills: Record<string, string[]> = {};
+      employees.forEach(emp => {
+        console.log('[models] Processing employee:', { id: emp.id, openclawAgentId: emp.openclawAgentId, skills: emp.skills });
+        if (emp.openclawAgentId && emp.skills && Array.isArray(emp.skills)) {
+          agentSkills[emp.openclawAgentId] = emp.skills;
+        }
+      });
+      
+      console.log('[models] Agent skills to sync:', agentSkills);
+      
+      // 批量更新 agents store 的技能
+      useAgentsStore.setState((state) => ({
+        agentSkills: {
+          ...state.agentSkills,
+          ...agentSkills,
+        },
+      }));
+    } catch (error) {
+      console.error('[models] Failed to fetch digital employees:', error);
       set({ digitalEmployees: [] });
+    }
+  },
+
+  updateEmployeeSkills: async (employeeId: number, skills: string[]) => {
+    try {
+      console.log('[models] updateEmployeeSkills called:', { employeeId, skills });
+      
+      // 直接调用 im-platform API，而不是通过 Gateway
+      const { invokeIpc } = await import('@/lib/api-client');
+      const tokenKey = await invokeIpc<string | null>('box-im:getTokenKey');
+      
+      if (!tokenKey) {
+        throw new Error('未绑定用户');
+      }
+      
+      const apiUrl = 'https://im.shadanai.com/api';
+      const response = await fetch(`${apiUrl}/bot/skills/${employeeId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Token-Key': tokenKey,
+        },
+        body: JSON.stringify({ skills }),
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`API 请求失败: ${response.status} ${errorText}`);
+      }
+      
+      const result = await response.json();
+      console.log('[models] API response:', result);
+      
+      // Update local state
+      set((state) => ({
+        digitalEmployees: state.digitalEmployees.map(emp =>
+          emp.id === employeeId ? { ...emp, skills } : emp
+        ),
+      }));
+      
+      console.log('[models] Local state updated');
+    } catch (err) {
+      console.error('[models] Failed to update employee skills:', err);
+      throw err;
     }
   },
 

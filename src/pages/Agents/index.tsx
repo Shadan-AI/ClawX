@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, Bot, Check, Plus, RefreshCw, Settings2, Trash2, X } from 'lucide-react';
+import { AlertCircle, Bot, Check, Plus, RefreshCw, Settings2, Trash2, X, Layout, Puzzle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -11,6 +11,7 @@ import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 import { useAgentsStore } from '@/stores/agents';
 import { useGatewayStore } from '@/stores/gateway';
 import { useProviderStore } from '@/stores/providers';
+import { useModelsStore } from '@/stores/models';
 import { hostApiFetch } from '@/lib/host-api';
 import { subscribeHostEvent } from '@/lib/host-events';
 import { CHANNEL_ICONS, CHANNEL_NAMES, type ChannelType } from '@/types/channel';
@@ -27,6 +28,8 @@ import dingtalkIcon from '@/assets/channels/dingtalk.svg';
 import feishuIcon from '@/assets/channels/feishu.svg';
 import wecomIcon from '@/assets/channels/wecom.svg';
 import qqIcon from '@/assets/channels/qq.svg';
+import { TemplateManagementDialog } from '@/components/agents/TemplateManagementDialog';
+import { SkillsConfigurationView } from './SkillsConfigurationView';
 
 interface ChannelAccountItem {
   accountId: string;
@@ -96,6 +99,7 @@ export function Agents() {
   const { t } = useTranslation('agents');
   const gatewayStatus = useGatewayStore((state) => state.status);
   const refreshProviderSnapshot = useProviderStore((state) => state.refreshProviderSnapshot);
+  const { digitalEmployees, fetchDigitalEmployees } = useModelsStore();
   const lastGatewayStateRef = useRef(gatewayStatus.state);
   const {
     agents,
@@ -111,6 +115,8 @@ export function Agents() {
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [activeAgentId, setActiveAgentId] = useState<string | null>(null);
   const [agentToDelete, setAgentToDelete] = useState<AgentSummary | null>(null);
+  const [showTemplateDialog, setShowTemplateDialog] = useState(false);
+  const [viewMode, setViewMode] = useState<'list' | 'skills'>('list');
 
   const fetchChannelAccounts = useCallback(async () => {
     try {
@@ -124,7 +130,12 @@ export function Agents() {
   useEffect(() => {
     let mounted = true;
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    void Promise.all([fetchAgents(), fetchChannelAccounts(), refreshProviderSnapshot()]).finally(() => {
+    void Promise.all([
+      fetchAgents(), 
+      fetchChannelAccounts(), 
+      refreshProviderSnapshot(),
+      fetchDigitalEmployees()
+    ]).finally(() => {
       if (mounted) {
         setHasCompletedInitialLoad(true);
       }
@@ -132,7 +143,7 @@ export function Agents() {
     return () => {
       mounted = false;
     };
-  }, [fetchAgents, fetchChannelAccounts, refreshProviderSnapshot]);
+  }, [fetchAgents, fetchChannelAccounts, refreshProviderSnapshot, fetchDigitalEmployees]);
 
   useEffect(() => {
     const unsubscribe = subscribeHostEvent('gateway:channel-status', () => {
@@ -163,8 +174,9 @@ export function Agents() {
   const visibleAgents = agents;
   const visibleChannelGroups = channelGroups;
   const isUsingStableValue = loading && hasCompletedInitialLoad;
+  
   const handleRefresh = () => {
-    void Promise.all([fetchAgents(), fetchChannelAccounts()]);
+    void Promise.all([fetchAgents(), fetchChannelAccounts(), fetchDigitalEmployees()]);
   };
 
   if (loading && !hasCompletedInitialLoad) {
@@ -178,7 +190,7 @@ export function Agents() {
   return (
     <div data-testid="agents-page" className="flex flex-col -m-6 dark:bg-background h-[calc(100vh-2.5rem)] overflow-hidden">
       <div className="w-full max-w-5xl mx-auto flex flex-col h-full p-10 pt-16">
-        <div className="flex flex-col md:flex-row md:items-start justify-between mb-12 shrink-0 gap-4">
+        <div className="flex flex-col md:flex-row md:items-start justify-between mb-8 shrink-0 gap-4">
           <div>
             <h1
               className="text-5xl md:text-6xl font-serif text-foreground mb-3 font-normal tracking-tight"
@@ -198,6 +210,14 @@ export function Agents() {
               {t('refresh')}
             </Button>
             <Button
+              variant="outline"
+              onClick={() => setShowTemplateDialog(true)}
+              className="h-9 text-[13px] font-medium rounded-full px-4 border-black/10 dark:border-white/10 bg-transparent hover:bg-black/5 dark:hover:bg-white/5 shadow-none text-foreground/80 hover:text-foreground transition-colors"
+            >
+              <Layout className="h-3.5 w-3.5 mr-2" />
+              模板管理
+            </Button>
+            <Button
               onClick={() => setShowAddDialog(true)}
               className="h-9 text-[13px] font-medium rounded-full px-4 shadow-none"
             >
@@ -207,36 +227,65 @@ export function Agents() {
           </div>
         </div>
 
+        {/* 视图切换按钮 */}
+        <div className="flex items-center gap-2 mb-6 shrink-0">
+          <Button
+            variant={viewMode === 'list' ? 'default' : 'outline'}
+            onClick={() => setViewMode('list')}
+            className="h-10 text-sm font-medium rounded-full px-6"
+          >
+            <Bot className="h-4 w-4 mr-2" />
+            员工列表
+          </Button>
+          <Button
+            variant={viewMode === 'skills' ? 'default' : 'outline'}
+            onClick={() => setViewMode('skills')}
+            className="h-10 text-sm font-medium rounded-full px-6"
+          >
+            <Puzzle className="h-4 w-4 mr-2" />
+            技能配置
+          </Button>
+        </div>
+
         <div className="flex-1 overflow-y-auto pr-2 pb-10 min-h-0 -mr-2">
-          {gatewayStatus.state !== 'running' && (
-            <div className="mb-8 p-4 rounded-xl border border-yellow-500/50 bg-yellow-500/10 flex items-center gap-3">
-              <AlertCircle className="h-5 w-5 text-yellow-600 dark:text-yellow-400" />
-              <span className="text-yellow-700 dark:text-yellow-400 text-sm font-medium">
-                {t('gatewayWarning')}
-              </span>
-            </div>
-          )}
+          {viewMode === 'list' ? (
+            <>
+              {gatewayStatus.state !== 'running' && (
+                <div className="mb-8 p-4 rounded-xl border border-yellow-500/50 bg-yellow-500/10 flex items-center gap-3">
+                  <AlertCircle className="h-5 w-5 text-yellow-600 dark:text-yellow-400" />
+                  <span className="text-yellow-700 dark:text-yellow-400 text-sm font-medium">
+                    {t('gatewayWarning')}
+                  </span>
+                </div>
+              )}
 
-          {error && (
-            <div className="mb-8 p-4 rounded-xl border border-destructive/50 bg-destructive/10 flex items-center gap-3">
-              <AlertCircle className="h-5 w-5 text-destructive" />
-              <span className="text-destructive text-sm font-medium">
-                {error}
-              </span>
-            </div>
-          )}
+              {error && (
+                <div className="mb-8 p-4 rounded-xl border border-destructive/50 bg-destructive/10 flex items-center gap-3">
+                  <AlertCircle className="h-5 w-5 text-destructive" />
+                  <span className="text-destructive text-sm font-medium">
+                    {error}
+                  </span>
+                </div>
+              )}
 
-          <div className="space-y-3">
-            {visibleAgents.map((agent) => (
-              <AgentCard
-                key={agent.id}
-                agent={agent}
-                channelGroups={visibleChannelGroups}
-                onOpenSettings={() => setActiveAgentId(agent.id)}
-                onDelete={() => setAgentToDelete(agent)}
-              />
-            ))}
-          </div>
+              <div className="space-y-3">
+                {visibleAgents.map((agent) => (
+                  <AgentCard
+                    key={agent.id}
+                    agent={agent}
+                    channelGroups={visibleChannelGroups}
+                    onOpenSettings={() => setActiveAgentId(agent.id)}
+                    onDelete={() => setAgentToDelete(agent)}
+                  />
+                ))}
+              </div>
+            </>
+          ) : (
+            <SkillsConfigurationView
+              employees={agents}
+              onRefresh={handleRefresh}
+            />
+          )}
         </div>
       </div>
 
@@ -281,6 +330,11 @@ export function Agents() {
           }
         }}
         onCancel={() => setAgentToDelete(null)}
+      />
+
+      <TemplateManagementDialog
+        isOpen={showTemplateDialog}
+        onClose={() => setShowTemplateDialog(false)}
       />
     </div>
   );

@@ -10,6 +10,7 @@ export interface AgentSummary {
   agentDir: string;
   mainSessionKey: string;
   channelTypes: string[];
+  skills?: string[];
 }
 
 export interface AgentsSnapshot {
@@ -19,4 +20,33 @@ export interface AgentsSnapshot {
   configuredChannelTypes: string[];
   channelOwners: Record<string, string>;
   channelAccountOwners: Record<string, string>;
+}
+
+/**
+ * 数字员工模板
+ */
+export interface AgentTemplate {
+  id: number;
+  name: string;
+  nameZh: string;
+  description: string;
+  descriptionZh: string;
+  icon: string;
+  skills: string[];  // 技能 slug 数组
+  recommended: boolean;
+  sortOrder: number;
+}
+
+/**
+ * 数字员工模板 DTO（用于创建和更新）
+ */
+export interface AgentTemplateDTO {
+  name: string;
+  nameZh: string;
+  description?: string;
+  descriptionZh?: string;
+  icon?: string;
+  skills: string[];
+  recommended?: boolean;
+  sortOrder?: number;
 }
