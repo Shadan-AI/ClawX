@@ -31,6 +31,7 @@ import qqIcon from '@/assets/channels/qq.svg';
 import { TemplateManagementDialog } from '@/components/agents/TemplateManagementDialog';
 import { SkillsConfigurationView } from './SkillsConfigurationView';
 import { OrganizationView } from './OrganizationView';
+import { ConfettiPhysics } from '@/components/agents/ConfettiPhysics';
 
 interface ChannelAccountItem {
   accountId: string;
@@ -118,6 +119,9 @@ export function Agents() {
   const [agentToDelete, setAgentToDelete] = useState<AgentSummary | null>(null);
   const [showTemplateDialog, setShowTemplateDialog] = useState(false);
   const [viewMode, setViewMode] = useState<'list' | 'skills' | 'organization'>('list');
+  const [globalConfetti, setGlobalConfetti] = useState<Array<{ id: number; x: number; y: number; explosionX: number; explosionY: number; color: string; size: number }>>([]);
+  const lastClickTimeRef = useRef<number>(0);
+  const pendingConfettiRef = useRef<Set<number>>(new Set());
 
   const fetchChannelAccounts = useCallback(async () => {
     try {
@@ -172,12 +176,78 @@ export function Agents() {
     [activeAgentId, agents],
   );
 
-  const visibleAgents = agents;
+  // 标记哪些 agent 是数字员工
+  const visibleAgents = useMemo(() => {
+    const digitalEmployeeIds = new Set(digitalEmployees.map(emp => emp.openclawAgentId));
+    return agents.map(agent => ({
+      ...agent,
+      isDigitalEmployee: digitalEmployeeIds.has(agent.id),
+    }));
+  }, [agents, digitalEmployees]);
+  
   const visibleChannelGroups = channelGroups;
   const isUsingStableValue = loading && hasCompletedInitialLoad;
   
   const handleRefresh = () => {
     void Promise.all([fetchAgents(), fetchChannelAccounts(), fetchDigitalEmployees()]);
+  };
+  
+  const handleDigitalEmployeeClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    // 防抖：500ms 内只能点击一次
+    const now = Date.now();
+    if (now - lastClickTimeRef.current < 500) {
+      return;
+    }
+    lastClickTimeRef.current = now;
+    
+    // 限制最大方块数量
+    if (globalConfetti.length > 100) {
+      return;
+    }
+    
+    const timestamp = Date.now();
+    
+    // 检查是否已经在处理中（防止重复触发）
+    if (pendingConfettiRef.current.has(timestamp)) {
+      return;
+    }
+    pendingConfettiRef.current.add(timestamp);
+    
+    // 获取卡片在页面中的位置
+    const rect = event.currentTarget.getBoundingClientRect();
+    const cardCenterX = rect.left + rect.width / 2;
+    const cardCenterY = rect.top + rect.height / 2;
+    
+    // 生成彩色像素块 - 从卡片中心爆炸式出现
+    const colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8', '#F7DC6F', '#BB8FCE', '#85C1E2', '#FF85A2', '#95E1D3'];
+    const newConfetti = Array.from({ length: 20 }, (_, i) => {
+      // 随机角度（360度）
+      const angle = (Math.random() * 360) * (Math.PI / 180);
+      // 随机爆炸距离（向外飞的距离）
+      const explosionDistance = 60 + Math.random() * 100; // 60-160px
+      
+      // 计算爆炸后的位置（先向外飞）
+      const explosionX = Math.cos(angle) * explosionDistance;
+      const explosionY = Math.sin(angle) * explosionDistance;
+      
+      return {
+        id: timestamp + i,
+        x: cardCenterX,
+        y: cardCenterY,
+        explosionX,
+        explosionY,
+        color: colors[Math.floor(Math.random() * colors.length)],
+        size: 5 + Math.random() * 3, // 5-8px
+      };
+    });
+    
+    // 追加到现有的 confetti
+    setGlobalConfetti(prev => [...prev, ...newConfetti]);
+    
+    // 3秒后清理这个时间戳
+    setTimeout(() => {
+      pendingConfettiRef.current.delete(timestamp);
+    }, 3000);
   };
 
   if (loading && !hasCompletedInitialLoad) {
@@ -189,7 +259,15 @@ export function Agents() {
   }
 
   return (
-    <div data-testid="agents-page" className="flex flex-col -m-6 dark:bg-background h-[calc(100vh-2.5rem)] overflow-hidden">
+    <div data-testid="agents-page" className="flex flex-col -m-6 dark:bg-background h-[calc(100vh-2.5rem)] overflow-hidden relative">
+      {/* 物理引擎驱动的彩色方块 */}
+      <ConfettiPhysics
+        particles={globalConfetti}
+        onComplete={(id) => {
+          setGlobalConfetti(prev => prev.filter(p => p.id !== id));
+        }}
+      />
+      
       <div className="w-full flex flex-col h-full p-6">
         <div className="flex flex-col md:flex-row md:items-start justify-between shrink-0 gap-4 mb-4">
           <div>
@@ -288,6 +366,7 @@ export function Agents() {
                     channelGroups={visibleChannelGroups}
                     onOpenSettings={() => setActiveAgentId(agent.id)}
                     onDelete={() => setAgentToDelete(agent)}
+                    onDigitalEmployeeClick={handleDigitalEmployeeClick}
                   />
                 ))}
               </div>
@@ -359,13 +438,17 @@ function AgentCard({
   channelGroups,
   onOpenSettings,
   onDelete,
+  onDigitalEmployeeClick,
 }: {
   agent: AgentSummary;
   channelGroups: ChannelGroupItem[];
   onOpenSettings: () => void;
   onDelete: () => void;
+  onDigitalEmployeeClick?: (event: React.MouseEvent<HTMLDivElement>) => void;
 }) {
   const { t } = useTranslation('agents');
+  const [isShaking, setIsShaking] = useState(false);
+  
   const boundChannelAccounts = channelGroups.flatMap((group) =>
     group.accounts
       .filter((account) => account.agentId === agent.id)
@@ -381,16 +464,32 @@ function AgentCard({
   const channelsText = boundChannelAccounts.length > 0
     ? boundChannelAccounts.join(', ')
     : t('none');
+  
+  const handleDigitalEmployeeClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (!agent.isDigitalEmployee) return;
+    
+    // 触发抖动
+    setIsShaking(true);
+    setTimeout(() => setIsShaking(false), 600);
+    
+    // 触发全局彩色方块
+    if (onDigitalEmployeeClick) {
+      onDigitalEmployeeClick(event);
+    }
+  };
 
   return (
     <div
       className={cn(
-        'group relative flex flex-col p-5 rounded-2xl transition-all border cursor-pointer',
-        agent.isDefault 
-          ? 'bg-[#f3f1e9] dark:bg-white/[0.06] border-black/10 dark:border-white/10 shadow-sm' 
-          : 'bg-[#f8f6f0] dark:bg-white/[0.02] border-black/5 dark:border-white/5 hover:border-black/10 dark:hover:border-white/10 hover:shadow-lg'
+        'group relative flex flex-col p-5 rounded-2xl transition-all border',
+        isShaking && 'animate-shake',
+        agent.isDigitalEmployee 
+          ? 'bg-[#f3f1e9] dark:bg-white/[0.06] border-blue-500/20 dark:border-blue-500/20 shadow-sm cursor-pointer' 
+          : agent.isDefault 
+            ? 'bg-[#f3f1e9] dark:bg-white/[0.06] border-black/10 dark:border-white/10 shadow-sm cursor-pointer' 
+            : 'bg-[#f8f6f0] dark:bg-white/[0.02] border-black/5 dark:border-white/5 hover:border-black/10 dark:hover:border-white/10 hover:shadow-lg cursor-pointer'
       )}
-      onClick={onOpenSettings}
+      onClick={agent.isDigitalEmployee ? handleDigitalEmployeeClick : onOpenSettings}
     >
       {/* 状态指示点 */}
       {agent.isDefault && (
@@ -407,15 +506,25 @@ function AgentCard({
         <h2 className="text-[16px] font-serif font-semibold text-foreground mb-1 truncate" style={{ fontFamily: 'Georgia, Cambria, "Times New Roman", Times, serif' }}>
           {agent.name}
         </h2>
-        {agent.isDefault && (
-          <Badge
-            variant="secondary"
-            className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-primary/10 border-0 shadow-none text-primary"
-          >
-            <Check className="h-3 w-3 mr-1 inline" />
-            {t('defaultBadge')}
-          </Badge>
-        )}
+        <div className="flex items-center justify-center gap-2">
+          {agent.isDefault && (
+            <Badge
+              variant="secondary"
+              className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-primary/10 border-0 shadow-none text-primary"
+            >
+              <Check className="h-3 w-3 mr-1 inline" />
+              {t('defaultBadge')}
+            </Badge>
+          )}
+          {agent.isDigitalEmployee && (
+            <Badge
+              variant="secondary"
+              className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-blue-500/10 border-0 shadow-none text-blue-600 dark:text-blue-400"
+            >
+              🤖 数字员工
+            </Badge>
+          )}
+        </div>
       </div>
 
       {/* 信息 */}
@@ -437,25 +546,33 @@ function AgentCard({
 
       {/* 操作按钮 */}
       <div className="flex items-center gap-2 pt-3 border-t border-black/5 dark:border-white/5" onClick={(e) => e.stopPropagation()}>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="flex-1 h-8 text-[12px] rounded-full hover:bg-black/5 dark:hover:bg-white/10"
-          onClick={onOpenSettings}
-        >
-          <Settings2 className="h-3.5 w-3.5 mr-1.5" />
-          {t('settings')}
-        </Button>
-        {!agent.isDefault && (
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-full"
-            onClick={onDelete}
-            title={t('deleteAgent')}
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </Button>
+        {agent.isDigitalEmployee ? (
+          <div className="flex-1 text-center text-[11px] text-muted-foreground py-1">
+            在 IM 平台管理
+          </div>
+        ) : (
+          <>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="flex-1 h-8 text-[12px] rounded-full hover:bg-black/5 dark:hover:bg-white/10"
+              onClick={onOpenSettings}
+            >
+              <Settings2 className="h-3.5 w-3.5 mr-1.5" />
+              {t('settings')}
+            </Button>
+            {!agent.isDefault && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-full"
+                onClick={onDelete}
+                title={t('deleteAgent')}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
+            )}
+          </>
         )}
       </div>
     </div>
@@ -499,13 +616,44 @@ function AddAgentDialog({
   const { t } = useTranslation('agents');
   const [name, setName] = useState('');
   const [inheritWorkspace, setInheritWorkspace] = useState(false);
+  const [isDigitalEmployee, setIsDigitalEmployee] = useState(false);
+  const [headImage, setHeadImage] = useState('');
+  const [selectedModel, setSelectedModel] = useState('');
   const [saving, setSaving] = useState(false);
+  
+  const { models, fetchModels, createDigitalEmployee, fetchDigitalEmployees } = useModelsStore();
+  const { fetchAgents } = useAgentsStore();
+  
+  // 加载模型列表
+  useEffect(() => {
+    if (isDigitalEmployee && models.length === 0) {
+      fetchModels();
+    }
+  }, [isDigitalEmployee, models.length, fetchModels]);
+  
+  // 设置默认模型
+  useEffect(() => {
+    if (isDigitalEmployee && models.length > 0 && !selectedModel) {
+      const defaultModel = models.find(m => m.id === 'glm-5')?.id || models[0]?.id || '';
+      setSelectedModel(defaultModel);
+    }
+  }, [isDigitalEmployee, models, selectedModel]);
 
   const handleSubmit = async () => {
     if (!name.trim()) return;
     setSaving(true);
     try {
-      await onCreate(name.trim(), { inheritWorkspace });
+      if (isDigitalEmployee) {
+        // 创建数字员工
+        await createDigitalEmployee(name.trim(), headImage, selectedModel);
+        toast.success('数字员工创建成功');
+        // 刷新列表
+        await Promise.all([fetchDigitalEmployees(), fetchAgents()]);
+        onClose();
+      } else {
+        // 创建普通 agent
+        await onCreate(name.trim(), { inheritWorkspace });
+      }
     } catch (error) {
       toast.error(t('toast.agentCreateFailed', { error: String(error) }));
       setSaving(false);
@@ -536,17 +684,69 @@ function AddAgentDialog({
               className={inputClasses}
             />
           </div>
+          
+          {/* 数字员工选项 */}
           <div className="flex items-center justify-between">
             <div className="space-y-0.5">
-              <Label htmlFor="inherit-workspace" className={labelClasses}>{t('createDialog.inheritWorkspaceLabel')}</Label>
-              <p className="text-[13px] text-foreground/60">{t('createDialog.inheritWorkspaceDescription')}</p>
+              <Label htmlFor="is-digital-employee" className={labelClasses}>创建为数字员工</Label>
+              <p className="text-[13px] text-foreground/60">在 IM 平台创建 Bot 账号</p>
             </div>
             <Switch
-              id="inherit-workspace"
-              checked={inheritWorkspace}
-              onCheckedChange={setInheritWorkspace}
+              id="is-digital-employee"
+              checked={isDigitalEmployee}
+              onCheckedChange={setIsDigitalEmployee}
             />
           </div>
+          
+          {isDigitalEmployee ? (
+            <>
+              {/* 头像 URL */}
+              <div className="space-y-2.5">
+                <Label htmlFor="head-image" className={labelClasses}>头像 URL（可选）</Label>
+                <Input
+                  id="head-image"
+                  value={headImage}
+                  onChange={(event) => setHeadImage(event.target.value)}
+                  placeholder="https://example.com/avatar.png"
+                  className={inputClasses}
+                />
+              </div>
+              
+              {/* 模型选择 */}
+              <div className="space-y-2.5">
+                <Label htmlFor="model-select" className={labelClasses}>默认模型</Label>
+                <select
+                  id="model-select"
+                  value={selectedModel}
+                  onChange={(e) => setSelectedModel(e.target.value)}
+                  className={`${inputClasses} cursor-pointer`}
+                >
+                  {models.length === 0 ? (
+                    <option value="">加载中...</option>
+                  ) : (
+                    models.map((model) => (
+                      <option key={model.id} value={model.id}>
+                        {model.name || model.id}
+                      </option>
+                    ))
+                  )}
+                </select>
+              </div>
+            </>
+          ) : (
+            <div className="flex items-center justify-between">
+              <div className="space-y-0.5">
+                <Label htmlFor="inherit-workspace" className={labelClasses}>{t('createDialog.inheritWorkspaceLabel')}</Label>
+                <p className="text-[13px] text-foreground/60">{t('createDialog.inheritWorkspaceDescription')}</p>
+              </div>
+              <Switch
+                id="inherit-workspace"
+                checked={inheritWorkspace}
+                onCheckedChange={setInheritWorkspace}
+              />
+            </div>
+          )}
+          
           <div className="flex justify-end gap-2">
             <Button
               variant="outline"
