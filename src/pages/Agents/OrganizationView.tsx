@@ -50,6 +50,7 @@ export function OrganizationView() {
     message: string; 
     onConfirm: () => void;
   } | null>(null);
+  const hasInitialLayoutRef = useRef(false);
   
   const { departments, assignments, addDepartment, updateDepartment, deleteDepartment, assignAgent, unassignAgent } = useOrganizationStore();
   const { agents } = useAgentsStore();
@@ -62,112 +63,111 @@ export function OrganizationView() {
 
   // 注册自定义节点
   useEffect(() => {
-    // 部门节点 - 更大更醒目
-    Graph.registerNode('dept-node', {
-      width: 240,
-      height: 80,
-      markup: [
-        { tagName: 'rect', selector: 'body' },
-        { tagName: 'text', selector: 'label' },
-        { tagName: 'text', selector: 'count' },
-      ],
-      attrs: {
-        body: {
-          refWidth: '100%',
-          refHeight: '100%',
-          rx: 16,
-          ry: 16,
-          fill: '#5F95FF',
-          fillOpacity: 1,
-          stroke: 'rgba(255,255,255,0.3)',
-          strokeWidth: 2,
+    // 部门节点 - 使用 HTML 渲染而不是 SVG
+    Graph.registerNode(
+      'dept-node',
+      {
+        inherit: 'rect',
+        width: 240,
+        height: 80,
+        attrs: {
+          body: {
+            strokeWidth: 0,
+            fill: 'transparent',
+          },
         },
-        label: {
-          refX: 0.5,
-          refY: 0.4,
-          fill: '#fff',
-          fillOpacity: 1,
-          fontSize: 16,
-          fontWeight: 700,
-          textAnchor: 'middle',
-          textVerticalAnchor: 'middle',
-          pointerEvents: 'none',
-        },
-        count: {
-          refX: 0.5,
-          refY: 0.7,
-          fill: 'rgba(255,255,255,0.85)',
-          fillOpacity: 1,
-          fontSize: 13,
-          fontWeight: 500,
-          textAnchor: 'middle',
-          textVerticalAnchor: 'middle',
-          pointerEvents: 'none',
-        },
-      },
-    }, true);
-
-    // 员工节点 - 更精致
-    Graph.registerNode('bot-node', {
-      width: 180,
-      height: 90,
-      markup: [
-        { tagName: 'rect', selector: 'body' },
-        { tagName: 'circle', selector: 'avatar' },
-        { tagName: 'text', selector: 'emoji' },
-        { tagName: 'text', selector: 'name' },
-        { tagName: 'text', selector: 'sub' },
-      ],
-      attrs: {
-        body: {
-          refWidth: '100%',
-          refHeight: '100%',
-          rx: 14,
-          ry: 14,
-          fill: '#ffffff',
-          fillOpacity: 1,
-          stroke: '#e5e7eb',
-          strokeWidth: 2,
-          cursor: 'move',
-        },
-        avatar: {
-          cx: 30,
-          cy: 45,
-          r: 18,
-          fill: '#f3f4f6',
-          fillOpacity: 1,
-          stroke: '#5F95FF',
-          strokeWidth: 2.5,
-        },
-        emoji: {
-          x: 30,
-          y: 45,
-          fontSize: 20,
-          textAnchor: 'middle',
-          textVerticalAnchor: 'middle',
-          pointerEvents: 'none',
-        },
-        name: {
-          x: 58,
-          y: 36,
-          fill: '#1a1a2e',
-          fillOpacity: 1,
-          fontSize: 14,
-          fontWeight: 600,
-          pointerEvents: 'none',
-        },
-        sub: {
-          x: 58,
-          y: 56,
-          fill: '#9ca3af',
-          fillOpacity: 1,
-          fontSize: 12,
-          pointerEvents: 'none',
+        markup: [
+          {
+            tagName: 'foreignObject',
+            selector: 'fo',
+            children: [
+              {
+                tagName: 'body',
+                selector: 'foBody',
+                ns: 'http://www.w3.org/1999/xhtml',
+                children: [
+                  {
+                    tagName: 'div',
+                    selector: 'content',
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+        attrs: {
+          fo: {
+            refWidth: '100%',
+            refHeight: '100%',
+          },
+          foBody: {
+            xmlns: 'http://www.w3.org/1999/xhtml',
+            style: {
+              width: '100%',
+              height: '100%',
+              display: 'flex',
+              justifyContent: 'center',
+              alignItems: 'center',
+            },
+          },
         },
       },
-    }, true);
+      true
+    );
 
-    // 边 - 更柔和
+    // 员工节点 - 使用 HTML 渲染
+    Graph.registerNode(
+      'bot-node',
+      {
+        inherit: 'rect',
+        width: 180,
+        height: 90,
+        attrs: {
+          body: {
+            strokeWidth: 0,
+            fill: 'transparent',
+          },
+        },
+        markup: [
+          {
+            tagName: 'foreignObject',
+            selector: 'fo',
+            children: [
+              {
+                tagName: 'body',
+                selector: 'foBody',
+                ns: 'http://www.w3.org/1999/xhtml',
+                children: [
+                  {
+                    tagName: 'div',
+                    selector: 'content',
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+        attrs: {
+          fo: {
+            refWidth: '100%',
+            refHeight: '100%',
+          },
+          foBody: {
+            xmlns: 'http://www.w3.org/1999/xhtml',
+            style: {
+              width: '100%',
+              height: '100%',
+              display: 'flex',
+              justifyContent: 'center',
+              alignItems: 'center',
+            },
+          },
+        },
+      },
+      true
+    );
+
+    // 边
     Graph.registerEdge('org-edge', {
       zIndex: -1,
       attrs: {
@@ -176,7 +176,6 @@ export function OrganizationView() {
           stroke: '#cbd5e1',
           sourceMarker: null,
           targetMarker: null,
-          strokeLinecap: 'round',
         },
       },
     }, true);
@@ -197,10 +196,18 @@ export function OrganizationView() {
         maxScale: 2,
       },
       background: {
-        color: 'transparent',
+        color: '#f8f6f0',
       },
       grid: false,
-      interacting: false,
+      interacting: {
+        nodeMovable: false,
+        edgeMovable: false,
+        edgeLabelMovable: false,
+        arrowheadMovable: false,
+        vertexMovable: false,
+        vertexAddable: false,
+        vertexDeletable: false,
+      },
     });
     
     graphRef.current = graph;
@@ -268,131 +275,274 @@ export function OrganizationView() {
     if (!graphRef.current) return;
     
     const graph = graphRef.current;
-    graph.clearCells();
     
-    if (departments.length === 0) return;
+    if (departments.length === 0) {
+      graph.clearCells();
+      return;
+    }
     
-    const cells = [];
+    // 获取现有节点和边
+    const existingNodes = new Map(graph.getNodes().map(n => [n.id, n]));
+    const existingEdges = new Map(graph.getEdges().map(e => [e.id, e]));
     
-    // 创建部门节点
+    const newNodeIds = new Set<string>();
+    const newEdgeIds = new Set<string>();
+    
+    // 创建或更新部门节点
     departments.forEach((dept) => {
+      const nodeId = `dept-${dept.id}`;
+      newNodeIds.add(nodeId);
+      
       const assignedCount = Object.values(assignments).filter((deptId) => deptId === dept.id).length;
       const color = getColor(dept.id);
       const isDropTarget = dropTarget === dept.id;
       
-      cells.push(graph.createNode({
-        id: `dept-${dept.id}`,
-        shape: 'dept-node',
-        attrs: {
-          body: {
-            fill: isDropTarget ? '#3b82f6' : color,
-            stroke: isDropTarget ? 'rgba(59, 130, 246, 0.5)' : 'rgba(255,255,255,0.3)',
-            strokeWidth: isDropTarget ? 4 : 2,
+      const existingNode = existingNodes.get(nodeId);
+      
+      if (existingNode) {
+        // 更新现有节点
+        existingNode.setAttrs({
+          content: {
+            html: `
+              <div style="
+                width: 240px;
+                height: 80px;
+                background: ${isDropTarget ? 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)' : color};
+                border: ${isDropTarget ? '3px' : '2px'} solid ${isDropTarget ? '#60a5fa' : color};
+                border-radius: 16px;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                color: white;
+                font-family: Georgia, Cambria, 'Times New Roman', Times, serif;
+                box-shadow: ${isDropTarget ? '0 8px 16px -2px rgba(59, 130, 246, 0.4), 0 0 0 4px rgba(59, 130, 246, 0.2)' : '0 4px 6px -1px rgba(0, 0, 0, 0.1)'};
+                transition: all 0.2s ease;
+                transform: ${isDropTarget ? 'scale(1.05)' : 'scale(1)'};
+              ">
+                <div style="font-size: 16px; font-weight: 700; margin-bottom: 4px;">${dept.name}</div>
+                <div style="font-size: 13px; font-weight: 500;">${assignedCount} 人</div>
+                ${isDropTarget ? '<div style="font-size: 11px; margin-top: 4px; opacity: 0.9;">📍 释放以分配</div>' : ''}
+              </div>
+            `,
           },
-          label: {
-            text: dept.name,
+        });
+      } else {
+        // 创建新节点
+        const node = graph.addNode({
+          id: nodeId,
+          shape: 'dept-node',
+          x: 100,
+          y: 100,
+          data: { type: 'dept', id: dept.id },
+          attrs: {
+            content: {
+              html: `
+                <div style="
+                  width: 240px;
+                  height: 80px;
+                  background: ${color};
+                  border: 2px solid ${color};
+                  border-radius: 16px;
+                  display: flex;
+                  flex-direction: column;
+                  align-items: center;
+                  justify-content: center;
+                  color: white;
+                  font-family: Georgia, Cambria, 'Times New Roman', Times, serif;
+                  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+                  animation: nodeEnter 0.4s ease-out;
+                ">
+                  <div style="font-size: 16px; font-weight: 700; margin-bottom: 4px;">${dept.name}</div>
+                  <div style="font-size: 13px; font-weight: 500;">${assignedCount} 人</div>
+                </div>
+                <style>
+                  @keyframes nodeEnter {
+                    from {
+                      opacity: 0;
+                      transform: translateY(-20px) scale(0.95);
+                    }
+                    to {
+                      opacity: 1;
+                      transform: translateY(0) scale(1);
+                    }
+                  }
+                  @keyframes nodeExit {
+                    from {
+                      opacity: 1;
+                      transform: translateY(0) scale(1);
+                    }
+                    to {
+                      opacity: 0;
+                      transform: translateY(20px) scale(0.95);
+                    }
+                  }
+                </style>
+              `,
+            },
           },
-          count: {
-            text: `${assignedCount} 人`,
-          },
-        },
-        data: { type: 'dept', id: dept.id },
-      }));
+        });
+      }
     });
     
-    // 创建员工节点
+    // 创建或更新员工节点
     agents.forEach((agent) => {
       const deptId = assignments[agent.id];
       if (!deptId) return;
       
+      const nodeId = `bot-${agent.id}`;
+      newNodeIds.add(nodeId);
+      
       const color = getColor(agent.id);
       const emoji = getEmoji(agent.id);
       
-      cells.push(graph.createNode({
-        id: `bot-${agent.id}`,
-        shape: 'bot-node',
-        attrs: {
-          avatar: {
-            stroke: color,
+      const existingNode = existingNodes.get(nodeId);
+      
+      if (!existingNode) {
+        // 创建新节点
+        graph.addNode({
+          id: nodeId,
+          shape: 'bot-node',
+          x: 100,
+          y: 100,
+          data: { type: 'bot', id: agent.id, deptId },
+          attrs: {
+            content: {
+              html: `
+                <div style="
+                  width: 180px;
+                  height: 90px;
+                  background: #f3f1e9;
+                  border: 2px solid ${color};
+                  border-radius: 14px;
+                  display: flex;
+                  align-items: center;
+                  padding: 12px;
+                  font-family: Georgia, Cambria, 'Times New Roman', Times, serif;
+                  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+                  animation: nodeEnter 0.4s ease-out;
+                ">
+                  <div style="
+                    width: 36px;
+                    height: 36px;
+                    border-radius: 50%;
+                    background: #f8f6f0;
+                    border: 2px solid ${color};
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    font-size: 20px;
+                    flex-shrink: 0;
+                  ">${emoji}</div>
+                  <div style="margin-left: 12px; flex: 1; min-width: 0;">
+                    <div style="font-size: 14px; font-weight: 600; color: #1a1a2e; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                      ${agent.name.length > 10 ? agent.name.slice(0, 10) + '…' : agent.name}
+                    </div>
+                    <div style="font-size: 12px; color: #9ca3af; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                      ID: ${agent.id.slice(0, 8)}
+                    </div>
+                  </div>
+                </div>
+                <style>
+                  @keyframes nodeEnter {
+                    from {
+                      opacity: 0;
+                      transform: translateY(-20px) scale(0.95);
+                    }
+                    to {
+                      opacity: 1;
+                      transform: translateY(0) scale(1);
+                    }
+                  }
+                  @keyframes nodeExit {
+                    from {
+                      opacity: 1;
+                      transform: translateY(0) scale(1);
+                    }
+                    to {
+                      opacity: 0;
+                      transform: translateY(20px) scale(0.95);
+                    }
+                  }
+                </style>
+              `,
+            },
           },
-          emoji: {
-            text: emoji,
-          },
-          name: {
-            text: agent.name.length > 10 ? agent.name.slice(0, 10) + '…' : agent.name,
-          },
-          sub: {
-            text: `ID: ${agent.id.slice(0, 8)}`,
-          },
-        },
-        data: { type: 'bot', id: agent.id, deptId },
-      }));
+        });
+      }
     });
     
     // 创建部门层级边
     departments.forEach((dept) => {
       if (!dept.parentId) return;
-      cells.push(graph.createEdge({
-        shape: 'org-edge',
-        source: { cell: `dept-${dept.parentId}` },
-        target: { cell: `dept-${dept.id}` },
-      }));
+      const edgeId = `edge-dept-${dept.parentId}-${dept.id}`;
+      newEdgeIds.add(edgeId);
+      
+      if (!existingEdges.has(edgeId)) {
+        graph.addEdge({
+          id: edgeId,
+          shape: 'org-edge',
+          source: { cell: `dept-${dept.parentId}` },
+          target: { cell: `dept-${dept.id}` },
+        });
+      }
     });
     
     // 创建员工到部门的边
     agents.forEach((agent) => {
       const deptId = assignments[agent.id];
       if (!deptId) return;
-      cells.push(graph.createEdge({
-        shape: 'org-edge',
-        source: { cell: `dept-${deptId}` },
-        target: { cell: `bot-${agent.id}` },
-        attrs: {
-          line: {
-            stroke: '#d1d5db',
-            strokeWidth: 1,
-            strokeDasharray: '4 3',
+      const edgeId = `edge-bot-${agent.id}-${deptId}`;
+      newEdgeIds.add(edgeId);
+      
+      if (!existingEdges.has(edgeId)) {
+        graph.addEdge({
+          id: edgeId,
+          shape: 'org-edge',
+          source: { cell: `dept-${deptId}` },
+          target: { cell: `bot-${agent.id}` },
+          attrs: {
+            line: {
+              stroke: '#d1d5db',
+              strokeWidth: 1,
+              strokeOpacity: 1,
+              strokeDasharray: '4 3',
+            },
           },
-        },
-      }));
+        });
+      }
     });
     
-    graph.resetCells(cells);
+    // 移除不再需要的节点（立即删除，不用动画）
+    existingNodes.forEach((node, id) => {
+      if (!newNodeIds.has(id)) {
+        node.remove();
+      }
+    });
     
-    // 添加节点进入动画
-    setTimeout(() => {
-      cells.forEach((cell, index) => {
-        setTimeout(() => {
-          if (cell.isNode()) {
-            const currentPos = cell.position();
-            cell.position(currentPos.x, currentPos.y - 20, { silent: true });
-            cell.attr('body/opacity', 0);
-            cell.transition('position', currentPos, {
-              duration: 400,
-              timing: 'ease-out',
-            });
-            cell.transition('attrs/body/opacity', 1, {
-              duration: 300,
-              timing: 'ease-out',
-            });
-          }
-        }, index * 30);
-      });
-    }, 0);
+    // 移除不再需要的边（立即删除）
+    existingEdges.forEach((edge, id) => {
+      if (!newEdgeIds.has(id)) {
+        edge.remove();
+      }
+    });
     
-    // 布局
-    const nodes = graph.getNodes();
-    const edges = graph.getEdges();
+    // 布局所有节点
+    const allNodes = graph.getNodes();
+    const allEdges = graph.getEdges();
+    
+    if (allNodes.length === 0) return;
+    
     const g = new dagre.graphlib.Graph();
     g.setGraph({ rankdir: 'TB', nodesep: 50, ranksep: 80 });
     g.setDefaultEdgeLabel(() => ({}));
     
-    nodes.forEach((node) => {
+    allNodes.forEach((node) => {
       const size = node.getSize();
       g.setNode(node.id, { width: size.width, height: size.height });
     });
     
-    edges.forEach((edge) => {
+    allEdges.forEach((edge) => {
       const src = edge.getSource();
       const tgt = edge.getTarget();
       if (src.cell && tgt.cell) {
@@ -402,23 +552,33 @@ export function OrganizationView() {
     
     dagre.layout(g);
     
-    // 批量更新节点位置
-    graph.startBatch('update');
-    g.nodes().forEach((id) => {
-      const node = graph.getCellById(id);
-      if (node) {
-        const pos = g.node(id);
-        node.position(pos.x - pos.width / 2, pos.y - pos.height / 2);
+    // 更新所有节点位置
+    allNodes.forEach((node) => {
+      const pos = g.node(node.id);
+      if (pos) {
+        const targetX = pos.x - pos.width / 2;
+        const targetY = pos.y - pos.height / 2;
+        
+        // 直接设置位置，不使用动画（避免 API 问题）
+        node.setPosition(targetX, targetY);
       }
     });
-    graph.stopBatch('update');
     
-    graph.zoomToFit({ padding: 60, maxScale: 1 });
-  }, [departments, assignments, agents]);
+    // 缩放到合适大小（只在初始渲染时执行一次）
+    if (!hasInitialLayoutRef.current && allNodes.length > 0) {
+      setTimeout(() => {
+        graph.zoomToFit({ 
+          padding: 60, 
+          maxScale: 1,
+        });
+        hasInitialLayoutRef.current = true;
+      }, 100);
+    }
+  }, [departments, assignments, agents, dropTarget]);
   
   useEffect(() => {
     renderGraph();
-  }, [renderGraph, dropTarget]);
+  }, [renderGraph]);
   
   // 添加部门
   const handleAddDepartment = useCallback(() => {
@@ -468,6 +628,12 @@ export function OrganizationView() {
   const handleDragStart = useCallback((e: React.DragEvent, botId: string) => {
     e.dataTransfer.setData('botId', botId);
     e.dataTransfer.effectAllowed = 'move';
+    
+    // 隐藏浏览器默认的拖动预览
+    const img = new Image();
+    img.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+    e.dataTransfer.setDragImage(img, 0, 0);
+    
     setDraggingBot(botId);
     setDragPosition({ x: e.clientX, y: e.clientY });
   }, []);
@@ -495,24 +661,24 @@ export function OrganizationView() {
     if (deptNode) {
       const deptId = deptNode.getData().id;
       
-      // 添加高亮效果
-      setDropTarget(deptId);
-      
-      // 延迟执行分配，让动画播放
-      setTimeout(() => {
-        assignAgent(draggingBot, deptId);
-        toast.success('员工已分配');
-        setDropTarget(null);
-      }, 200);
+      // 立即分配，不要延迟
+      assignAgent(draggingBot, deptId);
+      toast.success('员工已分配');
     }
     
     setDraggingBot(null);
+    setDragPosition(null);
+    setDropTarget(null);
   }, [draggingBot, assignAgent]);
   
   // 拖拽经过画布时高亮目标部门
   const handleCanvasDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
-    setDragPosition({ x: e.clientX, y: e.clientY });
+    
+    // 使用 requestAnimationFrame 优化性能
+    requestAnimationFrame(() => {
+      setDragPosition({ x: e.clientX, y: e.clientY });
+    });
     
     if (!draggingBot || !graphRef.current) return;
     
@@ -524,13 +690,11 @@ export function OrganizationView() {
       return n.getBBox().containsPoint(p);
     });
     
-    if (deptNode) {
-      const deptId = deptNode.getData().id;
-      if (dropTarget !== deptId) {
-        setDropTarget(deptId);
-      }
-    } else if (dropTarget) {
-      setDropTarget(null);
+    const newTarget = deptNode ? deptNode.getData().id : null;
+    
+    // 只在目标改变时更新状态，减少重渲染
+    if (dropTarget !== newTarget) {
+      setDropTarget(newTarget);
     }
   }, [draggingBot, dropTarget]);
 
@@ -540,7 +704,7 @@ export function OrganizationView() {
       <motion.div
         initial={{ opacity: 0, x: -20 }}
         animate={{ opacity: 1, x: 0 }}
-        className="w-80 flex flex-col gap-6"
+        className="w-96 flex flex-col gap-6"
       >
         {/* 部门管理 */}
         <div className="rounded-2xl bg-black/[0.02] dark:bg-white/[0.02] border border-black/5 dark:border-white/5 p-5">
@@ -630,26 +794,22 @@ export function OrganizationView() {
                         initial={{ opacity: 0, y: 10 }}
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, y: -10 }}
-                        whileHover={{ scale: 1.02 }}
-                        whileTap={{ scale: 0.98 }}
                         draggable
                         onDragStart={(e) => handleDragStart(e, agent.id)}
                         onDragEnd={handleDragEnd}
                         className={cn(
                           'p-3 rounded-xl border cursor-grab active:cursor-grabbing transition-all',
                           'bg-white dark:bg-gray-800 border-black/10 dark:border-white/10',
-                          'hover:border-blue-500/50 hover:shadow-lg',
-                          draggingBot === agent.id && 'opacity-30 scale-95'
+                          'hover:border-blue-500/50 hover:shadow-md',
+                          draggingBot === agent.id && 'opacity-30'
                         )}
                       >
                         <div className="flex items-center gap-3">
-                          <motion.div 
+                          <div 
                             className="w-9 h-9 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white text-[15px] font-bold shrink-0"
-                            animate={draggingBot === agent.id ? { rotate: [0, -10, 10, -10, 0] } : {}}
-                            transition={{ duration: 0.5 }}
                           >
                             {getEmoji(agent.id)}
-                          </motion.div>
+                          </div>
                           <div className="flex-1 min-w-0">
                             <div className="text-[13px] font-semibold text-foreground truncate">
                               {agent.name}
@@ -751,47 +911,28 @@ export function OrganizationView() {
       <motion.div
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
-        className="flex-1 rounded-2xl overflow-hidden relative"
-        style={{
-          background: 'linear-gradient(135deg, #f8fafc 0%, #f1f5f9 50%, #e2e8f0 100%)',
-        }}
+        className="flex-1 rounded-2xl overflow-hidden relative bg-[#f8f6f0] dark:bg-gray-900 border border-black/5 dark:border-white/5"
         onDrop={handleCanvasDrop}
         onDragOver={handleCanvasDragOver}
       >
-        {/* 背景装饰 */}
-        <div className="absolute inset-0 opacity-30 pointer-events-none" style={{
-          backgroundImage: `
-            radial-gradient(circle at 20% 30%, rgba(59, 130, 246, 0.08) 0%, transparent 50%),
-            radial-gradient(circle at 80% 70%, rgba(139, 92, 246, 0.08) 0%, transparent 50%),
-            radial-gradient(circle at 50% 50%, rgba(236, 72, 153, 0.05) 0%, transparent 50%)
-          `,
-        }} />
-        
-        {/* 微妙的网格纹理 */}
-        <div className="absolute inset-0 opacity-[0.03] pointer-events-none" style={{
-          backgroundImage: `
-            linear-gradient(rgba(0,0,0,0.05) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(0,0,0,0.05) 1px, transparent 1px)
-          `,
-          backgroundSize: '40px 40px',
-        }} />
-        
-        <div ref={containerRef} className="w-full h-full relative" style={{ zIndex: 1 }} />
+        <div ref={containerRef} className="w-full h-full relative z-0" />
         
         {departments.length === 0 && (
-          <div className="absolute inset-0 flex items-center justify-center pointer-events-none" style={{ zIndex: 2 }}>
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
             <div className="text-center">
               <div className="w-24 h-24 mx-auto mb-6 rounded-3xl bg-gradient-to-br from-blue-500/10 via-purple-500/10 to-pink-500/10 flex items-center justify-center backdrop-blur-sm border border-white/20 shadow-xl">
                 <Building2 className="w-12 h-12 text-blue-500/50" />
               </div>
-              <div className="text-[17px] font-semibold text-foreground/80 mb-2">还没有部门</div>
+              <div className="text-[17px] font-serif font-semibold text-foreground/80 mb-2" style={{ fontFamily: 'Georgia, Cambria, "Times New Roman", Times, serif' }}>
+                还没有部门
+              </div>
               <div className="text-[14px] text-muted-foreground/70 max-w-xs">在左侧添加第一个部门开始构建组织架构</div>
             </div>
           </div>
         )}
         
         {/* 操作提示 */}
-        <div className="absolute bottom-5 right-5 bg-white/80 dark:bg-gray-800/80 backdrop-blur-md rounded-2xl px-5 py-3 text-[12px] text-muted-foreground border border-white/40 dark:border-white/10 shadow-xl" style={{ zIndex: 2 }}>
+        <div className="absolute bottom-5 right-5 bg-[#f3f1e9]/90 dark:bg-gray-800/90 backdrop-blur-md rounded-2xl px-5 py-3 text-[12px] text-muted-foreground border border-black/10 dark:border-white/10 shadow-xl z-10">
           <div className="flex items-center gap-5">
             <span className="flex items-center gap-1.5">
               <span className="text-[14px]">🖱</span>
@@ -815,8 +956,7 @@ export function OrganizationView() {
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 10 }}
-              className="absolute top-5 left-1/2 -translate-x-1/2 bg-blue-500 text-white px-6 py-3 rounded-2xl shadow-2xl font-medium text-[13px] flex items-center gap-2"
-              style={{ zIndex: 3 }}
+              className="absolute top-5 left-1/2 -translate-x-1/2 bg-blue-500 text-white px-6 py-3 rounded-2xl shadow-2xl font-medium text-[13px] flex items-center gap-2 z-20"
             >
               <motion.span
                 animate={{ rotate: [0, 10, -10, 0] }}
@@ -833,26 +973,21 @@ export function OrganizationView() {
         <AnimatePresence>
           {draggingBot && dragPosition && (
             <motion.div
-              initial={{ opacity: 0, scale: 0.8 }}
+              initial={{ opacity: 0, scale: 0.9 }}
               animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.8 }}
+              exit={{ opacity: 0, scale: 0.9 }}
+              transition={{ type: "spring", stiffness: 500, damping: 30 }}
               style={{
                 position: 'fixed',
                 left: dragPosition.x,
                 top: dragPosition.y,
                 pointerEvents: 'none',
                 zIndex: 9999,
+                willChange: 'transform',
               }}
               className="transform -translate-x-1/2 -translate-y-1/2"
             >
-              <motion.div
-                animate={{ 
-                  rotate: [0, 5, -5, 0],
-                  scale: [1, 1.05, 1],
-                }}
-                transition={{ duration: 0.5, repeat: Infinity }}
-                className="p-3 rounded-xl border-2 border-blue-500 bg-white dark:bg-gray-800 shadow-2xl"
-              >
+              <div className="p-3 rounded-xl border-2 border-blue-500 bg-white dark:bg-gray-800 shadow-2xl">
                 <div className="flex items-center gap-3">
                   <div className="w-9 h-9 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white text-[15px] font-bold">
                     {getEmoji(draggingBot)}
@@ -861,7 +996,7 @@ export function OrganizationView() {
                     {agents.find((a) => a.id === draggingBot)?.name}
                   </div>
                 </div>
-              </motion.div>
+              </div>
             </motion.div>
           )}
         </AnimatePresence>

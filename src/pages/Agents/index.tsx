@@ -190,8 +190,14 @@ export function Agents() {
 
   return (
     <div data-testid="agents-page" className="flex flex-col -m-6 dark:bg-background h-[calc(100vh-2.5rem)] overflow-hidden">
-      <div className="w-full max-w-5xl mx-auto flex flex-col h-full p-10 pt-16">
-        <div className="flex flex-col md:flex-row md:items-start justify-between mb-8 shrink-0 gap-4">
+      <div className={cn(
+        "w-full flex flex-col h-full",
+        viewMode === 'organization' ? 'p-6' : 'max-w-5xl mx-auto p-10 pt-16'
+      )}>
+        <div className={cn(
+          "flex flex-col md:flex-row md:items-start justify-between shrink-0 gap-4",
+          viewMode === 'organization' ? 'mb-4' : 'mb-8'
+        )}>
           <div>
             <h1
               className="text-5xl md:text-6xl font-serif text-foreground mb-3 font-normal tracking-tight"
@@ -229,7 +235,10 @@ export function Agents() {
         </div>
 
         {/* 视图切换按钮 */}
-        <div className="flex items-center gap-2 mb-6 shrink-0">
+        <div className={cn(
+          "flex items-center gap-2 shrink-0",
+          viewMode === 'organization' ? 'mb-4' : 'mb-6'
+        )}>
           <Button
             variant={viewMode === 'list' ? 'default' : 'outline'}
             onClick={() => setViewMode('list')}
