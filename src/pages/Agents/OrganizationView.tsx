@@ -1,0 +1,1167 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Graph } from '@antv/x6';
+import dagre from 'dagre';
+import { motion, AnimatePresence } from 'framer-motion';
+import { Building2, Plus, Trash2, Edit2, Users, Bot, X } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { useOrganizationStore } from '@/stores/organization';
+import { useAgentsStore } from '@/stores/agents';
+import { toast } from 'sonner';
+import { cn } from '@/lib/utils';
+
+const COLORS = ['#5F95FF', '#8b5cf6', '#ec4899', '#f97316', '#22c55e', '#14b8a6', '#e11d48', '#eab308'];
+const EMOJIS = ['🤖', '🧠', '⚡', '🔧', '📊', '💬', '🎯', '🛡️', '📝', '🔍', '🚀', '🎨'];
+
+function hashCode(str: string): number {
+  let h = 0;
+  for (let i = 0; i < str.length; i++) {
+    h = ((h << 5) - h) + str.charCodeAt(i);
+    h |= 0;
+  }
+  return Math.abs(h);
+}
+
+function getEmoji(id: string): string {
+  return EMOJIS[hashCode(id) % EMOJIS.length];
+}
+
+function getColor(id: string): string {
+  return COLORS[hashCode(id) % COLORS.length];
+}
+
+/**
+ * Organization View
+ * 组织架构视图 - 可视化部门层级和员工分配
+ */
+export function OrganizationView() {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const graphRef = useRef<Graph | null>(null);
+  const [selectedDept, setSelectedDept] = useState<string | null>(null);
+  const [newDeptName, setNewDeptName] = useState('');
+  const [editingDept, setEditingDept] = useState<{ id: string; name: string } | null>(null);
+  const [draggingBot, setDraggingBot] = useState<string | null>(null);
+  const [dragPosition, setDragPosition] = useState<{ x: number; y: number } | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; deptId: string } | null>(null);
+  const [botContextMenu, setBotContextMenu] = useState<{ x: number; y: number; botId: string } | null>(null);
+  const [dropTarget, setDropTarget] = useState<string | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<{ 
+    title: string; 
+    message: string; 
+    onConfirm: () => void;
+  } | null>(null);
+  const hasInitialLayoutRef = useRef(false);
+  
+  const { departments, assignments, addDepartment, updateDepartment, deleteDepartment, assignAgent, unassignAgent } = useOrganizationStore();
+  const { agents } = useAgentsStore();
+  
+  // 获取未分配的员工
+  const unassignedAgents = useMemo(
+    () => agents.filter((agent) => !assignments[agent.id]),
+    [agents, assignments]
+  );
+
+  // 注册自定义节点
+  useEffect(() => {
+    // 部门节点 - 使用 HTML 渲染而不是 SVG
+    Graph.registerNode(
+      'dept-node',
+      {
+        inherit: 'rect',
+        width: 240,
+        height: 80,
+        attrs: {
+          body: {
+            strokeWidth: 0,
+            fill: 'transparent',
+          },
+        },
+        markup: [
+          {
+            tagName: 'foreignObject',
+            selector: 'fo',
+            children: [
+              {
+                tagName: 'body',
+                selector: 'foBody',
+                ns: 'http://www.w3.org/1999/xhtml',
+                children: [
+                  {
+                    tagName: 'div',
+                    selector: 'content',
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+        attrs: {
+          fo: {
+            refWidth: '100%',
+            refHeight: '100%',
+          },
+          foBody: {
+            xmlns: 'http://www.w3.org/1999/xhtml',
+            style: {
+              width: '100%',
+              height: '100%',
+              display: 'flex',
+              justifyContent: 'center',
+              alignItems: 'center',
+            },
+          },
+        },
+      },
+      true
+    );
+
+    // 员工节点 - 使用 HTML 渲染
+    Graph.registerNode(
+      'bot-node',
+      {
+        inherit: 'rect',
+        width: 180,
+        height: 90,
+        attrs: {
+          body: {
+            strokeWidth: 0,
+            fill: 'transparent',
+          },
+        },
+        markup: [
+          {
+            tagName: 'foreignObject',
+            selector: 'fo',
+            children: [
+              {
+                tagName: 'body',
+                selector: 'foBody',
+                ns: 'http://www.w3.org/1999/xhtml',
+                children: [
+                  {
+                    tagName: 'div',
+                    selector: 'content',
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+        attrs: {
+          fo: {
+            refWidth: '100%',
+            refHeight: '100%',
+          },
+          foBody: {
+            xmlns: 'http://www.w3.org/1999/xhtml',
+            style: {
+              width: '100%',
+              height: '100%',
+              display: 'flex',
+              justifyContent: 'center',
+              alignItems: 'center',
+            },
+          },
+        },
+      },
+      true
+    );
+
+    // 边
+    Graph.registerEdge('org-edge', {
+      zIndex: -1,
+      attrs: {
+        line: {
+          strokeWidth: 2.5,
+          stroke: '#cbd5e1',
+          sourceMarker: null,
+          targetMarker: null,
+        },
+      },
+    }, true);
+  }, []);
+  
+  // 初始化图形
+  useEffect(() => {
+    if (!containerRef.current) return;
+    
+    const graph = new Graph({
+      container: containerRef.current,
+      autoResize: true,
+      panning: true,
+      mousewheel: {
+        enabled: true,
+        modifiers: ['ctrl', 'meta'],
+        minScale: 0.3,
+        maxScale: 2,
+      },
+      background: {
+        color: '#f8f6f0',
+      },
+      grid: false,
+      interacting: {
+        nodeMovable: false,
+        edgeMovable: false,
+        edgeLabelMovable: false,
+        arrowheadMovable: false,
+        vertexMovable: false,
+        vertexAddable: false,
+        vertexDeletable: false,
+      },
+    });
+    
+    graphRef.current = graph;
+    
+    // 监听节点点击事件
+    graph.on('node:click', ({ node }) => {
+      const data = node.getData();
+      if (data?.type === 'dept') {
+        setSelectedDept(data.id);
+      }
+    });
+    
+    // 监听员工节点拖动开始
+    graph.on('node:mousedown', ({ node, e }) => {
+      const data = node.getData();
+      if (data?.type === 'bot') {
+        setDraggingBot(data.id);
+        // 创建一个拖动数据传输对象
+        const dt = new DataTransfer();
+        dt.setData('botId', data.id);
+        // 触发拖动事件
+        const dragEvent = new DragEvent('dragstart', {
+          dataTransfer: dt,
+          bubbles: true,
+          cancelable: true,
+        });
+        e.target.dispatchEvent(dragEvent);
+      }
+    });
+    
+    // 监听右键菜单
+    graph.on('node:contextmenu', ({ node, e }) => {
+      const data = node.getData();
+      if (data?.type === 'dept') {
+        e.preventDefault();
+        setContextMenu({ x: e.clientX, y: e.clientY, deptId: data.id });
+      } else if (data?.type === 'bot') {
+        e.preventDefault();
+        setBotContextMenu({ x: e.clientX, y: e.clientY, botId: data.id });
+      }
+    });
+    
+    // 监听画布点击事件（取消选择）
+    graph.on('blank:click', () => {
+      setSelectedDept(null);
+    });
+    
+    return () => {
+      graph.dispose();
+    };
+  }, []);
+
+  // 关闭右键菜单
+  useEffect(() => {
+    const handleClick = () => {
+      setContextMenu(null);
+      setBotContextMenu(null);
+    };
+    document.addEventListener('click', handleClick);
+    return () => document.removeEventListener('click', handleClick);
+  }, []);
+  
+  // 渲染组织架构图
+  const renderGraph = useCallback(() => {
+    if (!graphRef.current) return;
+    
+    const graph = graphRef.current;
+    
+    if (departments.length === 0) {
+      graph.clearCells();
+      return;
+    }
+    
+    // 获取现有节点和边
+    const existingNodes = new Map(graph.getNodes().map(n => [n.id, n]));
+    const existingEdges = new Map(graph.getEdges().map(e => [e.id, e]));
+    
+    const newNodeIds = new Set<string>();
+    const newEdgeIds = new Set<string>();
+    
+    // 创建或更新部门节点
+    departments.forEach((dept) => {
+      const nodeId = `dept-${dept.id}`;
+      newNodeIds.add(nodeId);
+      
+      const assignedCount = Object.values(assignments).filter((deptId) => deptId === dept.id).length;
+      const color = getColor(dept.id);
+      const isDropTarget = dropTarget === dept.id;
+      
+      const existingNode = existingNodes.get(nodeId);
+      
+      if (existingNode) {
+        // 更新现有节点
+        existingNode.setAttrs({
+          content: {
+            html: `
+              <div style="
+                width: 240px;
+                height: 80px;
+                background: ${isDropTarget ? 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)' : color};
+                border: ${isDropTarget ? '3px' : '2px'} solid ${isDropTarget ? '#60a5fa' : color};
+                border-radius: 16px;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                color: white;
+                font-family: Georgia, Cambria, 'Times New Roman', Times, serif;
+                box-shadow: ${isDropTarget ? '0 8px 16px -2px rgba(59, 130, 246, 0.4), 0 0 0 4px rgba(59, 130, 246, 0.2)' : '0 4px 6px -1px rgba(0, 0, 0, 0.1)'};
+                transition: all 0.2s ease;
+                transform: ${isDropTarget ? 'scale(1.05)' : 'scale(1)'};
+              ">
+                <div style="font-size: 16px; font-weight: 700; margin-bottom: 4px;">${dept.name}</div>
+                <div style="font-size: 13px; font-weight: 500;">${assignedCount} 人</div>
+                ${isDropTarget ? '<div style="font-size: 11px; margin-top: 4px; opacity: 0.9;">📍 释放以分配</div>' : ''}
+              </div>
+            `,
+          },
+        });
+      } else {
+        // 创建新节点
+        const node = graph.addNode({
+          id: nodeId,
+          shape: 'dept-node',
+          x: 100,
+          y: 100,
+          data: { type: 'dept', id: dept.id },
+          attrs: {
+            content: {
+              html: `
+                <div style="
+                  width: 240px;
+                  height: 80px;
+                  background: ${color};
+                  border: 2px solid ${color};
+                  border-radius: 16px;
+                  display: flex;
+                  flex-direction: column;
+                  align-items: center;
+                  justify-content: center;
+                  color: white;
+                  font-family: Georgia, Cambria, 'Times New Roman', Times, serif;
+                  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+                  animation: nodeEnter 0.4s ease-out;
+                ">
+                  <div style="font-size: 16px; font-weight: 700; margin-bottom: 4px;">${dept.name}</div>
+                  <div style="font-size: 13px; font-weight: 500;">${assignedCount} 人</div>
+                </div>
+                <style>
+                  @keyframes nodeEnter {
+                    from {
+                      opacity: 0;
+                      transform: translateY(-20px) scale(0.95);
+                    }
+                    to {
+                      opacity: 1;
+                      transform: translateY(0) scale(1);
+                    }
+                  }
+                  @keyframes nodeExit {
+                    from {
+                      opacity: 1;
+                      transform: translateY(0) scale(1);
+                    }
+                    to {
+                      opacity: 0;
+                      transform: translateY(20px) scale(0.95);
+                    }
+                  }
+                </style>
+              `,
+            },
+          },
+        });
+      }
+    });
+    
+    // 创建或更新员工节点
+    agents.forEach((agent) => {
+      const deptId = assignments[agent.id];
+      if (!deptId) return;
+      
+      const nodeId = `bot-${agent.id}`;
+      newNodeIds.add(nodeId);
+      
+      const color = getColor(agent.id);
+      const emoji = getEmoji(agent.id);
+      
+      const existingNode = existingNodes.get(nodeId);
+      
+      if (!existingNode) {
+        // 创建新节点
+        graph.addNode({
+          id: nodeId,
+          shape: 'bot-node',
+          x: 100,
+          y: 100,
+          data: { type: 'bot', id: agent.id, deptId },
+          attrs: {
+            content: {
+              html: `
+                <div style="
+                  width: 180px;
+                  height: 90px;
+                  background: #f3f1e9;
+                  border: 2px solid ${color};
+                  border-radius: 14px;
+                  display: flex;
+                  align-items: center;
+                  padding: 12px;
+                  font-family: Georgia, Cambria, 'Times New Roman', Times, serif;
+                  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+                  animation: nodeEnter 0.4s ease-out;
+                ">
+                  <div style="
+                    width: 36px;
+                    height: 36px;
+                    border-radius: 50%;
+                    background: #f8f6f0;
+                    border: 2px solid ${color};
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    font-size: 20px;
+                    flex-shrink: 0;
+                  ">${emoji}</div>
+                  <div style="margin-left: 12px; flex: 1; min-width: 0;">
+                    <div style="font-size: 14px; font-weight: 600; color: #1a1a2e; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                      ${agent.name.length > 10 ? agent.name.slice(0, 10) + '…' : agent.name}
+                    </div>
+                    <div style="font-size: 12px; color: #9ca3af; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                      ID: ${agent.id.slice(0, 8)}
+                    </div>
+                  </div>
+                </div>
+                <style>
+                  @keyframes nodeEnter {
+                    from {
+                      opacity: 0;
+                      transform: translateY(-20px) scale(0.95);
+                    }
+                    to {
+                      opacity: 1;
+                      transform: translateY(0) scale(1);
+                    }
+                  }
+                  @keyframes nodeExit {
+                    from {
+                      opacity: 1;
+                      transform: translateY(0) scale(1);
+                    }
+                    to {
+                      opacity: 0;
+                      transform: translateY(20px) scale(0.95);
+                    }
+                  }
+                </style>
+              `,
+            },
+          },
+        });
+      }
+    });
+    
+    // 创建部门层级边
+    departments.forEach((dept) => {
+      if (!dept.parentId) return;
+      const edgeId = `edge-dept-${dept.parentId}-${dept.id}`;
+      newEdgeIds.add(edgeId);
+      
+      if (!existingEdges.has(edgeId)) {
+        graph.addEdge({
+          id: edgeId,
+          shape: 'org-edge',
+          source: { cell: `dept-${dept.parentId}` },
+          target: { cell: `dept-${dept.id}` },
+        });
+      }
+    });
+    
+    // 创建员工到部门的边
+    agents.forEach((agent) => {
+      const deptId = assignments[agent.id];
+      if (!deptId) return;
+      const edgeId = `edge-bot-${agent.id}-${deptId}`;
+      newEdgeIds.add(edgeId);
+      
+      if (!existingEdges.has(edgeId)) {
+        graph.addEdge({
+          id: edgeId,
+          shape: 'org-edge',
+          source: { cell: `dept-${deptId}` },
+          target: { cell: `bot-${agent.id}` },
+          attrs: {
+            line: {
+              stroke: '#d1d5db',
+              strokeWidth: 1,
+              strokeOpacity: 1,
+              strokeDasharray: '4 3',
+            },
+          },
+        });
+      }
+    });
+    
+    // 移除不再需要的节点（立即删除，不用动画）
+    existingNodes.forEach((node, id) => {
+      if (!newNodeIds.has(id)) {
+        node.remove();
+      }
+    });
+    
+    // 移除不再需要的边（立即删除）
+    existingEdges.forEach((edge, id) => {
+      if (!newEdgeIds.has(id)) {
+        edge.remove();
+      }
+    });
+    
+    // 布局所有节点
+    const allNodes = graph.getNodes();
+    const allEdges = graph.getEdges();
+    
+    if (allNodes.length === 0) return;
+    
+    const g = new dagre.graphlib.Graph();
+    g.setGraph({ rankdir: 'TB', nodesep: 50, ranksep: 80 });
+    g.setDefaultEdgeLabel(() => ({}));
+    
+    allNodes.forEach((node) => {
+      const size = node.getSize();
+      g.setNode(node.id, { width: size.width, height: size.height });
+    });
+    
+    allEdges.forEach((edge) => {
+      const src = edge.getSource();
+      const tgt = edge.getTarget();
+      if (src.cell && tgt.cell) {
+        g.setEdge(src.cell as string, tgt.cell as string);
+      }
+    });
+    
+    dagre.layout(g);
+    
+    // 更新所有节点位置
+    allNodes.forEach((node) => {
+      const pos = g.node(node.id);
+      if (pos) {
+        const targetX = pos.x - pos.width / 2;
+        const targetY = pos.y - pos.height / 2;
+        
+        // 直接设置位置，不使用动画（避免 API 问题）
+        node.setPosition(targetX, targetY);
+      }
+    });
+    
+    // 缩放到合适大小（只在初始渲染时执行一次）
+    if (!hasInitialLayoutRef.current && allNodes.length > 0) {
+      setTimeout(() => {
+        graph.zoomToFit({ 
+          padding: 60, 
+          maxScale: 1,
+        });
+        hasInitialLayoutRef.current = true;
+      }, 100);
+    }
+  }, [departments, assignments, agents, dropTarget]);
+  
+  useEffect(() => {
+    renderGraph();
+  }, [renderGraph]);
+  
+  // 添加部门
+  const handleAddDepartment = useCallback(() => {
+    if (!newDeptName.trim()) return;
+    addDepartment(newDeptName.trim(), selectedDept);
+    setNewDeptName('');
+    toast.success('部门已添加');
+  }, [newDeptName, selectedDept, addDepartment]);
+  
+  // 删除部门
+  const handleDeleteDepartment = useCallback((deptId: string) => {
+    const dept = departments.find((d) => d.id === deptId);
+    if (!dept) return;
+    
+    setConfirmDialog({
+      title: '删除部门',
+      message: `确定要删除"${dept.name}"吗？子部门和员工分配也会被清除。`,
+      onConfirm: () => {
+        deleteDepartment(deptId);
+        if (selectedDept === deptId) {
+          setSelectedDept(null);
+        }
+        toast.success('部门已删除');
+        setConfirmDialog(null);
+      },
+    });
+  }, [departments, deleteDepartment, selectedDept]);
+  
+  // 重命名部门
+  const handleRenameDepartment = useCallback(() => {
+    if (!editingDept || !editingDept.name.trim()) return;
+    updateDepartment(editingDept.id, editingDept.name.trim());
+    setEditingDept(null);
+    toast.success('部门已重命名');
+  }, [editingDept, updateDepartment]);
+  
+  // 取消分配员工
+  const handleUnassignAgent = useCallback((botId: string) => {
+    const agent = agents.find((a) => a.id === botId);
+    if (!agent) return;
+    
+    unassignAgent(botId);
+    toast.success('员工已移除');
+  }, [agents, unassignAgent]);
+  
+  // 拖拽开始
+  const handleDragStart = useCallback((e: React.DragEvent, botId: string) => {
+    e.dataTransfer.setData('botId', botId);
+    e.dataTransfer.effectAllowed = 'move';
+    
+    // 隐藏浏览器默认的拖动预览
+    const img = new Image();
+    img.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+    e.dataTransfer.setDragImage(img, 0, 0);
+    
+    setDraggingBot(botId);
+    setDragPosition({ x: e.clientX, y: e.clientY });
+  }, []);
+  
+  // 拖拽结束
+  const handleDragEnd = useCallback(() => {
+    setDraggingBot(null);
+    setDragPosition(null);
+    setDropTarget(null);
+  }, []);
+  
+  // 拖拽到画布
+  const handleCanvasDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    if (!draggingBot || !graphRef.current) return;
+    
+    const graph = graphRef.current;
+    const p = graph.clientToLocal(e.clientX, e.clientY);
+    const deptNode = graph.getNodes().find((n) => {
+      const data = n.getData();
+      if (data?.type !== 'dept') return false;
+      return n.getBBox().containsPoint(p);
+    });
+    
+    if (deptNode) {
+      const deptId = deptNode.getData().id;
+      
+      // 立即分配，不要延迟
+      assignAgent(draggingBot, deptId);
+      toast.success('员工已分配');
+    }
+    
+    setDraggingBot(null);
+    setDragPosition(null);
+    setDropTarget(null);
+  }, [draggingBot, assignAgent]);
+  
+  // 拖拽经过画布时高亮目标部门
+  const handleCanvasDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    
+    // 使用 requestAnimationFrame 优化性能
+    requestAnimationFrame(() => {
+      setDragPosition({ x: e.clientX, y: e.clientY });
+    });
+    
+    if (!draggingBot || !graphRef.current) return;
+    
+    const graph = graphRef.current;
+    const p = graph.clientToLocal(e.clientX, e.clientY);
+    const deptNode = graph.getNodes().find((n) => {
+      const data = n.getData();
+      if (data?.type !== 'dept') return false;
+      return n.getBBox().containsPoint(p);
+    });
+    
+    const newTarget = deptNode ? deptNode.getData().id : null;
+    
+    // 只在目标改变时更新状态，减少重渲染
+    if (dropTarget !== newTarget) {
+      setDropTarget(newTarget);
+    }
+  }, [draggingBot, dropTarget]);
+
+  return (
+    <div className="flex h-full gap-6">
+      {/* 左侧面板 */}
+      <motion.div
+        initial={{ opacity: 0, x: -20 }}
+        animate={{ opacity: 1, x: 0 }}
+        className="w-96 flex flex-col gap-6"
+      >
+        {/* 部门管理 */}
+        <div className="rounded-2xl bg-black/[0.02] dark:bg-white/[0.02] border border-black/5 dark:border-white/5 p-5">
+          <div className="flex items-center gap-2 mb-4">
+            <Building2 className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+            <h3 className="text-[15px] font-semibold text-foreground">组织架构</h3>
+          </div>
+          
+          <div className="space-y-3">
+            <Input
+              value={newDeptName}
+              onChange={(e) => setNewDeptName(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleAddDepartment()}
+              placeholder={selectedDept ? '添加子部门' : '添加根部门'}
+              className="h-10 text-[13px] rounded-xl"
+            />
+            <Button
+              onClick={handleAddDepartment}
+              disabled={!newDeptName.trim()}
+              className="w-full h-10 text-[13px] font-medium rounded-xl"
+            >
+              <Plus className="w-4 h-4 mr-2" />
+              添加{selectedDept ? '子' : '根'}部门
+            </Button>
+          </div>
+          
+          <AnimatePresence>
+            {selectedDept && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                exit={{ opacity: 0, height: 0 }}
+                className="mt-4 pt-4 border-t border-black/5 dark:border-white/5"
+              >
+                <div className="text-[13px] text-muted-foreground mb-3">
+                  当前选中: {departments.find((d) => d.id === selectedDept)?.name}
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      const dept = departments.find((d) => d.id === selectedDept);
+                      if (dept) setEditingDept({ id: dept.id, name: dept.name });
+                    }}
+                    className="flex-1 h-9 text-[13px] rounded-xl"
+                  >
+                    <Edit2 className="w-3.5 h-3.5 mr-1.5" />
+                    重命名
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleDeleteDepartment(selectedDept)}
+                    className="flex-1 h-9 text-[13px] rounded-xl text-destructive hover:text-destructive"
+                  >
+                    <Trash2 className="w-3.5 h-3.5 mr-1.5" />
+                    删除
+                  </Button>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+        
+        {/* 未分配员工 */}
+        <div className="flex-1 rounded-2xl bg-black/[0.02] dark:bg-white/[0.02] border border-black/5 dark:border-white/5 p-5 overflow-hidden flex flex-col">
+          <div className="flex items-center gap-2 mb-4">
+            <Users className="w-5 h-5 text-green-600 dark:text-green-400" />
+            <h3 className="text-[15px] font-semibold text-foreground">
+              员工列表
+            </h3>
+          </div>
+          
+          <div className="flex-1 overflow-y-auto -mr-2 pr-2 space-y-3">
+            {/* 未分配员工 */}
+            {unassignedAgents.length > 0 && (
+              <div>
+                <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-2">
+                  未分配 ({unassignedAgents.length})
+                </div>
+                <div className="space-y-2">
+                  <AnimatePresence>
+                    {unassignedAgents.map((agent) => (
+                      <motion.div
+                        key={agent.id}
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -10 }}
+                        draggable
+                        onDragStart={(e) => handleDragStart(e, agent.id)}
+                        onDragEnd={handleDragEnd}
+                        className={cn(
+                          'p-3 rounded-xl border cursor-grab active:cursor-grabbing transition-all',
+                          'bg-white dark:bg-gray-800 border-black/10 dark:border-white/10',
+                          'hover:border-blue-500/50 hover:shadow-md',
+                          draggingBot === agent.id && 'opacity-30'
+                        )}
+                      >
+                        <div className="flex items-center gap-3">
+                          <div 
+                            className="w-9 h-9 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white text-[15px] font-bold shrink-0"
+                          >
+                            {getEmoji(agent.id)}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="text-[13px] font-semibold text-foreground truncate">
+                              {agent.name}
+                            </div>
+                            <div className="text-[11px] text-muted-foreground truncate">
+                              {agent.id.slice(0, 12)}
+                            </div>
+                          </div>
+                        </div>
+                      </motion.div>
+                    ))}
+                  </AnimatePresence>
+                </div>
+              </div>
+            )}
+            
+            {/* 已分配员工 */}
+            {departments.map((dept) => {
+              const deptAgents = agents.filter((agent) => assignments[agent.id] === dept.id);
+              if (deptAgents.length === 0) return null;
+              
+              return (
+                <div key={dept.id}>
+                  <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-2 flex items-center gap-2">
+                    <span>{dept.name}</span>
+                    <span className="text-[10px] bg-black/5 dark:bg-white/5 px-1.5 py-0.5 rounded">
+                      {deptAgents.length}
+                    </span>
+                  </div>
+                  <div className="space-y-2">
+                    <AnimatePresence>
+                      {deptAgents.map((agent) => (
+                        <motion.div
+                          key={agent.id}
+                          initial={{ opacity: 0, y: 10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: -10 }}
+                          className="group relative"
+                        >
+                          <div
+                            draggable
+                            onDragStart={(e) => handleDragStart(e, agent.id)}
+                            onDragEnd={handleDragEnd}
+                            className={cn(
+                              'p-3 rounded-xl border cursor-grab active:cursor-grabbing transition-all',
+                              'bg-white dark:bg-gray-800 border-black/10 dark:border-white/10',
+                              'hover:border-blue-500/50 hover:shadow-lg',
+                              draggingBot === agent.id && 'opacity-30 scale-95'
+                            )}
+                          >
+                            <div className="flex items-center gap-3">
+                              <div className="w-9 h-9 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white text-[15px] font-bold shrink-0">
+                                {getEmoji(agent.id)}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <div className="text-[13px] font-semibold text-foreground truncate">
+                                  {agent.name}
+                                </div>
+                                <div className="text-[11px] text-muted-foreground truncate">
+                                  {agent.id.slice(0, 12)}
+                                </div>
+                              </div>
+                              <button
+                                onClick={() => handleUnassignAgent(agent.id)}
+                                className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg hover:bg-red-500/10 text-red-500 transition-all"
+                                title="移除分配"
+                              >
+                                <X className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </div>
+                        </motion.div>
+                      ))}
+                    </AnimatePresence>
+                  </div>
+                </div>
+              );
+            })}
+            
+            {unassignedAgents.length === 0 && agents.length === 0 && (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                className="text-[13px] text-muted-foreground text-center py-8"
+              >
+                还没有员工
+              </motion.div>
+            )}
+          </div>
+          
+          <div className="mt-4 pt-4 border-t border-black/5 dark:border-white/5 text-[11px] text-muted-foreground space-y-1">
+            <div>💡 拖拽员工到画布中的部门节点</div>
+            <div>❌ 点击 X 按钮移除分配</div>
+          </div>
+        </div>
+      </motion.div>
+      
+      {/* 画布区域 */}
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        className="flex-1 rounded-2xl overflow-hidden relative bg-[#f8f6f0] dark:bg-gray-900 border border-black/5 dark:border-white/5"
+        onDrop={handleCanvasDrop}
+        onDragOver={handleCanvasDragOver}
+      >
+        <div ref={containerRef} className="w-full h-full relative z-0" />
+        
+        {departments.length === 0 && (
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
+            <div className="text-center">
+              <div className="w-24 h-24 mx-auto mb-6 rounded-3xl bg-gradient-to-br from-blue-500/10 via-purple-500/10 to-pink-500/10 flex items-center justify-center backdrop-blur-sm border border-white/20 shadow-xl">
+                <Building2 className="w-12 h-12 text-blue-500/50" />
+              </div>
+              <div className="text-[17px] font-serif font-semibold text-foreground/80 mb-2" style={{ fontFamily: 'Georgia, Cambria, "Times New Roman", Times, serif' }}>
+                还没有部门
+              </div>
+              <div className="text-[14px] text-muted-foreground/70 max-w-xs">在左侧添加第一个部门开始构建组织架构</div>
+            </div>
+          </div>
+        )}
+        
+        {/* 操作提示 */}
+        <div className="absolute bottom-5 right-5 bg-[#f3f1e9]/90 dark:bg-gray-800/90 backdrop-blur-md rounded-2xl px-5 py-3 text-[12px] text-muted-foreground border border-black/10 dark:border-white/10 shadow-xl z-10">
+          <div className="flex items-center gap-5">
+            <span className="flex items-center gap-1.5">
+              <span className="text-[14px]">🖱</span>
+              <span>拖动画布</span>
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="text-[14px]">⌘</span>
+              <span>+ 滚轮缩放</span>
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="text-[14px]">🖱</span>
+              <span>右键部门操作</span>
+            </span>
+          </div>
+        </div>
+        
+        {/* 拖动提示 */}
+        <AnimatePresence>
+          {draggingBot && (
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 10 }}
+              className="absolute top-5 left-1/2 -translate-x-1/2 bg-blue-500 text-white px-6 py-3 rounded-2xl shadow-2xl font-medium text-[13px] flex items-center gap-2 z-20"
+            >
+              <motion.span
+                animate={{ rotate: [0, 10, -10, 0] }}
+                transition={{ duration: 0.5, repeat: Infinity }}
+              >
+                👆
+              </motion.span>
+              拖动到部门节点上释放
+            </motion.div>
+          )}
+        </AnimatePresence>
+        
+        {/* 拖动预览 */}
+        <AnimatePresence>
+          {draggingBot && dragPosition && (
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.9 }}
+              transition={{ type: "spring", stiffness: 500, damping: 30 }}
+              style={{
+                position: 'fixed',
+                left: dragPosition.x,
+                top: dragPosition.y,
+                pointerEvents: 'none',
+                zIndex: 9999,
+                willChange: 'transform',
+              }}
+              className="transform -translate-x-1/2 -translate-y-1/2"
+            >
+              <div className="p-3 rounded-xl border-2 border-blue-500 bg-white dark:bg-gray-800 shadow-2xl">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white text-[15px] font-bold">
+                    {getEmoji(draggingBot)}
+                  </div>
+                  <div className="text-[13px] font-semibold text-foreground">
+                    {agents.find((a) => a.id === draggingBot)?.name}
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </motion.div>
+      
+      {/* 重命名对话框 */}
+      <AnimatePresence>
+        {editingDept && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+            onClick={() => setEditingDept(null)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-[#f3f1e9] dark:bg-gray-800 rounded-3xl p-6 w-full max-w-md shadow-2xl"
+            >
+              <h3 className="text-xl font-serif font-normal tracking-tight text-foreground mb-4">
+                重命名部门
+              </h3>
+              <Input
+                value={editingDept.name}
+                onChange={(e) => setEditingDept({ ...editingDept, name: e.target.value })}
+                onKeyDown={(e) => e.key === 'Enter' && handleRenameDepartment()}
+                className="h-11 text-[13px] rounded-xl mb-4"
+                autoFocus
+              />
+              <div className="flex gap-2 justify-end">
+                <Button
+                  variant="outline"
+                  onClick={() => setEditingDept(null)}
+                  className="h-9 text-[13px] font-medium rounded-full px-4"
+                >
+                  取消
+                </Button>
+                <Button
+                  onClick={handleRenameDepartment}
+                  disabled={!editingDept.name.trim()}
+                  className="h-9 text-[13px] font-medium rounded-full px-4"
+                >
+                  确定
+                </Button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* 确认对话框 */}
+      <AnimatePresence>
+        {confirmDialog && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+            onClick={() => setConfirmDialog(null)}
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-[#f3f1e9] dark:bg-gray-800 rounded-3xl p-6 w-full max-w-md shadow-2xl"
+            >
+              <h3 className="text-xl font-serif font-normal tracking-tight text-foreground mb-3">
+                {confirmDialog.title}
+              </h3>
+              <p className="text-[14px] text-muted-foreground mb-6">
+                {confirmDialog.message}
+              </p>
+              <div className="flex gap-3 justify-end">
+                <Button
+                  variant="outline"
+                  onClick={() => setConfirmDialog(null)}
+                  className="h-10 text-[13px] font-medium rounded-full px-6"
+                >
+                  取消
+                </Button>
+                <Button
+                  onClick={confirmDialog.onConfirm}
+                  className="h-10 text-[13px] font-medium rounded-full px-6 bg-red-600 hover:bg-red-700"
+                >
+                  确定删除
+                </Button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* 右键菜单 */}
+      <AnimatePresence>
+        {contextMenu && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            style={{ left: contextMenu.x, top: contextMenu.y }}
+            className="fixed z-50 bg-white dark:bg-gray-800 rounded-xl border border-black/10 dark:border-white/10 shadow-2xl overflow-hidden min-w-[160px]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              onClick={() => {
+                const dept = departments.find((d) => d.id === contextMenu.deptId);
+                if (dept) setEditingDept({ id: dept.id, name: dept.name });
+                setContextMenu(null);
+              }}
+              className="w-full px-4 py-2.5 text-left text-[13px] text-foreground hover:bg-black/5 dark:hover:bg-white/5 transition-colors flex items-center gap-2"
+            >
+              <Edit2 className="w-3.5 h-3.5" />
+              重命名
+            </button>
+            <button
+              onClick={() => {
+                setSelectedDept(contextMenu.deptId);
+                setContextMenu(null);
+              }}
+              className="w-full px-4 py-2.5 text-left text-[13px] text-foreground hover:bg-black/5 dark:hover:bg-white/5 transition-colors flex items-center gap-2"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              添加子部门
+            </button>
+            <button
+              onClick={() => {
+                handleDeleteDepartment(contextMenu.deptId);
+                setContextMenu(null);
+              }}
+              className="w-full px-4 py-2.5 text-left text-[13px] text-destructive hover:bg-destructive/10 transition-colors flex items-center gap-2"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              删除部门
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+      {/* 右键菜单 - 员工 */}
+      <AnimatePresence>
+        {botContextMenu && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            style={{ left: botContextMenu.x, top: botContextMenu.y }}
+            className="fixed z-50 bg-white dark:bg-gray-800 rounded-xl border border-black/10 dark:border-white/10 shadow-2xl overflow-hidden min-w-[160px]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              onClick={() => {
+                handleUnassignAgent(botContextMenu.botId);
+                setBotContextMenu(null);
+              }}
+              className="w-full px-4 py-2.5 text-left text-[13px] text-destructive hover:bg-destructive/10 transition-colors flex items-center gap-2"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              移除分配
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, Bot, Check, Plus, RefreshCw, Settings2, Trash2, X } from 'lucide-react';
+import { AlertCircle, Bot, Check, Plus, RefreshCw, Settings2, Trash2, X, Layout, Puzzle, Building2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -11,6 +11,7 @@ import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 import { useAgentsStore } from '@/stores/agents';
 import { useGatewayStore } from '@/stores/gateway';
 import { useProviderStore } from '@/stores/providers';
+import { useModelsStore } from '@/stores/models';
 import { hostApiFetch } from '@/lib/host-api';
 import { subscribeHostEvent } from '@/lib/host-events';
 import { CHANNEL_ICONS, CHANNEL_NAMES, type ChannelType } from '@/types/channel';
@@ -27,6 +28,13 @@ import dingtalkIcon from '@/assets/channels/dingtalk.svg';
 import feishuIcon from '@/assets/channels/feishu.svg';
 import wecomIcon from '@/assets/channels/wecom.svg';
 import qqIcon from '@/assets/channels/qq.svg';
+import { TemplateManagementDialog } from '@/components/agents/TemplateManagementDialog';
+import { SkillsConfigurationView } from './SkillsConfigurationView';
+import { OrganizationView } from './OrganizationView';
+import { ConfettiPhysics } from '@/components/agents/ConfettiPhysics';
+
+// 全局计数器，用于生成唯一的粒子 ID
+let globalParticleId = 0;
 
 interface ChannelAccountItem {
   accountId: string;
@@ -96,6 +104,7 @@ export function Agents() {
   const { t } = useTranslation('agents');
   const gatewayStatus = useGatewayStore((state) => state.status);
   const refreshProviderSnapshot = useProviderStore((state) => state.refreshProviderSnapshot);
+  const { digitalEmployees, fetchDigitalEmployees } = useModelsStore();
   const lastGatewayStateRef = useRef(gatewayStatus.state);
   const {
     agents,
@@ -111,6 +120,11 @@ export function Agents() {
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [activeAgentId, setActiveAgentId] = useState<string | null>(null);
   const [agentToDelete, setAgentToDelete] = useState<AgentSummary | null>(null);
+  const [showTemplateDialog, setShowTemplateDialog] = useState(false);
+  const [viewMode, setViewMode] = useState<'list' | 'skills' | 'organization'>('list');
+  const [globalConfetti, setGlobalConfetti] = useState<Array<{ id: number; x: number; y: number; explosionX: number; explosionY: number; color: string; size: number }>>([]);
+  const lastClickTimeRef = useRef<number>(0);
+  const pendingConfettiRef = useRef<Set<number>>(new Set());
 
   const fetchChannelAccounts = useCallback(async () => {
     try {
@@ -124,7 +138,12 @@ export function Agents() {
   useEffect(() => {
     let mounted = true;
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    void Promise.all([fetchAgents(), fetchChannelAccounts(), refreshProviderSnapshot()]).finally(() => {
+    void Promise.all([
+      fetchAgents(), 
+      fetchChannelAccounts(), 
+      refreshProviderSnapshot(),
+      fetchDigitalEmployees()
+    ]).finally(() => {
       if (mounted) {
         setHasCompletedInitialLoad(true);
       }
@@ -132,7 +151,7 @@ export function Agents() {
     return () => {
       mounted = false;
     };
-  }, [fetchAgents, fetchChannelAccounts, refreshProviderSnapshot]);
+  }, [fetchAgents, fetchChannelAccounts, refreshProviderSnapshot, fetchDigitalEmployees]);
 
   useEffect(() => {
     const unsubscribe = subscribeHostEvent('gateway:channel-status', () => {
@@ -160,11 +179,75 @@ export function Agents() {
     [activeAgentId, agents],
   );
 
-  const visibleAgents = agents;
+  // 标记哪些 agent 是数字员工
+  const visibleAgents = useMemo(() => {
+    const digitalEmployeeIds = new Set(digitalEmployees.map(emp => emp.openclawAgentId));
+    return agents.map(agent => ({
+      ...agent,
+      isDigitalEmployee: digitalEmployeeIds.has(agent.id),
+    }));
+  }, [agents, digitalEmployees]);
+  
   const visibleChannelGroups = channelGroups;
   const isUsingStableValue = loading && hasCompletedInitialLoad;
+  
   const handleRefresh = () => {
-    void Promise.all([fetchAgents(), fetchChannelAccounts()]);
+    void Promise.all([fetchAgents(), fetchChannelAccounts(), fetchDigitalEmployees()]);
+  };
+  
+  const handleDigitalEmployeeClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    // 严格防抖：1000ms 内只能点击一次
+    const now = Date.now();
+    if (now - lastClickTimeRef.current < 1000) {
+      return;
+    }
+    lastClickTimeRef.current = now;
+    
+    // 严格限制最大方块数量（降低到 30）
+    if (globalConfetti.length >= 30) {
+      return;
+    }
+    
+    const timestamp = Date.now();
+    
+    // 检查是否已经在处理中
+    if (pendingConfettiRef.current.has(timestamp)) {
+      return;
+    }
+    pendingConfettiRef.current.add(timestamp);
+    
+    // 获取卡片在页面中的位置
+    const rect = event.currentTarget.getBoundingClientRect();
+    const cardCenterX = rect.left + rect.width / 2;
+    const cardCenterY = rect.top + rect.height / 2;
+    
+    // 生成彩色像素块 - 减少到 8 个
+    const colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8', '#F7DC6F', '#BB8FCE', '#85C1E2'];
+    const newConfetti = Array.from({ length: 8 }, () => {
+      const angle = (Math.random() * 360) * (Math.PI / 180);
+      const explosionDistance = 60 + Math.random() * 80; // 减小爆炸范围
+      
+      const explosionX = Math.cos(angle) * explosionDistance;
+      const explosionY = Math.sin(angle) * explosionDistance;
+      
+      return {
+        id: ++globalParticleId, // 使用全局计数器生成唯一 ID
+        x: cardCenterX,
+        y: cardCenterY,
+        explosionX,
+        explosionY,
+        color: colors[Math.floor(Math.random() * colors.length)],
+        size: 4 + Math.random() * 2, // 减小方块大小：4-6px
+      };
+    });
+    
+    // 追加到现有的 confetti
+    setGlobalConfetti(prev => [...prev, ...newConfetti]);
+    
+    // 1秒后清理这个时间戳
+    setTimeout(() => {
+      pendingConfettiRef.current.delete(timestamp);
+    }, 1000);
   };
 
   if (loading && !hasCompletedInitialLoad) {
@@ -176,9 +259,17 @@ export function Agents() {
   }
 
   return (
-    <div data-testid="agents-page" className="flex flex-col -m-6 dark:bg-background h-[calc(100vh-2.5rem)] overflow-hidden">
-      <div className="w-full max-w-5xl mx-auto flex flex-col h-full p-10 pt-16">
-        <div className="flex flex-col md:flex-row md:items-start justify-between mb-12 shrink-0 gap-4">
+    <div data-testid="agents-page" className="flex flex-col -m-6 dark:bg-background h-[calc(100vh-2.5rem)] overflow-hidden relative">
+      {/* 物理引擎驱动的彩色方块 */}
+      <ConfettiPhysics
+        particles={globalConfetti}
+        onComplete={(id) => {
+          setGlobalConfetti(prev => prev.filter(p => p.id !== id));
+        }}
+      />
+      
+      <div className="w-full flex flex-col h-full p-6">
+        <div className="flex flex-col md:flex-row md:items-start justify-between shrink-0 gap-4 mb-4">
           <div>
             <h1
               className="text-5xl md:text-6xl font-serif text-foreground mb-3 font-normal tracking-tight"
@@ -198,6 +289,14 @@ export function Agents() {
               {t('refresh')}
             </Button>
             <Button
+              variant="outline"
+              onClick={() => setShowTemplateDialog(true)}
+              className="h-9 text-[13px] font-medium rounded-full px-4 border-black/10 dark:border-white/10 bg-transparent hover:bg-black/5 dark:hover:bg-white/5 shadow-none text-foreground/80 hover:text-foreground transition-colors"
+            >
+              <Layout className="h-3.5 w-3.5 mr-2" />
+              模板管理
+            </Button>
+            <Button
               onClick={() => setShowAddDialog(true)}
               className="h-9 text-[13px] font-medium rounded-full px-4 shadow-none"
             >
@@ -207,36 +306,79 @@ export function Agents() {
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto pr-2 pb-10 min-h-0 -mr-2">
-          {gatewayStatus.state !== 'running' && (
-            <div className="mb-8 p-4 rounded-xl border border-yellow-500/50 bg-yellow-500/10 flex items-center gap-3">
-              <AlertCircle className="h-5 w-5 text-yellow-600 dark:text-yellow-400" />
-              <span className="text-yellow-700 dark:text-yellow-400 text-sm font-medium">
-                {t('gatewayWarning')}
-              </span>
-            </div>
-          )}
+        {/* 视图切换按钮 */}
+        <div className={cn(
+          "flex items-center gap-2 shrink-0",
+          viewMode === 'organization' ? 'mb-4' : 'mb-6'
+        )}>
+          <Button
+            variant={viewMode === 'list' ? 'default' : 'outline'}
+            onClick={() => setViewMode('list')}
+            className="h-10 text-sm font-medium rounded-full px-6"
+          >
+            <Bot className="h-4 w-4 mr-2" />
+            员工列表
+          </Button>
+          <Button
+            variant={viewMode === 'skills' ? 'default' : 'outline'}
+            onClick={() => setViewMode('skills')}
+            className="h-10 text-sm font-medium rounded-full px-6"
+          >
+            <Puzzle className="h-4 w-4 mr-2" />
+            技能配置
+          </Button>
+          <Button
+            variant={viewMode === 'organization' ? 'default' : 'outline'}
+            onClick={() => setViewMode('organization')}
+            className="h-10 text-sm font-medium rounded-full px-6"
+          >
+            <Building2 className="h-4 w-4 mr-2" />
+            组织架构
+          </Button>
+        </div>
 
-          {error && (
-            <div className="mb-8 p-4 rounded-xl border border-destructive/50 bg-destructive/10 flex items-center gap-3">
-              <AlertCircle className="h-5 w-5 text-destructive" />
-              <span className="text-destructive text-sm font-medium">
-                {error}
-              </span>
-            </div>
-          )}
+        <div className="flex-1 min-h-0 overflow-y-auto pr-2 pb-10 -mr-2">
+          {viewMode === 'list' ? (
+            <>
+              {gatewayStatus.state !== 'running' && (
+                <div className="mb-8 p-4 rounded-xl border border-yellow-500/50 bg-yellow-500/10 flex items-center gap-3">
+                  <AlertCircle className="h-5 w-5 text-yellow-600 dark:text-yellow-400" />
+                  <span className="text-yellow-700 dark:text-yellow-400 text-sm font-medium">
+                    {t('gatewayWarning')}
+                  </span>
+                </div>
+              )}
 
-          <div className="space-y-3">
-            {visibleAgents.map((agent) => (
-              <AgentCard
-                key={agent.id}
-                agent={agent}
-                channelGroups={visibleChannelGroups}
-                onOpenSettings={() => setActiveAgentId(agent.id)}
-                onDelete={() => setAgentToDelete(agent)}
-              />
-            ))}
-          </div>
+              {error && (
+                <div className="mb-8 p-4 rounded-xl border border-destructive/50 bg-destructive/10 flex items-center gap-3">
+                  <AlertCircle className="h-5 w-5 text-destructive" />
+                  <span className="text-destructive text-sm font-medium">
+                    {error}
+                  </span>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                {visibleAgents.map((agent) => (
+                  <AgentCard
+                    key={agent.id}
+                    agent={agent}
+                    channelGroups={visibleChannelGroups}
+                    onOpenSettings={() => setActiveAgentId(agent.id)}
+                    onDelete={() => setAgentToDelete(agent)}
+                    onDigitalEmployeeClick={handleDigitalEmployeeClick}
+                  />
+                ))}
+              </div>
+            </>
+          ) : viewMode === 'skills' ? (
+            <SkillsConfigurationView
+              employees={agents}
+              onRefresh={handleRefresh}
+            />
+          ) : (
+            <OrganizationView />
+          )}
         </div>
       </div>
 
@@ -282,6 +424,11 @@ export function Agents() {
         }}
         onCancel={() => setAgentToDelete(null)}
       />
+
+      <TemplateManagementDialog
+        isOpen={showTemplateDialog}
+        onClose={() => setShowTemplateDialog(false)}
+      />
     </div>
   );
 }
@@ -291,13 +438,17 @@ function AgentCard({
   channelGroups,
   onOpenSettings,
   onDelete,
+  onDigitalEmployeeClick,
 }: {
   agent: AgentSummary;
   channelGroups: ChannelGroupItem[];
   onOpenSettings: () => void;
   onDelete: () => void;
+  onDigitalEmployeeClick?: (event: React.MouseEvent<HTMLDivElement>) => void;
 }) {
   const { t } = useTranslation('agents');
+  const [isShaking, setIsShaking] = useState(false);
+  
   const boundChannelAccounts = channelGroups.flatMap((group) =>
     group.accounts
       .filter((account) => account.agentId === agent.id)
@@ -313,66 +464,119 @@ function AgentCard({
   const channelsText = boundChannelAccounts.length > 0
     ? boundChannelAccounts.join(', ')
     : t('none');
+  
+  const handleDigitalEmployeeClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (!agent.isDigitalEmployee) return;
+    
+    // 如果正在抖动，直接返回，不触发任何操作
+    if (isShaking) return;
+    
+    // 触发全局彩色方块（会检查防抖）
+    if (onDigitalEmployeeClick) {
+      onDigitalEmployeeClick(event);
+    }
+    
+    // 触发抖动动画
+    setIsShaking(true);
+    setTimeout(() => setIsShaking(false), 600);
+  };
 
   return (
     <div
       className={cn(
-        'group flex items-start gap-4 p-4 rounded-2xl transition-all text-left border relative overflow-hidden bg-transparent border-transparent hover:bg-black/5 dark:hover:bg-white/5',
-        agent.isDefault && 'bg-black/[0.04] dark:bg-white/[0.06]'
+        'group relative flex flex-col p-5 rounded-2xl transition-all border',
+        isShaking && 'animate-shake',
+        agent.isDigitalEmployee 
+          ? 'bg-[#f3f1e9] dark:bg-white/[0.06] border-blue-500/20 dark:border-blue-500/20 shadow-sm cursor-pointer' 
+          : agent.isDefault 
+            ? 'bg-[#f3f1e9] dark:bg-white/[0.06] border-black/10 dark:border-white/10 shadow-sm cursor-pointer' 
+            : 'bg-[#f8f6f0] dark:bg-white/[0.02] border-black/5 dark:border-white/5 hover:border-black/10 dark:hover:border-white/10 hover:shadow-lg cursor-pointer'
       )}
+      onClick={agent.isDigitalEmployee ? handleDigitalEmployeeClick : onOpenSettings}
     >
-      <div className="h-[46px] w-[46px] shrink-0 flex items-center justify-center text-primary bg-primary/10 rounded-full shadow-sm mb-3">
-        <Bot className="h-[22px] w-[22px]" />
+      {/* 状态指示点 */}
+      {agent.isDefault && (
+        <div className="absolute top-3 right-3 h-2 w-2 rounded-full bg-green-500 shadow-sm"></div>
+      )}
+
+      {/* 头像 */}
+      <div className="h-16 w-16 mx-auto mb-4 flex items-center justify-center text-primary bg-primary/10 rounded-full shadow-sm">
+        <Bot className="h-8 w-8" />
       </div>
-      <div className="flex flex-col flex-1 min-w-0 py-0.5 mt-1">
-        <div className="flex items-center justify-between gap-3 mb-1">
-          <div className="flex items-center gap-2 min-w-0">
-            <h2 className="text-[16px] font-semibold text-foreground truncate">{agent.name}</h2>
-            {agent.isDefault && (
-              <Badge
-                variant="secondary"
-                className="flex items-center gap-1 font-mono text-[10px] font-medium px-2 py-0.5 rounded-full bg-black/[0.04] dark:bg-white/[0.08] border-0 shadow-none text-foreground/70"
-              >
-                <Check className="h-3 w-3" />
-                {t('defaultBadge')}
-              </Badge>
-            )}
+
+      {/* 名称和标签 */}
+      <div className="text-center mb-3">
+        <h2 className="text-[16px] font-serif font-semibold text-foreground mb-1 truncate" style={{ fontFamily: 'Georgia, Cambria, "Times New Roman", Times, serif' }}>
+          {agent.name}
+        </h2>
+        <div className="flex items-center justify-center gap-2">
+          {agent.isDefault && (
+            <Badge
+              variant="secondary"
+              className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-primary/10 border-0 shadow-none text-primary"
+            >
+              <Check className="h-3 w-3 mr-1 inline" />
+              {t('defaultBadge')}
+            </Badge>
+          )}
+          {agent.isDigitalEmployee && (
+            <Badge
+              variant="secondary"
+              className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-blue-500/10 border-0 shadow-none text-blue-600 dark:text-blue-400"
+            >
+              🤖 数字员工
+            </Badge>
+          )}
+        </div>
+      </div>
+
+      {/* 信息 */}
+      <div className="space-y-2 mb-4 flex-1">
+        <div className="text-[12px] text-muted-foreground flex items-start gap-1.5">
+          <span className="opacity-70 shrink-0">🤖</span>
+          <span className="line-clamp-2">
+            {t('modelLine', {
+              model: agent.modelDisplay,
+              suffix: agent.inheritedModel ? ` (${t('inherited')})` : '',
+            })}
+          </span>
+        </div>
+        <div className="text-[12px] text-muted-foreground flex items-start gap-1.5">
+          <span className="opacity-70 shrink-0">💬</span>
+          <span className="line-clamp-2">{t('channelsLine', { channels: channelsText })}</span>
+        </div>
+      </div>
+
+      {/* 操作按钮 */}
+      <div className="flex items-center gap-2 pt-3 border-t border-black/5 dark:border-white/5" onClick={(e) => e.stopPropagation()}>
+        {agent.isDigitalEmployee ? (
+          <div className="flex-1 text-center text-[11px] text-muted-foreground py-1">
+            在 IM 平台管理
           </div>
-          <div className="flex items-center gap-1 shrink-0">
+        ) : (
+          <>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="flex-1 h-8 text-[12px] rounded-full hover:bg-black/5 dark:hover:bg-white/10"
+              onClick={onOpenSettings}
+            >
+              <Settings2 className="h-3.5 w-3.5 mr-1.5" />
+              {t('settings')}
+            </Button>
             {!agent.isDefault && (
               <Button
                 variant="ghost"
                 size="icon"
-                className="opacity-0 group-hover:opacity-100 h-7 w-7 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-all"
+                className="h-8 w-8 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-full"
                 onClick={onDelete}
                 title={t('deleteAgent')}
               >
-                <Trash2 className="h-4 w-4" />
+                <Trash2 className="h-3.5 w-3.5" />
               </Button>
             )}
-            <Button
-              variant="ghost"
-              size="icon"
-              className={cn(
-                'h-7 w-7 text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/10 transition-all',
-                !agent.isDefault && 'opacity-0 group-hover:opacity-100',
-              )}
-              onClick={onOpenSettings}
-              title={t('settings')}
-            >
-              <Settings2 className="h-4 w-4" />
-            </Button>
-          </div>
-        </div>
-        <p className="text-[13.5px] text-muted-foreground line-clamp-2 leading-[1.5]">
-          {t('modelLine', {
-            model: agent.modelDisplay,
-            suffix: agent.inheritedModel ? ` (${t('inherited')})` : '',
-          })}
-        </p>
-        <p className="text-[13.5px] text-muted-foreground line-clamp-2 leading-[1.5]">
-          {t('channelsLine', { channels: channelsText })}
-        </p>
+          </>
+        )}
       </div>
     </div>
   );
@@ -415,13 +619,44 @@ function AddAgentDialog({
   const { t } = useTranslation('agents');
   const [name, setName] = useState('');
   const [inheritWorkspace, setInheritWorkspace] = useState(false);
+  const [isDigitalEmployee, setIsDigitalEmployee] = useState(false);
+  const [headImage, setHeadImage] = useState('');
+  const [selectedModel, setSelectedModel] = useState('');
   const [saving, setSaving] = useState(false);
+  
+  const { models, fetchModels, createDigitalEmployee, fetchDigitalEmployees } = useModelsStore();
+  const { fetchAgents } = useAgentsStore();
+  
+  // 加载模型列表
+  useEffect(() => {
+    if (isDigitalEmployee && models.length === 0) {
+      fetchModels();
+    }
+  }, [isDigitalEmployee, models.length, fetchModels]);
+  
+  // 设置默认模型
+  useEffect(() => {
+    if (isDigitalEmployee && models.length > 0 && !selectedModel) {
+      const defaultModel = models.find(m => m.id === 'glm-5')?.id || models[0]?.id || '';
+      setSelectedModel(defaultModel);
+    }
+  }, [isDigitalEmployee, models, selectedModel]);
 
   const handleSubmit = async () => {
     if (!name.trim()) return;
     setSaving(true);
     try {
-      await onCreate(name.trim(), { inheritWorkspace });
+      if (isDigitalEmployee) {
+        // 创建数字员工
+        await createDigitalEmployee(name.trim(), headImage, selectedModel);
+        toast.success('数字员工创建成功');
+        // 刷新列表
+        await Promise.all([fetchDigitalEmployees(), fetchAgents()]);
+        onClose();
+      } else {
+        // 创建普通 agent
+        await onCreate(name.trim(), { inheritWorkspace });
+      }
     } catch (error) {
       toast.error(t('toast.agentCreateFailed', { error: String(error) }));
       setSaving(false);
@@ -452,17 +687,69 @@ function AddAgentDialog({
               className={inputClasses}
             />
           </div>
+          
+          {/* 数字员工选项 */}
           <div className="flex items-center justify-between">
             <div className="space-y-0.5">
-              <Label htmlFor="inherit-workspace" className={labelClasses}>{t('createDialog.inheritWorkspaceLabel')}</Label>
-              <p className="text-[13px] text-foreground/60">{t('createDialog.inheritWorkspaceDescription')}</p>
+              <Label htmlFor="is-digital-employee" className={labelClasses}>创建为数字员工</Label>
+              <p className="text-[13px] text-foreground/60">在 IM 平台创建 Bot 账号</p>
             </div>
             <Switch
-              id="inherit-workspace"
-              checked={inheritWorkspace}
-              onCheckedChange={setInheritWorkspace}
+              id="is-digital-employee"
+              checked={isDigitalEmployee}
+              onCheckedChange={setIsDigitalEmployee}
             />
           </div>
+          
+          {isDigitalEmployee ? (
+            <>
+              {/* 头像 URL */}
+              <div className="space-y-2.5">
+                <Label htmlFor="head-image" className={labelClasses}>头像 URL（可选）</Label>
+                <Input
+                  id="head-image"
+                  value={headImage}
+                  onChange={(event) => setHeadImage(event.target.value)}
+                  placeholder="https://example.com/avatar.png"
+                  className={inputClasses}
+                />
+              </div>
+              
+              {/* 模型选择 */}
+              <div className="space-y-2.5">
+                <Label htmlFor="model-select" className={labelClasses}>默认模型</Label>
+                <select
+                  id="model-select"
+                  value={selectedModel}
+                  onChange={(e) => setSelectedModel(e.target.value)}
+                  className={`${inputClasses} cursor-pointer`}
+                >
+                  {models.length === 0 ? (
+                    <option value="">加载中...</option>
+                  ) : (
+                    models.map((model) => (
+                      <option key={model.id} value={model.id}>
+                        {model.name || model.id}
+                      </option>
+                    ))
+                  )}
+                </select>
+              </div>
+            </>
+          ) : (
+            <div className="flex items-center justify-between">
+              <div className="space-y-0.5">
+                <Label htmlFor="inherit-workspace" className={labelClasses}>{t('createDialog.inheritWorkspaceLabel')}</Label>
+                <p className="text-[13px] text-foreground/60">{t('createDialog.inheritWorkspaceDescription')}</p>
+              </div>
+              <Switch
+                id="inherit-workspace"
+                checked={inheritWorkspace}
+                onCheckedChange={setInheritWorkspace}
+              />
+            </div>
+          )}
+          
           <div className="flex justify-end gap-2">
             <Button
               variant="outline"

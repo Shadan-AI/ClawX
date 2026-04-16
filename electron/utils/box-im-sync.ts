@@ -39,6 +39,128 @@ async function updateAgentIdentityMd(agentId: string, nickName: string, workspac
   }
 }
 
+/**
+ * Copy or create auth-profiles.json for bot agent.
+ * This ensures each digital worker has access to API keys.
+ * IMPORTANT: Always use unified 'shadan' provider name.
+ */
+async function copyAuthProfiles(agentId: string): Promise<void> {
+  try {
+    const home = homedir();
+    const mainAuthPath = join(home, '.openclaw/agents/main/agent/auth-profiles.json');
+    const botAgentDir = join(home, `.openclaw/agents/${agentId}/agent`);
+    const botAuthPath = join(botAgentDir, 'auth-profiles.json');
+
+    // Create bot agent directory if it doesn't exist
+    await mkdir(botAgentDir, { recursive: true });
+
+    // Try to copy from main agent first
+    try {
+      const authContent = await readFile(mainAuthPath, 'utf-8');
+      const authData = JSON.parse(authContent);
+      
+      // Normalize to use 'shadan' provider only (remove custom-shadan for consistency)
+      const normalizedProfiles: Record<string, any> = {};
+      const normalizedOrder: Record<string, string[]> = {};
+      const normalizedLastGood: Record<string, string> = {};
+      
+      // Extract API key from either shadan or custom-shadan
+      let apiKey: string | undefined;
+      if (authData.profiles?.['shadan:default']?.key) {
+        apiKey = authData.profiles['shadan:default'].key;
+      } else if (authData.profiles?.['custom-shadan:default']?.key) {
+        apiKey = authData.profiles['custom-shadan:default'].key;
+        logger.info(`[box-im] Migrating custom-shadan to shadan for ${agentId}`);
+      }
+      
+      if (apiKey) {
+        normalizedProfiles['shadan:default'] = {
+          type: 'api_key',
+          provider: 'shadan',
+          key: apiKey,
+        };
+        normalizedOrder.shadan = ['shadan:default'];
+        normalizedLastGood.shadan = 'shadan:default';
+      }
+      
+      // Copy other providers as-is
+      for (const [profileId, profile] of Object.entries(authData.profiles || {})) {
+        if (!profileId.startsWith('shadan:') && !profileId.startsWith('custom-shadan:')) {
+          normalizedProfiles[profileId] = profile;
+          const providerName = profileId.split(':')[0];
+          if (!normalizedOrder[providerName]) {
+            normalizedOrder[providerName] = authData.order?.[providerName] || [profileId];
+          }
+          if (!normalizedLastGood[providerName]) {
+            normalizedLastGood[providerName] = authData.lastGood?.[providerName] || profileId;
+          }
+        }
+      }
+      
+      const normalizedAuthData = {
+        version: authData.version || 1,
+        profiles: normalizedProfiles,
+        order: normalizedOrder,
+        lastGood: normalizedLastGood,
+      };
+      
+      await writeFile(botAuthPath, JSON.stringify(normalizedAuthData, null, 2), 'utf-8');
+      logger.info(`[box-im] Copied and normalized auth-profiles.json to ${agentId}`);
+      return;
+    } catch (err: any) {
+      if (err.code !== 'ENOENT') {
+        throw err;
+      }
+      logger.info(`[box-im] Main agent auth-profiles.json not found, creating from openclaw.json for ${agentId}`);
+    }
+
+    // Fallback: create auth-profiles.json from openclaw.json
+    const cfg = await readOpenClawConfig();
+    const models = (cfg as any).models as Record<string, unknown> | undefined;
+    const providers = (models?.providers ?? {}) as Record<string, unknown>;
+    
+    const profiles: Record<string, any> = {};
+    const order: Record<string, string[]> = {};
+    const lastGood: Record<string, string> = {};
+    
+    // Always use 'shadan' as the unified provider name
+    for (const [providerName, providerConfig] of Object.entries(providers)) {
+      if (typeof providerConfig === 'object' && providerConfig !== null) {
+        const config = providerConfig as Record<string, unknown>;
+        if (config.apiKey && typeof config.apiKey === 'string' && config.apiKey.length > 0) {
+          // Normalize: use 'shadan' for both 'shadan' and 'custom-shadan'
+          const normalizedName = (providerName === 'custom-shadan') ? 'shadan' : providerName;
+          const profileId = `${normalizedName}:default`;
+          
+          profiles[profileId] = {
+            type: 'api_key',
+            provider: normalizedName,
+            key: config.apiKey,
+          };
+          order[normalizedName] = [profileId];
+          lastGood[normalizedName] = profileId;
+          logger.info(`[box-im] Found API key for provider: ${providerName} (normalized to ${normalizedName})`);
+        }
+      }
+    }
+    
+    if (Object.keys(profiles).length > 0) {
+      const authProfiles = {
+        version: 1,
+        profiles,
+        order,
+        lastGood,
+      };
+      await writeFile(botAuthPath, JSON.stringify(authProfiles, null, 2), 'utf-8');
+      logger.info(`[box-im] Created auth-profiles.json for ${agentId} with ${Object.keys(profiles).length} provider(s)`);
+    } else {
+      logger.warn(`[box-im] No API keys found in openclaw.json providers, cannot create auth-profiles.json for ${agentId}`);
+    }
+  } catch (err) {
+    logger.warn(`[box-im] Failed to setup auth-profiles.json for agent ${agentId}:`, err);
+  }
+}
+
 // ── Constants ────────────────────────────────────────────────────
 
 const CHANNEL_ID = 'box-im';
@@ -57,6 +179,7 @@ export interface BotInfo {
   accessToken?: string | null;
   model?: string;
   deviceNodeId?: string;
+  skills?: string[];
 }
 
 export interface BoxImSyncResult {
@@ -199,6 +322,7 @@ export async function fetchBotsFromApi(apiUrl: string, tokenKey: string): Promis
     accessToken: b.accessToken ?? null,
     model: b.model ?? undefined,
     deviceNodeId: b.deviceNodeId ?? b.nodeId ?? undefined,
+    skills: b.skills ? (typeof b.skills === 'string' ? JSON.parse(b.skills) : b.skills) : undefined,
   }));
 }
 
@@ -217,7 +341,8 @@ function buildAccountsFromBots(
       userId: bot.id,
       botName: bot.nickName,
       headImage: bot.headImage ?? '',
-      model: bot.model ?? '',
+      model: bot.model && bot.model.length > 0 ? `shadan/${bot.model}` : '',
+      skills: bot.skills ?? existing[agentId]?.skills ?? undefined,
     };
   }
   return accounts;
@@ -245,16 +370,30 @@ function reconcileAgents(
         existing.name = existing.name || acct.botName || agentId;
       } else {
         existing.name = acct.botName || agentId;
+        // 从数据库同步 skills（数据库优先）
+        if (acct.skills) {
+          existing.skills = acct.skills;
+        }
+        // 从数据库同步 model（数据库优先）
+        if (acct.model && acct.model.length > 0) {
+          existing.model = { primary: acct.model };
+        }
         result.push(existing);
       }
     } else {
       const home = process.env.HOME || process.env.USERPROFILE || '';
-      result.push({
+      const agentConfig: AgentEntry = {
         id: agentId,
         name: acct.botName || agentId,
         workspace: `${home}/.openclaw/workspace-${agentId}`,
         agentDir: `${home}/.openclaw/agents/${agentId}/agent`,
-      });
+        skills: acct.skills,
+      };
+      // 从数据库同步 model（如果有）
+      if (acct.model && acct.model.length > 0) {
+        agentConfig.model = { primary: acct.model };
+      }
+      result.push(agentConfig);
     }
   }
   return result;
@@ -265,9 +404,12 @@ function reconcileBindings(
   accountIds: string[],
 ): Binding[] {
   const result = oldBindings.filter(b => b.match?.channel !== CHANNEL_ID);
+  logger.info(`[box-im] reconcileBindings: creating bindings for ${accountIds.length} accounts`);
   for (const agentId of accountIds) {
+    logger.info(`[box-im] Creating binding for agent: ${agentId}`);
     result.push({ agentId, match: { channel: CHANNEL_ID, accountId: agentId } });
   }
+  logger.info(`[box-im] Total bindings after reconciliation: ${result.length}`);
   return result;
 }
 
@@ -290,7 +432,10 @@ export async function saveBoxImAccounts(accounts: Record<string, BoxImAccount>):
   (cfg as any).agents = { ...agents, list: newList };
 
   const oldBindings = ((cfg as any).bindings ?? []) as Binding[];
-  (cfg as any).bindings = reconcileBindings(oldBindings, Object.keys(accounts));
+  const accountIds = Object.keys(accounts);
+  logger.info(`[box-im] saveBoxImAccounts: ${accountIds.length} accounts to sync`);
+  logger.info(`[box-im] Account IDs: ${accountIds.join(', ')}`);
+  (cfg as any).bindings = reconcileBindings(oldBindings, accountIds);
 
   // Pre-create agent directories so Gateway can initialize them on startup.
   // Without these dirs, Gateway skips the agent and the channel plugin never starts.
@@ -316,7 +461,47 @@ export async function saveBoxImAccounts(accounts: Record<string, BoxImAccount>):
 
 // ── Public entry point ───────────────────────────────────────────
 
+// Mutex to prevent concurrent syncBots() calls from corrupting openclaw.json
+let syncBotsInProgress = false;
+let syncBotsQueue: Array<{ resolve: (result: BoxImSyncResult) => void; reject: (error: Error) => void }> = [];
+
 export async function syncBots(): Promise<BoxImSyncResult> {
+  // If sync is already in progress, queue this call and wait for the current sync to complete
+  if (syncBotsInProgress) {
+    logger.info('[box-im] Sync already in progress, queuing this request...');
+    return new Promise((resolve, reject) => {
+      syncBotsQueue.push({ resolve, reject });
+    });
+  }
+
+  syncBotsInProgress = true;
+  try {
+    const result = await syncBotsInternal();
+    
+    // Resolve all queued requests with the same result
+    while (syncBotsQueue.length > 0) {
+      const queued = syncBotsQueue.shift();
+      if (queued) {
+        queued.resolve(result);
+      }
+    }
+    
+    return result;
+  } catch (error) {
+    // Reject all queued requests with the same error
+    while (syncBotsQueue.length > 0) {
+      const queued = syncBotsQueue.shift();
+      if (queued) {
+        queued.reject(error as Error);
+      }
+    }
+    throw error;
+  } finally {
+    syncBotsInProgress = false;
+  }
+}
+
+async function syncBotsInternal(): Promise<BoxImSyncResult> {
   const { tokenKey, apiUrl, accounts } = await getBoxImConfig();
 
   if (!tokenKey) {
@@ -324,8 +509,12 @@ export async function syncBots(): Promise<BoxImSyncResult> {
   }
 
   try {
+    logger.info('[box-im] Starting bot sync...');
     const bots = await fetchBotsFromApi(apiUrl, tokenKey);
+    logger.info(`[box-im] Fetched ${bots.length} bots from API:`, bots.map(b => ({ id: b.id, agentId: b.openclawAgentId, nickName: b.nickName })));
+    
     const newAccounts = buildAccountsFromBots(bots, accounts);
+    logger.info(`[box-im] Built ${Object.keys(newAccounts).length} accounts:`, Object.keys(newAccounts));
 
     for (const [agentId, acct] of Object.entries(newAccounts)) {
       if (!acct.accessToken) {
@@ -348,13 +537,16 @@ export async function syncBots(): Promise<BoxImSyncResult> {
 
     await saveBoxImAccounts(newAccounts);
 
-    // Update IDENTITY.md for each bot with their nickName
+    // Update IDENTITY.md and copy auth-profiles.json for each bot
     for (const bot of bots) {
       const agentId = bot.openclawAgentId || bot.userName || `bot-${bot.id}`;
       const acct = newAccounts[agentId];
       const nickName = bot.nickName || agentId;
       const workspace = acct ? `${process.env.HOME || process.env.USERPROFILE || homedir()}/.openclaw/workspace-${agentId}` : undefined;
       await updateAgentIdentityMd(agentId, nickName, workspace);
+      
+      // Copy auth-profiles.json from main agent
+      await copyAuthProfiles(agentId);
     }
 
     try {

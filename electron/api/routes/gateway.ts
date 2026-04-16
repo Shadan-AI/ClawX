@@ -11,6 +11,55 @@ export async function handleGatewayRoutes(
   url: URL,
   ctx: HostApiContext,
 ): Promise<boolean> {
+  // Proxy /plugins/* requests to Gateway (HTTPS with self-signed cert)
+  if (url.pathname.startsWith('/plugins/')) {
+    try {
+      const status = ctx.gatewayManager.getStatus();
+      if (status.state !== 'running') {
+        sendJson(res, 503, { success: false, error: 'Gateway is not running' });
+        return true;
+      }
+
+      const port = status.port || PORTS.OPENCLAW_GATEWAY;
+      const gatewayUrl = `https://127.0.0.1:${port}${url.pathname}${url.search}`;
+      
+      // Read request body
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) {
+        chunks.push(chunk as Buffer);
+      }
+      const body = chunks.length > 0 ? Buffer.concat(chunks).toString('utf-8') : undefined;
+
+      // Use node-fetch with custom agent to accept self-signed cert
+      const https = await import('node:https');
+      const agent = new https.Agent({ rejectUnauthorized: false });
+      
+      const fetchModule = await import('node-fetch');
+      const fetch = fetchModule.default;
+      
+      const gatewayRes = await fetch(gatewayUrl, {
+        method: req.method,
+        headers: {
+          'Content-Type': req.headers['content-type'] || 'application/json',
+        },
+        body: body || undefined,
+        agent,
+      });
+
+      // Forward response
+      const responseBody = await gatewayRes.text();
+      res.writeHead(gatewayRes.status, {
+        'Content-Type': gatewayRes.headers.get('content-type') || 'application/json',
+      });
+      res.end(responseBody);
+      return true;
+    } catch (error) {
+      console.error('[host-api] Gateway proxy error:', error);
+      sendJson(res, 502, { success: false, error: String(error) });
+      return true;
+    }
+  }
+
   if (url.pathname === '/api/app/gateway-info' && req.method === 'GET') {
     const status = ctx.gatewayManager.getStatus();
     const token = await getSetting('gatewayToken');

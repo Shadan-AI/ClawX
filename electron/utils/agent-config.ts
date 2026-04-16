@@ -89,6 +89,7 @@ export interface AgentSummary {
   agentDir: string;
   mainSessionKey: string;
   channelTypes: string[];
+  skills?: string[];
 }
 
 export interface AgentsSnapshot {
@@ -522,6 +523,7 @@ async function buildSnapshotFromConfig(config: AgentConfigDocument, preloadedCha
       channelTypes: configuredChannels
         .filter((ct) => ownedChannels.has(ct))
         .map((channelType) => toUiChannelType(channelType)),
+      skills: Array.isArray(entry.skills) ? entry.skills : undefined,
     };
   });
 
@@ -775,5 +777,27 @@ export async function clearAllBindingsForChannel(channelType: string): Promise<v
     config.bindings = nextBindings.length > 0 ? nextBindings : undefined;
     await writeOpenClawConfig(config);
     logger.info('Cleared all bindings for channel', { channelType });
+  });
+}
+
+export async function updateAgentSkills(agentId: string, skills: string[]): Promise<AgentsSnapshot> {
+  return withConfigLock(async () => {
+    const config = await readOpenClawConfig() as AgentConfigDocument;
+    const { agentsConfig, entries } = normalizeAgentsConfig(config);
+    const index = entries.findIndex((entry) => entry.id === agentId);
+    if (index === -1) {
+      throw new Error(`Agent "${agentId}" not found`);
+    }
+
+    const nextEntry: AgentListEntry = { ...entries[index], skills };
+    entries[index] = nextEntry;
+    config.agents = {
+      ...agentsConfig,
+      list: entries,
+    };
+
+    await writeOpenClawConfig(config);
+    logger.info('Updated agent skills', { agentId, skillCount: skills.length });
+    return buildSnapshotFromConfig(config);
   });
 }
