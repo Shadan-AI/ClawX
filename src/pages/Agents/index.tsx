@@ -33,6 +33,9 @@ import { SkillsConfigurationView } from './SkillsConfigurationView';
 import { OrganizationView } from './OrganizationView';
 import { ConfettiPhysics } from '@/components/agents/ConfettiPhysics';
 
+// 全局计数器，用于生成唯一的粒子 ID
+let globalParticleId = 0;
+
 interface ChannelAccountItem {
   accountId: string;
   name: string;
@@ -193,21 +196,21 @@ export function Agents() {
   };
   
   const handleDigitalEmployeeClick = (event: React.MouseEvent<HTMLDivElement>) => {
-    // 防抖：500ms 内只能点击一次
+    // 严格防抖：1000ms 内只能点击一次
     const now = Date.now();
-    if (now - lastClickTimeRef.current < 500) {
+    if (now - lastClickTimeRef.current < 1000) {
       return;
     }
     lastClickTimeRef.current = now;
     
-    // 限制最大方块数量
-    if (globalConfetti.length > 100) {
+    // 严格限制最大方块数量（降低到 30）
+    if (globalConfetti.length >= 30) {
       return;
     }
     
     const timestamp = Date.now();
     
-    // 检查是否已经在处理中（防止重复触发）
+    // 检查是否已经在处理中
     if (pendingConfettiRef.current.has(timestamp)) {
       return;
     }
@@ -218,36 +221,33 @@ export function Agents() {
     const cardCenterX = rect.left + rect.width / 2;
     const cardCenterY = rect.top + rect.height / 2;
     
-    // 生成彩色像素块 - 从卡片中心爆炸式出现
-    const colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8', '#F7DC6F', '#BB8FCE', '#85C1E2', '#FF85A2', '#95E1D3'];
-    const newConfetti = Array.from({ length: 20 }, (_, i) => {
-      // 随机角度（360度）
+    // 生成彩色像素块 - 减少到 8 个
+    const colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8', '#F7DC6F', '#BB8FCE', '#85C1E2'];
+    const newConfetti = Array.from({ length: 8 }, () => {
       const angle = (Math.random() * 360) * (Math.PI / 180);
-      // 随机爆炸距离（向外飞的距离）
-      const explosionDistance = 60 + Math.random() * 100; // 60-160px
+      const explosionDistance = 60 + Math.random() * 80; // 减小爆炸范围
       
-      // 计算爆炸后的位置（先向外飞）
       const explosionX = Math.cos(angle) * explosionDistance;
       const explosionY = Math.sin(angle) * explosionDistance;
       
       return {
-        id: timestamp + i,
+        id: ++globalParticleId, // 使用全局计数器生成唯一 ID
         x: cardCenterX,
         y: cardCenterY,
         explosionX,
         explosionY,
         color: colors[Math.floor(Math.random() * colors.length)],
-        size: 5 + Math.random() * 3, // 5-8px
+        size: 4 + Math.random() * 2, // 减小方块大小：4-6px
       };
     });
     
     // 追加到现有的 confetti
     setGlobalConfetti(prev => [...prev, ...newConfetti]);
     
-    // 3秒后清理这个时间戳
+    // 1秒后清理这个时间戳
     setTimeout(() => {
       pendingConfettiRef.current.delete(timestamp);
-    }, 3000);
+    }, 1000);
   };
 
   if (loading && !hasCompletedInitialLoad) {
@@ -468,14 +468,17 @@ function AgentCard({
   const handleDigitalEmployeeClick = (event: React.MouseEvent<HTMLDivElement>) => {
     if (!agent.isDigitalEmployee) return;
     
-    // 触发抖动
-    setIsShaking(true);
-    setTimeout(() => setIsShaking(false), 600);
+    // 如果正在抖动，直接返回，不触发任何操作
+    if (isShaking) return;
     
-    // 触发全局彩色方块
+    // 触发全局彩色方块（会检查防抖）
     if (onDigitalEmployeeClick) {
       onDigitalEmployeeClick(event);
     }
+    
+    // 触发抖动动画
+    setIsShaking(true);
+    setTimeout(() => setIsShaking(false), 600);
   };
 
   return (

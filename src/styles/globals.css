@@ -165,3 +165,53 @@
     transform: translateY(-4px);
   }
 }
+
+/* Shake animation for digital employee cards - 上下左右抖动 */
+@keyframes shake {
+  0%, 100% { transform: translate(0, 0); }
+  10% { transform: translate(-5px, -3px); }
+  20% { transform: translate(5px, 3px); }
+  30% { transform: translate(-5px, 3px); }
+  40% { transform: translate(5px, -3px); }
+  50% { transform: translate(-3px, -5px); }
+  60% { transform: translate(3px, 5px); }
+  70% { transform: translate(-3px, 5px); }
+  80% { transform: translate(3px, -5px); }
+  90% { transform: translate(-2px, -2px); }
+}
+
+.animate-shake {
+  animation: shake 0.6s ease-in-out;
+}
+
+/* Confetti explosion animation - 极简版本，让浏览器做插值 */
+@keyframes confetti-explode {
+  0% {
+    transform: translate(0, 0) rotate(0deg) scale(0.5);
+    opacity: 0;
+  }
+  
+  /* 爆炸到最高点 */
+  25% {
+    transform: translate(
+      calc(var(--explosion-x) * 0.8), 
+      calc(var(--explosion-y) * 0.8 - 50px)
+    ) rotate(270deg) scale(1.1);
+    opacity: 1;
+  }
+  
+  /* 下落 */
+  100% {
+    transform: translate(
+      calc(var(--explosion-x) + var(--drift-x)), 
+      calc(var(--explosion-y) + 105vh)
+    ) rotate(1080deg) scale(0.4);
+    opacity: 0;
+  }
+}
+
+.animate-confetti-explode {
+  animation: confetti-explode 2.5s cubic-bezier(0.22, 0.61, 0.36, 1) forwards;
+  will-change: transform;
+  transform-origin: center center;
+}

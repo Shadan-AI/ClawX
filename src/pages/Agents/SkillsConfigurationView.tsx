@@ -758,14 +758,14 @@ export function SkillsConfigurationView({
       </div>
 
       {/* 搜索和筛选 */}
-      <div className="space-y-3">
+      <div className="space-y-3 px-0.5">
         <div className="relative">
-          <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none z-10" />
           <Input
             placeholder="搜索技能..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="pl-11 h-11 rounded-xl border-black/10 dark:border-white/10 bg-[#f8f6f0] dark:bg-muted focus:bg-background transition-colors duration-150 text-[13px]"
+            className="pl-11 pr-10 h-11 rounded-xl border-black/10 dark:border-white/10 bg-[#f8f6f0] dark:bg-muted focus:bg-background focus-visible:ring-2 focus-visible:ring-blue-500/50 focus-visible:ring-offset-0 focus-visible:border-blue-500 transition-colors duration-150 text-[13px]"
           />
           <AnimatePresence>
             {searchQuery && (
@@ -775,7 +775,9 @@ export function SkillsConfigurationView({
                 exit={{ opacity: 0, scale: 0.9 }}
                 transition={{ duration: 0.1 }}
                 onClick={() => setSearchQuery('')}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors duration-150"
+                className="absolute right-3 text-muted-foreground hover:text-foreground transition-colors duration-150 z-10 h-4 w-4 flex items-center justify-center"
+                aria-label="清除搜索"
+                style={{ top: '14px' }}
               >
                 <X className="h-4 w-4" />
               </motion.button>

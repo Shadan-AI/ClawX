@@ -38,6 +38,7 @@ export interface ModelState {
   checkLoginStatus: () => Promise<boolean>;
   logout: () => Promise<void>;
   fetchDigitalEmployees: () => Promise<void>;
+  createDigitalEmployee: (nickName: string, headImage?: string, model?: string) => Promise<DigitalEmployee>;
   updateEmployeeSkills: (employeeId: number, skills: string[]) => Promise<void>;
   getAgentDefaultModel: (agentId: string) => string | null;
   getSessionModel: (sessionKey: string) => string | null;
@@ -303,6 +304,90 @@ export const useModelsStore = create<ModelState>((set, get) => ({
     } catch (error) {
       console.error('[models] Failed to fetch digital employees:', error);
       set({ digitalEmployees: [] });
+    }
+  },
+
+  createDigitalEmployee: async (nickName: string, headImage?: string, model?: string) => {
+    try {
+      console.log('[models] Creating digital employee:', { nickName, headImage, model });
+      
+      // 1. 生成稳定的 agentId
+      const agentId = 'bot-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+      
+      // 2. 获取 tokenKey
+      const tokenKey = await getTokenKey();
+      if (!tokenKey) {
+        throw new Error('未绑定用户');
+      }
+      
+      // 3. 调用 im-platform API 创建 Bot 账号
+      const apiUrl = 'https://im.shadanai.com/api';
+      const response = await fetch(`${apiUrl}/bot/create`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Token-Key': tokenKey,
+        },
+        body: JSON.stringify({
+          agentId,
+          nickName,
+          headImage: headImage || '',
+          model: model || '',
+        }),
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`创建 IM 账号失败: ${response.status} ${errorText}`);
+      }
+      
+      const result = await response.json();
+      console.log('[models] Create bot response:', result);
+      
+      if (result.code !== 200) {
+        throw new Error(result.message || '创建失败');
+      }
+      
+      const newEmployee: DigitalEmployee = {
+        id: result.data?.id || 0,
+        userName: result.data?.userName || agentId,
+        nickName,
+        headImage: headImage || '',
+        openclawAgentId: agentId,
+        model: model || '',
+        nodeId: '',
+        skills: [],
+      };
+      
+      // 4. 尝试在 Gateway 中创建 agent（best-effort）
+      try {
+        const { useGatewayStore } = await import('./gateway');
+        const gatewayState = useGatewayStore.getState();
+        
+        if (gatewayState.status.state === 'running') {
+          await gatewayState.rpc('agents.create', {
+            name: agentId,
+            workspace: `~/.openclaw/workspace-${agentId}`,
+          });
+          console.log('[models] Gateway agent created successfully');
+        } else {
+          console.warn('[models] Gateway not running, skipping agent creation');
+        }
+      } catch (gwErr) {
+        console.warn('[models] Gateway agent creation failed:', gwErr);
+        // 不抛出错误，因为 IM 账号已经创建成功
+      }
+      
+      // 5. 更新本地状态
+      set((state) => ({
+        digitalEmployees: [...state.digitalEmployees, newEmployee],
+      }));
+      
+      console.log('[models] Digital employee created:', newEmployee);
+      return newEmployee;
+    } catch (error) {
+      console.error('[models] Failed to create digital employee:', error);
+      throw error;
     }
   },
 

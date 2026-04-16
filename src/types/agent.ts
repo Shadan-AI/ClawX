@@ -11,6 +11,7 @@ export interface AgentSummary {
   mainSessionKey: string;
   channelTypes: string[];
   skills?: string[];
+  isDigitalEmployee?: boolean; // 标记是否为数字员工
 }
 
 export interface AgentsSnapshot {

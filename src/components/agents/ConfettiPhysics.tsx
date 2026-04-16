@@ -10,7 +10,6 @@ interface Particle {
   rotationSpeed: number;
   color: string;
   size: number;
-  restitution: number;
 }
 
 interface ConfettiPhysicsProps {
@@ -31,22 +30,14 @@ export function ConfettiPhysics({ particles: initialParticles, onComplete }: Con
   const animationFrameRef = useRef<number>();
   const lastTimeRef = useRef<number>(Date.now());
   const processedIdsRef = useRef<Set<number>>(new Set());
-  const isProcessingRef = useRef(false);
 
   // 初始化粒子 - 只处理新的粒子
   useEffect(() => {
-    // 防止重复处理（React Strict Mode 会导致 useEffect 执行两次）
-    if (isProcessingRef.current) {
-      return;
-    }
-    
     const newParticles = initialParticles.filter(p => !processedIdsRef.current.has(p.id));
     
     if (newParticles.length === 0) {
       return;
     }
-    
-    isProcessingRef.current = true;
     
     const particles: Particle[] = newParticles.map(p => {
       processedIdsRef.current.add(p.id);
@@ -60,22 +51,16 @@ export function ConfettiPhysics({ particles: initialParticles, onComplete }: Con
         rotationSpeed: (Math.random() - 0.5) * 10,
         color: p.color,
         size: p.size,
-        restitution: 0.3 + Math.random() * 0.2,
       };
     });
     
     setParticles(prev => [...prev, ...particles]);
-    
-    // 重置标志，允许下次处理
-    setTimeout(() => {
-      isProcessingRef.current = false;
-    }, 50);
   }, [initialParticles]);
 
   // 物理模拟
   useEffect(() => {
-    const gravity = 0.5;
-    const friction = 0.99;
+    const gravity = 0.6; // 增加重力，让方块更快落地
+    const friction = 0.98; // 增加空气阻力
     const groundY = window.innerHeight - 10;
 
     const animate = () => {
@@ -95,23 +80,26 @@ export function ConfettiPhysics({ particles: initialParticles, onComplete }: Con
           vx *= friction;
           rotation += rotationSpeed * deltaTime;
 
+          // 地面碰撞 - 降低弹性
           if (y + particle.size / 2 >= groundY) {
             y = groundY - particle.size / 2;
-            vy = -vy * particle.restitution;
-            vx *= 0.9;
-            rotationSpeed *= 0.8;
+            vy = -vy * 0.2; // 大幅降低弹性（从 0.3-0.5 降到 0.2）
+            vx *= 0.85; // 增加地面摩擦
+            rotationSpeed *= 0.7; // 更快减速旋转
 
-            if (Math.abs(vy) < 0.5) {
+            // 更容易停止
+            if (Math.abs(vy) < 1) {
               vy = 0;
             }
           }
 
+          // 左右边界碰撞
           if (x - particle.size / 2 < 0) {
             x = particle.size / 2;
-            vx = -vx * 0.8;
+            vx = -vx * 0.7; // 降低反弹
           } else if (x + particle.size / 2 > window.innerWidth) {
             x = window.innerWidth - particle.size / 2;
-            vx = -vx * 0.8;
+            vx = -vx * 0.7; // 降低反弹
           }
 
           return {
@@ -127,7 +115,8 @@ export function ConfettiPhysics({ particles: initialParticles, onComplete }: Con
 
         const activeParticles = updatedParticles.filter(p => {
           const isStatic = Math.abs(p.vy) < 0.1 && p.y >= groundY - p.size;
-          if (isStatic && Date.now() - p.id > 2000) {
+          // 静止 0.8 秒后就消失（进一步加快）
+          if (isStatic && Date.now() - p.id > 800) {
             processedIdsRef.current.delete(p.id);
             onComplete?.(p.id);
             return false;
