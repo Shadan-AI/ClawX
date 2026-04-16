@@ -68,7 +68,7 @@ import {
   type AppRequest,
   type AppResponse,
 } from './ipc/request-helpers';
-import { getTokenKey as getBoxImTokenKey, logoutBoxIm } from '../utils/box-im-sync';
+import { getTokenKey as getBoxImTokenKey, logoutBoxIm, syncBots } from '../utils/box-im-sync';
 import {
   createWxScene,
   pollWxScan,
@@ -754,6 +754,16 @@ function registerBoxImConfigHandlers(): void {
       return { success: true };
     } catch (err) {
       logger.error('[box-im] Logout failed:', err);
+      return { success: false, error: String(err) };
+    }
+  });
+
+  ipcMain.handle('box-im:syncBots', async () => {
+    try {
+      const result = await syncBots();
+      return { success: true, ...result };
+    } catch (err) {
+      logger.error('[box-im] Sync bots failed:', err);
       return { success: false, error: String(err) };
     }
   });

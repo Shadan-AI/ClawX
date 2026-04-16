@@ -11,6 +11,7 @@ interface AgentsState {
   channelOwners: Record<string, string>;
   channelAccountOwners: Record<string, string>;
   agentSkills: Record<string, string[]>; // agentId -> skillIds
+  agentTemplates: Record<string, number | null>; // agentId -> templateId (null = 自定义)
   loading: boolean;
   error: string | null;
   fetchAgents: () => Promise<void>;
@@ -21,7 +22,24 @@ interface AgentsState {
   assignChannel: (agentId: string, channelType: ChannelType) => Promise<void>;
   removeChannel: (agentId: string, channelType: ChannelType) => Promise<void>;
   updateAgentSkills: (agentId: string, skillIds: string[]) => Promise<void>;
+  updateAgentTemplate: (agentId: string, templateId: number | null) => Promise<void>;
   clearError: () => void;
+}
+
+const SESSION_MODELS_KEY = 'clawx-session-models';
+const AGENT_TEMPLATES_KEY = 'clawx-agent-templates';
+
+function loadAgentTemplates(): Record<string, number | null> {
+  try {
+    const raw = localStorage.getItem(AGENT_TEMPLATES_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch { return {}; }
+}
+
+function saveAgentTemplates(templates: Record<string, number | null>) {
+  try {
+    localStorage.setItem(AGENT_TEMPLATES_KEY, JSON.stringify(templates));
+  } catch { /* ignore */ }
 }
 
 function applySnapshot(snapshot: AgentsSnapshot | undefined) {
@@ -43,6 +61,7 @@ export const useAgentsStore = create<AgentsState>((set, get) => ({
   channelOwners: {},
   channelAccountOwners: {},
   agentSkills: {},
+  agentTemplates: loadAgentTemplates(), // 从 localStorage 加载
   loading: false,
   error: null,
 
@@ -124,7 +143,23 @@ export const useAgentsStore = create<AgentsState>((set, get) => ({
         `/api/agents/${encodeURIComponent(agentId)}`,
         { method: 'DELETE' }
       );
-      set(applySnapshot(snapshot));
+      
+      // 清理 agentSkills 和 agentTemplates
+      set((state) => {
+        const newAgentSkills = { ...state.agentSkills };
+        const newAgentTemplates = { ...state.agentTemplates };
+        delete newAgentSkills[agentId];
+        delete newAgentTemplates[agentId];
+        
+        // 同步到 localStorage
+        saveAgentTemplates(newAgentTemplates);
+        
+        return {
+          ...applySnapshot(snapshot),
+          agentSkills: newAgentSkills,
+          agentTemplates: newAgentTemplates,
+        };
+      });
     } catch (error) {
       set({ error: String(error) });
       throw error;
@@ -215,6 +250,40 @@ export const useAgentsStore = create<AgentsState>((set, get) => ({
       console.error('[agents] updateAgentSkills error:', error);
       set({ error: String(error) });
       throw error;
+    }
+  },
+
+  updateAgentTemplate: async (agentId: string, templateId: number | null) => {
+    console.log('[agents] updateAgentTemplate called:', { agentId, templateId });
+    
+    // 更新本地状态
+    set((state) => {
+      const newTemplates = {
+        ...state.agentTemplates,
+        [agentId]: templateId,
+      };
+      saveAgentTemplates(newTemplates);
+      return { agentTemplates: newTemplates };
+    });
+    
+    // 尝试同步到数据库（如果有对应的 Box-IM 数字员工）
+    try {
+      const { useModelsStore } = await import('./models');
+      const digitalEmployees = useModelsStore.getState().digitalEmployees;
+      
+      if (digitalEmployees.length === 0) {
+        await useModelsStore.getState().fetchDigitalEmployees();
+      }
+      
+      const employee = useModelsStore.getState().digitalEmployees.find(e => e.openclawAgentId === agentId);
+      
+      if (employee) {
+        console.log('[agents] Syncing template to database...');
+        await useModelsStore.getState().updateEmployeeTemplate(employee.id, templateId);
+        console.log('[agents] Template synced to database');
+      }
+    } catch (dbError) {
+      console.warn('[agents] Failed to sync template to database:', dbError);
     }
   },
 

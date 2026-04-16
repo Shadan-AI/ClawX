@@ -120,6 +120,7 @@ const electronAPI = {
         // Box-IM
         'box-im:getTokenKey',
         'box-im:logout',
+        'box-im:syncBots',
         // WeChat QR auth (direct, no Gateway)
         'wx-auth:createScene',
         'wx-auth:pollScan',

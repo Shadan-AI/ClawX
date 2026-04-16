@@ -534,35 +534,35 @@ export function SkillsConfigurationView({
         ) : (
           <div className="space-y-3">
             {templates.map((template) => {
-              // 获取当前员工的模板 ID
-              const { agentTemplates } = useAgentsStore.getState();
-              const currentEmployeeTemplateId = selectedEmployeeId ? agentTemplates[selectedEmployeeId] : undefined;
-              
-              // 判断当前模板是否被选中（当前员工使用的模板）
-              const isCurrentTemplate = currentEmployeeTemplateId === template.id;
-              
-              // 调试日志
-              if (selectedEmployeeId && isCurrentTemplate) {
-                console.log('[SkillsConfigurationView] Template match:', {
-                  employeeId: selectedEmployeeId,
-                  templateId: template.id,
-                  templateName: template.nameZh,
-                  currentEmployeeTemplateId,
-                  agentTemplates,
-                });
-              }
+              // TODO: 从后端获取员工的 template_id，目前暂时禁用"使用中"标记
+              const isCurrentTemplate = false;
               
               const enabledSkillIds = allSkills.filter(s => s.enabled).map(s => s.id);
               const installedSkillSlugs = allSkills.map(s => s.slug || s.id);
               
+              // 解析 skills 字段（可能是字符串或数组）
+              let templateSkills: string[] = [];
+              if (template.skills) {
+                if (typeof template.skills === 'string') {
+                  try {
+                    templateSkills = JSON.parse(template.skills);
+                  } catch (e) {
+                    console.error('[SkillsConfigurationView] Failed to parse skills:', template.skills);
+                    templateSkills = [];
+                  }
+                } else if (Array.isArray(template.skills)) {
+                  templateSkills = template.skills;
+                }
+              }
+              
               // 检查技能是否存在（已安装或已启用）
-              const existingSkills = template.skills.filter(skillId =>
+              const existingSkills = templateSkills.filter(skillId =>
                 installedSkillSlugs.includes(skillId) || enabledSkillIds.includes(skillId)
               );
-              const availableSkills = template.skills.filter(skillId =>
+              const availableSkills = templateSkills.filter(skillId =>
                 enabledSkillIds.includes(skillId)
               );
-              const missingSkills = template.skills.filter(skillId =>
+              const missingSkills = templateSkills.filter(skillId =>
                 !installedSkillSlugs.includes(skillId) && !enabledSkillIds.includes(skillId)
               );
               

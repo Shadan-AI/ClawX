@@ -12,7 +12,10 @@ import { useAgentsStore } from '@/stores/agents';
 import { useGatewayStore } from '@/stores/gateway';
 import { useProviderStore } from '@/stores/providers';
 import { useModelsStore } from '@/stores/models';
+import { useAgentTemplatesStore } from '@/stores/agent-templates';
+import { useSkillsStore } from '@/stores/skills';
 import { hostApiFetch } from '@/lib/host-api';
+import { invokeIpc } from '@/lib/api-client';
 import { subscribeHostEvent } from '@/lib/host-events';
 import { CHANNEL_ICONS, CHANNEL_NAMES, type ChannelType } from '@/types/channel';
 import type { AgentSummary } from '@/types/agent';
@@ -105,6 +108,8 @@ export function Agents() {
   const gatewayStatus = useGatewayStore((state) => state.status);
   const refreshProviderSnapshot = useProviderStore((state) => state.refreshProviderSnapshot);
   const { digitalEmployees, fetchDigitalEmployees } = useModelsStore();
+  const { templates, fetchTemplates } = useAgentTemplatesStore();
+  const { skills, fetchSkills } = useSkillsStore();
   const lastGatewayStateRef = useRef(gatewayStatus.state);
   const {
     agents,
@@ -137,21 +142,35 @@ export function Agents() {
 
   useEffect(() => {
     let mounted = true;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    void Promise.all([
+    
+    // 使用 Promise.allSettled 而不是 Promise.all，这样即使某个失败也不影响其他
+    void Promise.allSettled([
       fetchAgents(), 
       fetchChannelAccounts(), 
       refreshProviderSnapshot(),
-      fetchDigitalEmployees()
-    ]).finally(() => {
+      fetchDigitalEmployees(),
+      fetchTemplates(),
+      fetchSkills()
+    ]).then((results) => {
+      // 记录哪些失败了
+      results.forEach((result, index) => {
+        const names = ['fetchAgents', 'fetchChannelAccounts', 'refreshProviderSnapshot', 'fetchDigitalEmployees', 'fetchTemplates', 'fetchSkills'];
+        if (result.status === 'rejected') {
+          console.error(`[Agents/init] ${names[index]} failed:`, result.reason);
+        } else {
+          console.log(`[Agents/init] ${names[index]} succeeded`);
+        }
+      });
+    }).finally(() => {
       if (mounted) {
         setHasCompletedInitialLoad(true);
       }
     });
+    
     return () => {
       mounted = false;
     };
-  }, [fetchAgents, fetchChannelAccounts, refreshProviderSnapshot, fetchDigitalEmployees]);
+  }, [fetchAgents, fetchChannelAccounts, refreshProviderSnapshot, fetchDigitalEmployees, fetchTemplates, fetchSkills]);
 
   useEffect(() => {
     const unsubscribe = subscribeHostEvent('gateway:channel-status', () => {
@@ -179,20 +198,116 @@ export function Agents() {
     [activeAgentId, agents],
   );
 
-  // 标记哪些 agent 是数字员工
+  // 标记哪些 agent 是数字员工，并使用数字员工的昵称
   const visibleAgents = useMemo(() => {
-    const digitalEmployeeIds = new Set(digitalEmployees.map(emp => emp.openclawAgentId));
-    return agents.map(agent => ({
-      ...agent,
-      isDigitalEmployee: digitalEmployeeIds.has(agent.id),
-    }));
-  }, [agents, digitalEmployees]);
+    const digitalEmployeeMap = new Map(digitalEmployees.map(emp => [emp.openclawAgentId, emp]));
+    const { agentSkills, agentTemplates } = useAgentsStore.getState();
+    
+    console.log('[Agents/index] visibleAgents calculation:', {
+      agentsCount: agents.length,
+      digitalEmployeesCount: digitalEmployees.length,
+      agentTemplates,
+      templatesCount: templates.length,
+      allSkillsCount: skills.length,
+    });
+    
+    return agents.map(agent => {
+      const employee = digitalEmployeeMap.get(agent.id);
+      const templateId = agentTemplates[agent.id];
+      const currentSkills = agentSkills[agent.id] || [];
+      
+      console.log(`[Agents/index] Processing agent ${agent.id}:`, {
+        templateId,
+        currentSkillsCount: currentSkills.length,
+        currentSkills: currentSkills.slice(0, 3), // 只显示前3个
+      });
+      
+      // 判断是否使用了模板
+      let templateName = '无';
+      
+      // 如果 templateId 存在（不是 undefined）
+      if (templateId !== undefined) {
+        if (templateId === null) {
+          // 明确设置为 null，表示"自定义"
+          console.log(`[Agents/index] Agent ${agent.id}: templateId is null -> 自定义`);
+          templateName = '自定义';
+        } else {
+          // 有具体的 templateId，查找模板
+          const template = templates.find(t => t.id === templateId);
+          console.log(`[Agents/index] Agent ${agent.id}: templateId=${templateId}, template found:`, !!template);
+          
+          if (template) {
+            // 检查技能是否被修改
+            // 注意：template.skills 存储的是 slug，currentSkills 存储的是 ID
+            // 需要将 slug 转换为 ID 进行比较
+            const templateSkillIds = (template.skills || [])
+              .map(skillSlug => {
+                const skill = skills.find(s => (s.slug || s.id) === skillSlug);
+                return skill?.id;
+              })
+              .filter((id): id is string => id !== undefined);
+            
+            console.log(`[Agents/index] Agent ${agent.id}: template skills comparison:`, {
+              templateSlugs: template.skills,
+              templateSkillIds,
+              currentSkills,
+              templateSkillIdsCount: templateSkillIds.length,
+              currentSkillsCount: currentSkills.length,
+            });
+            
+            const skillsMatch = 
+              currentSkills.length === templateSkillIds.length &&
+              currentSkills.every(skill => templateSkillIds.includes(skill)) &&
+              templateSkillIds.every(skill => currentSkills.includes(skill));
+            
+            console.log(`[Agents/index] Agent ${agent.id}: skillsMatch=${skillsMatch}`);
+            
+            templateName = skillsMatch ? template.nameZh || template.name : '自定义';
+          } else {
+            // 模板不存在，显示"自定义"
+            console.log(`[Agents/index] Agent ${agent.id}: template not found -> 自定义`);
+            templateName = '自定义';
+          }
+        }
+      } else {
+        console.log(`[Agents/index] Agent ${agent.id}: templateId is undefined -> 无`);
+      }
+      
+      return {
+        ...agent,
+        isDigitalEmployee: !!employee,
+        // 如果是数字员工，使用 IM 平台的昵称
+        name: employee?.nickName || agent.name,
+        templateName,
+      };
+    });
+  }, [agents, digitalEmployees, templates, skills]); // 添加 templates 和 skills 作为依赖！
   
   const visibleChannelGroups = channelGroups;
   const isUsingStableValue = loading && hasCompletedInitialLoad;
   
-  const handleRefresh = () => {
-    void Promise.all([fetchAgents(), fetchChannelAccounts(), fetchDigitalEmployees()]);
+  const handleRefresh = async () => {
+    console.log('[Agents/handleRefresh] Starting refresh...');
+    
+    // 1. 先同步 bots（从 IM 平台同步到本地配置，创建 agents 和 bindings）
+    try {
+      console.log('[Agents/handleRefresh] Calling syncBots...');
+      const result = await invokeIpc('box-im:syncBots');
+      console.log('[Agents/handleRefresh] syncBots result:', result);
+    } catch (syncErr) {
+      console.error('[Agents/handleRefresh] syncBots failed:', syncErr);
+    }
+    
+    // 2. 刷新所有数据（包括新创建的频道）
+    console.log('[Agents/handleRefresh] Fetching data...');
+    await Promise.all([
+      fetchAgents(),
+      fetchChannelAccounts(), // 这会重新读取 openclaw.json，获取新的 bindings
+      fetchDigitalEmployees(),
+    ]);
+    
+    console.log('[Agents/handleRefresh] Refresh completed');
+    toast.success('已同步 IM 平台的员工');
   };
   
   const handleDigitalEmployeeClick = (event: React.MouseEvent<HTMLDivElement>) => {
@@ -373,7 +488,7 @@ export function Agents() {
             </>
           ) : viewMode === 'skills' ? (
             <SkillsConfigurationView
-              employees={agents}
+              employees={visibleAgents}
               onRefresh={handleRefresh}
             />
           ) : (
@@ -390,6 +505,7 @@ export function Agents() {
             setShowAddDialog(false);
             toast.success(t('toast.agentCreated'));
           }}
+          onRefresh={fetchChannelAccounts}
         />
       )}
 
@@ -404,19 +520,85 @@ export function Agents() {
       <ConfirmDialog
         open={!!agentToDelete}
         title={t('deleteDialog.title')}
-        message={agentToDelete ? t('deleteDialog.message', { name: agentToDelete.name }) : ''}
+        message={
+          agentToDelete 
+            ? `${t('deleteDialog.message', { name: agentToDelete.name })}\n\n⚠️ 删除员工将会重启 Gateway 以清理资源，这可能需要几秒钟时间。` 
+            : ''
+        }
         confirmLabel={t('common:actions.delete')}
         cancelLabel={t('common:actions.cancel')}
         variant="destructive"
         onConfirm={async () => {
           if (!agentToDelete) return;
           try {
+            // 1. 删除 agent 配置
             await deleteAgent(agentToDelete.id);
+            
+            // 2. 如果是数字员工，也删除数字员工记录
+            const employee = digitalEmployees.find(e => e.openclawAgentId === agentToDelete.id);
+            console.log('[Agents] Attempting to delete employee:', {
+              agentId: agentToDelete.id,
+              employee,
+              allEmployees: digitalEmployees.map(e => ({ id: e.id, agentId: e.openclawAgentId, nickName: e.nickName })),
+            });
+            
+            if (employee) {
+              try {
+                const tokenKey = await useModelsStore.getState().getTokenKey();
+                if (tokenKey) {
+                  const apiUrl = 'https://im.shadanai.com/api';
+                  const deleteUrl = `${apiUrl}/bot/${employee.openclawAgentId}`;
+                  console.log('[Agents] Deleting bot from database:', deleteUrl);
+                  
+                  const response = await fetch(deleteUrl, {
+                    method: 'DELETE',
+                    headers: {
+                      'Token-Key': tokenKey,
+                      'Content-Type': 'application/json',
+                    },
+                  });
+                  
+                  console.log('[Agents] Delete response status:', response.status);
+                  
+                  if (!response.ok) {
+                    const errorText = await response.text();
+                    console.error('[Agents] Failed to delete digital employee:', response.status, errorText);
+                    // 不抛出错误，继续删除本地配置
+                  } else {
+                    const result = await response.json();
+                    console.log('[Agents] Delete response body:', result);
+                    
+                    if (result.code !== 200) {
+                      console.error('[Agents] Delete API returned error:', result);
+                      // 不抛出错误，继续删除本地配置
+                    } else {
+                      console.log('[Agents] Digital employee deleted successfully:', employee.id);
+                    }
+                  }
+                }
+              } catch (dbError) {
+                console.error('[Agents] Failed to delete digital employee from database:', dbError);
+                // 不抛出错误，继续删除本地配置
+              }
+            }
+            
             const deletedId = agentToDelete.id;
             setAgentToDelete(null);
             if (activeAgentId === deletedId) {
               setActiveAgentId(null);
             }
+            
+            // 3. 刷新列表（包括频道）
+            await Promise.all([fetchDigitalEmployees(), fetchChannelAccounts()]);
+            
+            // 4. 同步 bots 到配置文件（更新频道绑定）
+            try {
+              await invokeIpc('box-im:syncBots');
+              console.log('[Agents] Bots synced after deletion');
+            } catch (syncErr) {
+              console.warn('[Agents] Failed to sync bots after deletion:', syncErr);
+            }
+            
             toast.success(t('toast.agentDeleted'));
           } catch (error) {
             toast.error(t('toast.agentDeleteFailed', { error: String(error) }));
@@ -545,14 +727,37 @@ function AgentCard({
           <span className="opacity-70 shrink-0">💬</span>
           <span className="line-clamp-2">{t('channelsLine', { channels: channelsText })}</span>
         </div>
+        {agent.isDigitalEmployee && (
+          <div className="text-[12px] text-muted-foreground flex items-start gap-1.5">
+            <span className="opacity-70 shrink-0">📋</span>
+            <span className="line-clamp-2">模板: {agent.templateName || '无'}</span>
+          </div>
+        )}
       </div>
 
       {/* 操作按钮 */}
       <div className="flex items-center gap-2 pt-3 border-t border-black/5 dark:border-white/5" onClick={(e) => e.stopPropagation()}>
         {agent.isDigitalEmployee ? (
-          <div className="flex-1 text-center text-[11px] text-muted-foreground py-1">
-            在 IM 平台管理
-          </div>
+          <>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="flex-1 h-8 text-[12px] rounded-full hover:bg-black/5 dark:hover:bg-white/10"
+              onClick={onOpenSettings}
+            >
+              <Settings2 className="h-3.5 w-3.5 mr-1.5" />
+              设置
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-full"
+              onClick={onDelete}
+              title="删除员工"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </Button>
+          </>
         ) : (
           <>
             <Button
@@ -612,53 +817,125 @@ function ChannelLogo({ type }: { type: ChannelType }) {
 function AddAgentDialog({
   onClose,
   onCreate,
+  onRefresh,
 }: {
   onClose: () => void;
   onCreate: (name: string, options: { inheritWorkspace: boolean }) => Promise<void>;
+  onRefresh: () => Promise<void>;
 }) {
   const { t } = useTranslation('agents');
   const [name, setName] = useState('');
-  const [inheritWorkspace, setInheritWorkspace] = useState(false);
-  const [isDigitalEmployee, setIsDigitalEmployee] = useState(false);
   const [headImage, setHeadImage] = useState('');
   const [selectedModel, setSelectedModel] = useState('');
+  const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
   
   const { models, fetchModels, createDigitalEmployee, fetchDigitalEmployees } = useModelsStore();
   const { fetchAgents } = useAgentsStore();
+  const { templates, fetchTemplates } = useAgentTemplatesStore();
+  
+  // 加载模板列表
+  useEffect(() => {
+    if (templates.length === 0) {
+      fetchTemplates();
+    }
+  }, [templates.length, fetchTemplates]);
   
   // 加载模型列表
   useEffect(() => {
-    if (isDigitalEmployee && models.length === 0) {
+    if (models.length === 0) {
       fetchModels();
     }
-  }, [isDigitalEmployee, models.length, fetchModels]);
+  }, [models.length, fetchModels]);
   
   // 设置默认模型
   useEffect(() => {
-    if (isDigitalEmployee && models.length > 0 && !selectedModel) {
+    if (models.length > 0 && !selectedModel) {
       const defaultModel = models.find(m => m.id === 'glm-5')?.id || models[0]?.id || '';
       setSelectedModel(defaultModel);
     }
-  }, [isDigitalEmployee, models, selectedModel]);
+  }, [models, selectedModel]);
 
   const handleSubmit = async () => {
     if (!name.trim()) return;
+    if (!selectedModel) {
+      toast.error('请选择模型');
+      return;
+    }
     setSaving(true);
     try {
-      if (isDigitalEmployee) {
-        // 创建数字员工
-        await createDigitalEmployee(name.trim(), headImage, selectedModel);
-        toast.success('数字员工创建成功');
-        // 刷新列表
-        await Promise.all([fetchDigitalEmployees(), fetchAgents()]);
-        onClose();
-      } else {
-        // 创建普通 agent
-        await onCreate(name.trim(), { inheritWorkspace });
+      // 创建数字员工
+      const employee = await createDigitalEmployee(name.trim(), headImage, selectedModel);
+      
+      // 如果选择了模板，应用模板的技能
+      if (selectedTemplateId) {
+        const template = templates.find(t => t.id === selectedTemplateId);
+        if (template && template.skills && template.skills.length > 0) {
+          // 将 template.skills (slugs) 转换为 skill IDs
+          const { useSkillsStore } = await import('@/stores/skills');
+          const allSkills = useSkillsStore.getState().skills;
+          
+          const skillIds = template.skills
+            .map(skillSlug => {
+              const skill = allSkills.find(s => (s.slug || s.id) === skillSlug);
+              return skill?.id;
+            })
+            .filter((id): id is string => id !== undefined);
+          
+          console.log('[AddAgentDialog] Converting template skills:', {
+            templateSlugs: template.skills,
+            skillIds,
+          });
+          
+          if (skillIds.length > 0) {
+            const { updateEmployeeSkills } = useModelsStore.getState();
+            await updateEmployeeSkills(employee.id, skillIds);
+            
+            // 保存模板关联
+            const { useAgentsStore } = await import('@/stores/agents');
+            const { updateAgentTemplate } = useAgentsStore.getState();
+            
+            // 更新技能和模板
+            useAgentsStore.setState((state) => ({
+              agentSkills: {
+                ...state.agentSkills,
+                [employee.openclawAgentId]: skillIds,
+              },
+            }));
+            
+            await updateAgentTemplate(employee.openclawAgentId, selectedTemplateId);
+            
+            // 等待模板状态更新完成
+            await new Promise(resolve => setTimeout(resolve, 100));
+          }
+        }
       }
+      
+      toast.success('数字员工创建成功');
+      
+      // 等待一小段时间，确保 IM 平台已经完全创建了 bot
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      // 刷新列表（包括频道）
+      await Promise.all([fetchDigitalEmployees(), fetchAgents()]);
+      
+      // 同步 bots 到配置文件（创建频道绑定）
+      try {
+        console.log('[AddAgentDialog] Syncing bots to create channel bindings...');
+        await invokeIpc('box-im:syncBots');
+        console.log('[AddAgentDialog] Bots synced successfully');
+        
+        // 再次刷新以显示新的频道和模板
+        await Promise.all([onRefresh(), fetchAgents()]);
+      } catch (syncErr) {
+        console.error('[AddAgentDialog] Failed to sync bots:', syncErr);
+        toast.error('频道同步失败: ' + String(syncErr));
+      }
+      
+      onClose();
     } catch (error) {
       toast.error(t('toast.agentCreateFailed', { error: String(error) }));
+      setSaving(false);
       setSaving(false);
       return;
     }
@@ -678,77 +955,67 @@ function AddAgentDialog({
         </CardHeader>
         <CardContent className="space-y-6 pt-4 p-6">
           <div className="space-y-2.5">
-            <Label htmlFor="agent-name" className={labelClasses}>{t('createDialog.nameLabel')}</Label>
+            <Label htmlFor="agent-name" className={labelClasses}>昵称</Label>
             <Input
               id="agent-name"
               value={name}
               onChange={(event) => setName(event.target.value)}
-              placeholder={t('createDialog.namePlaceholder')}
+              placeholder="如：客服小助手"
               className={inputClasses}
             />
           </div>
           
-          {/* 数字员工选项 */}
-          <div className="flex items-center justify-between">
-            <div className="space-y-0.5">
-              <Label htmlFor="is-digital-employee" className={labelClasses}>创建为数字员工</Label>
-              <p className="text-[13px] text-foreground/60">在 IM 平台创建 Bot 账号</p>
-            </div>
-            <Switch
-              id="is-digital-employee"
-              checked={isDigitalEmployee}
-              onCheckedChange={setIsDigitalEmployee}
+          {/* 头像 URL */}
+          <div className="space-y-2.5">
+            <Label htmlFor="head-image" className={labelClasses}>头像 URL（可选）</Label>
+            <Input
+              id="head-image"
+              value={headImage}
+              onChange={(event) => setHeadImage(event.target.value)}
+              placeholder="可选，留空使用默认头像"
+              className={inputClasses}
             />
           </div>
           
-          {isDigitalEmployee ? (
-            <>
-              {/* 头像 URL */}
-              <div className="space-y-2.5">
-                <Label htmlFor="head-image" className={labelClasses}>头像 URL（可选）</Label>
-                <Input
-                  id="head-image"
-                  value={headImage}
-                  onChange={(event) => setHeadImage(event.target.value)}
-                  placeholder="https://example.com/avatar.png"
-                  className={inputClasses}
-                />
-              </div>
-              
-              {/* 模型选择 */}
-              <div className="space-y-2.5">
-                <Label htmlFor="model-select" className={labelClasses}>默认模型</Label>
-                <select
-                  id="model-select"
-                  value={selectedModel}
-                  onChange={(e) => setSelectedModel(e.target.value)}
-                  className={`${inputClasses} cursor-pointer`}
-                >
-                  {models.length === 0 ? (
-                    <option value="">加载中...</option>
-                  ) : (
-                    models.map((model) => (
-                      <option key={model.id} value={model.id}>
-                        {model.name || model.id}
-                      </option>
-                    ))
-                  )}
-                </select>
-              </div>
-            </>
-          ) : (
-            <div className="flex items-center justify-between">
-              <div className="space-y-0.5">
-                <Label htmlFor="inherit-workspace" className={labelClasses}>{t('createDialog.inheritWorkspaceLabel')}</Label>
-                <p className="text-[13px] text-foreground/60">{t('createDialog.inheritWorkspaceDescription')}</p>
-              </div>
-              <Switch
-                id="inherit-workspace"
-                checked={inheritWorkspace}
-                onCheckedChange={setInheritWorkspace}
-              />
-            </div>
-          )}
+          {/* 模型选择 */}
+          <div className="space-y-2.5">
+            <Label htmlFor="model-select" className={labelClasses}>模型</Label>
+            <select
+              id="model-select"
+              value={selectedModel}
+              onChange={(e) => setSelectedModel(e.target.value)}
+              className={`${selectClasses} cursor-pointer`}
+            >
+              {models.length === 0 ? (
+                <option value="">加载中...</option>
+              ) : (
+                models.map((model) => (
+                  <option key={model.id} value={model.id}>
+                    {model.name || model.id}
+                  </option>
+                ))
+              )}
+            </select>
+          </div>
+          
+          {/* 模板选择 */}
+          <div className="space-y-2.5">
+            <Label htmlFor="template-select" className={labelClasses}>技能模板（可选）</Label>
+            <select
+              id="template-select"
+              value={selectedTemplateId || ''}
+              onChange={(e) => setSelectedTemplateId(e.target.value ? Number(e.target.value) : null)}
+              className={`${selectClasses} cursor-pointer`}
+            >
+              <option value="">不使用模板</option>
+              {templates.map((template) => (
+                <option key={template.id} value={template.id}>
+                  {template.name} ({template.skills?.length || 0} 个技能)
+                </option>
+              ))}
+            </select>
+            <p className="text-[12px] text-foreground/60">选择模板后将自动配置对应的技能</p>
+          </div>
           
           <div className="flex justify-end gap-2">
             <Button

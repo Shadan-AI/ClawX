@@ -20,6 +20,7 @@ export interface DigitalEmployee {
   model: string;
   nodeId: string;
   skills?: string | string[]; // 可以是 JSON 字符串或数组
+  templateId?: number | null; // 模板ID
 }
 
 export interface ModelState {
@@ -40,9 +41,11 @@ export interface ModelState {
   fetchDigitalEmployees: () => Promise<void>;
   createDigitalEmployee: (nickName: string, headImage?: string, model?: string) => Promise<DigitalEmployee>;
   updateEmployeeSkills: (employeeId: number, skills: string[]) => Promise<void>;
+  updateEmployeeTemplate: (employeeId: number, templateId: number | null) => Promise<void>;
   getAgentDefaultModel: (agentId: string) => string | null;
   getSessionModel: (sessionKey: string) => string | null;
   setSessionModel: (sessionKey: string, modelId: string) => void;
+  getTokenKey: () => Promise<string | null>;
 }
 
 const SESSION_MODELS_KEY = 'clawx-session-models';
@@ -275,6 +278,7 @@ export const useModelsStore = create<ModelState>((set, get) => ({
           model: emp.model || '',
           nodeId: emp.nodeId || '',
           skills: skillsArray,
+          templateId: emp.templateId, // 添加 templateId
         };
       }) as DigitalEmployee[];
       
@@ -282,25 +286,51 @@ export const useModelsStore = create<ModelState>((set, get) => ({
       console.log('[models] Employee count:', employees.length);
       set({ digitalEmployees: employees });
       
-      // 同步技能到 agents store
+      // 同步技能和模板到 agents store
       const { useAgentsStore } = await import('./agents');
       const agentSkills: Record<string, string[]> = {};
+      const agentTemplates: Record<string, number | null> = {};
+      
       employees.forEach(emp => {
-        console.log('[models] Processing employee:', { id: emp.id, openclawAgentId: emp.openclawAgentId, skills: emp.skills });
-        if (emp.openclawAgentId && emp.skills && Array.isArray(emp.skills)) {
-          agentSkills[emp.openclawAgentId] = emp.skills;
+        console.log('[models] Processing employee:', { 
+          id: emp.id, 
+          openclawAgentId: emp.openclawAgentId, 
+          skills: emp.skills,
+          templateId: (emp as any).templateId 
+        });
+        
+        if (emp.openclawAgentId) {
+          // 同步技能
+          if (emp.skills && Array.isArray(emp.skills)) {
+            agentSkills[emp.openclawAgentId] = emp.skills;
+          }
+          
+          // 同步模板ID
+          const templateId = (emp as any).templateId;
+          if (templateId !== undefined) {
+            agentTemplates[emp.openclawAgentId] = templateId;
+          }
         }
       });
       
       console.log('[models] Agent skills to sync:', agentSkills);
+      console.log('[models] Agent templates to sync:', agentTemplates);
       
-      // 批量更新 agents store 的技能
+      // 批量更新 agents store 的技能和模板
       useAgentsStore.setState((state) => ({
         agentSkills: {
           ...state.agentSkills,
           ...agentSkills,
         },
+        agentTemplates: {
+          ...state.agentTemplates,
+          ...agentTemplates,
+        },
       }));
+      
+      // 同步到 localStorage
+      const currentTemplates = useAgentsStore.getState().agentTemplates;
+      localStorage.setItem('clawx-agent-templates', JSON.stringify(currentTemplates));
     } catch (error) {
       console.error('[models] Failed to fetch digital employees:', error);
       set({ digitalEmployees: [] });
@@ -320,9 +350,9 @@ export const useModelsStore = create<ModelState>((set, get) => ({
         throw new Error('未绑定用户');
       }
       
-      // 3. 调用 im-platform API 创建 Bot 账号
+      // 3. 调用 im-platform API 创建 Bot 账号（使用 /bot/register 接口）
       const apiUrl = 'https://im.shadanai.com/api';
-      const response = await fetch(`${apiUrl}/bot/create`, {
+      const response = await fetch(`${apiUrl}/bot/register`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -355,7 +385,7 @@ export const useModelsStore = create<ModelState>((set, get) => ({
         headImage: headImage || '',
         openclawAgentId: agentId,
         model: model || '',
-        nodeId: '',
+        nodeId: result.data?.nodeId || '',
         skills: [],
       };
       
@@ -435,6 +465,40 @@ export const useModelsStore = create<ModelState>((set, get) => ({
     }
   },
 
+  updateEmployeeTemplate: async (employeeId: number, templateId: number | null) => {
+    try {
+      console.log('[models] updateEmployeeTemplate called:', { employeeId, templateId });
+      
+      const { invokeIpc } = await import('@/lib/api-client');
+      const tokenKey = await invokeIpc<string | null>('box-im:getTokenKey');
+      
+      if (!tokenKey) {
+        throw new Error('未绑定用户');
+      }
+      
+      const apiUrl = 'https://im.shadanai.com/api';
+      const response = await fetch(`${apiUrl}/bot/template/${employeeId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Token-Key': tokenKey,
+        },
+        body: JSON.stringify({ templateId }),
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`API 请求失败: ${response.status} ${errorText}`);
+      }
+      
+      const result = await response.json();
+      console.log('[models] Template update response:', result);
+    } catch (err) {
+      console.error('[models] Failed to update employee template:', err);
+      throw err;
+    }
+  },
+
   getAgentDefaultModel: (agentId: string): string | null => {
     const employee = get().digitalEmployees.find(e => e.openclawAgentId === agentId);
     return employee?.model || null;
@@ -450,5 +514,9 @@ export const useModelsStore = create<ModelState>((set, get) => ({
       saveSessionModels(next);
       return { sessionModels: next };
     });
+  },
+
+  getTokenKey: async () => {
+    return await getTokenKey();
   },
 }));

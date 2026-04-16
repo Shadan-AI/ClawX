@@ -520,6 +520,24 @@ async function initialize(): Promise<void> {
     logger.info('Gateway auto-start disabled in settings');
   }
 
+  // Auto-sync Box-IM bot agents if user is logged in (ensures auth-profiles.json are up-to-date)
+  // Delayed by 3 seconds to avoid conflict with login-time sync
+  if (!isE2EMode) {
+    setTimeout(async () => {
+      const { getTokenKey, syncBots } = await import('../utils/box-im-sync');
+      try {
+        const tokenKey = await getTokenKey();
+        if (tokenKey) {
+          logger.debug('[box-im] User is logged in, auto-syncing bot agents...');
+          await syncBots();
+          logger.info('[box-im] Bot agents auto-sync completed');
+        }
+      } catch (error) {
+        logger.warn('[box-im] Bot agents auto-sync failed (non-fatal):', error);
+      }
+    }, 3000);
+  }
+
   // Merge ClawX context snippets into the workspace bootstrap files.
   // The gateway seeds workspace files asynchronously after its HTTP server
   // is ready, so ensureClawXContext will retry until the target files appear.

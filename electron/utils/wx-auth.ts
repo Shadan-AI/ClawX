@@ -85,7 +85,7 @@ export async function pollWxScan(sceneId: string): Promise<PollResult> {
 
 export type FindOrCreateResult =
   | { needPhone: false; userId: number; accessToken: string; tokenKey: string }
-  | { needPhone: true; isNewUser: boolean; openid: string; nickname?: string; avatar?: string };
+  | { needPhone: true; openid: string; nickname?: string; avatar?: string };
 
 export async function findOrCreateImUser(
   openid: string,
@@ -103,14 +103,8 @@ export async function findOrCreateImUser(
   const data = (await res.json()) as { data?: { id?: number; phone?: string; accessToken?: string; tokenKey?: string } };
   const user = data?.data;
 
-  if (!user) {
-    // No account at all — needs full registration
-    return { needPhone: true, isNewUser: true, openid, nickname, avatar };
-  }
-
-  if (!user.phone) {
-    // Account exists but no phone bound
-    return { needPhone: true, isNewUser: false, openid, nickname, avatar };
+  if (!user || !user.phone) {
+    return { needPhone: true, openid, nickname, avatar };
   }
 
   return {
@@ -174,115 +168,6 @@ export async function bindPhoneAndRegister(
   };
 }
 
-// ── Register new user ────────────────────────────────────────────
-
-/**
- * Full registration flow for brand-new users (no existing account).
- * 1. Verify SMS code
- * 2. POST /register with userName, nickName, password, phone, openid
- * 3. findUserByOpenid to get the token
- */
-export async function registerNewUser(
-  openid: string,
-  userName: string,
-  nickName: string,
-  password: string,
-  phone: string,
-  code: string,
-  avatar?: string,
-  apiUrl = DEFAULT_API_URL,
-): Promise<{ userId: number; accessToken: string; tokenKey: string }> {
-  // 1. Verify SMS code
-  const verifyRes = await fetch(`${WX_API}/verifySms`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ mobile: phone, code }),
-    signal: AbortSignal.timeout(10_000),
-  });
-  if (!verifyRes.ok) throw new Error(`verifySms failed: ${verifyRes.status}`);
-  const verifyData = (await verifyRes.json()) as { success?: boolean; message?: string };
-  if (!verifyData?.success) throw new Error(verifyData?.message || '验证码错误');
-
-  // 2. Register account (POST /register with openid)
-  const regRes = await fetch(`${apiUrl}/register`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ userName, nickName, password, confirmPassword: password, phone, openid, terminalNo: 0 }),
-    signal: AbortSignal.timeout(10_000),
-  });
-  if (!regRes.ok) {
-    const errText = await regRes.text().catch(() => '');
-    let errMsg = '注册失败，请重试';
-    try { const j = JSON.parse(errText) as { message?: string }; if (j.message) errMsg = j.message; } catch { /* ignore */ }
-    throw new Error(errMsg);
-  }
-  const regData = (await regRes.json()) as { success?: boolean; message?: string; code?: number };
-  console.log('[registerNewUser] /register response:', JSON.stringify(regData));
-  // Handle both { success: false } and { code: non-200 } style error responses
-  if (regData?.success === false || (regData?.code !== undefined && regData.code !== 200 && regData.code !== 0)) {
-    throw new Error(regData?.message || '注册失败，请重试');
-  }
-
-  // 3. Login with userName+password to get token
-  const loginRes = await fetch(`${apiUrl}/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ userName, password, terminal: 0, terminalNo: 0 }),
-    signal: AbortSignal.timeout(10_000),
-  });
-  if (!loginRes.ok) throw new Error(`login after register failed: ${loginRes.status}`);
-  const loginData = (await loginRes.json()) as { data?: { id?: number; accessToken?: string; tokenKey?: string } };
-  console.log('[registerNewUser] /login response:', JSON.stringify(loginData));
-  const loginUser = loginData?.data;
-  if (!loginUser?.accessToken || !loginUser?.tokenKey) throw new Error('注册成功但登录失败，请重新扫码登录');
-
-  // 4. Bind openid via PUT /user/update2 (no auth required, matches im-web Login.vue flow)
-  const updateRes = await fetch(`${apiUrl}/user/update2`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id: loginUser.id, userName, phone, openid, nickName }),
-    signal: AbortSignal.timeout(10_000),
-  });
-  const updateText = await updateRes.text().catch(() => '');
-  console.log(`[registerNewUser] update2 status=${updateRes.status} body=${updateText}`);
-  if (!updateRes.ok) {
-    console.warn(`[registerNewUser] update2 failed: ${updateRes.status} ${updateText}`);
-  }
-
-  // 5. Auto-create a default digital worker (bot) for the new user.
-  //    POST /bot/register — writes is_bot, openclaw_agent_id, owner_id, node_id, model
-  //    into im_user. syncBots() in persistLoginResult will then pull it into openclaw.json.
-  try {
-    const nodeId = await getOrCreateDeviceId(loginUser.id);
-    const defaultAgentId = `agent_${loginUser.id}`;
-    const botRes = await fetch(`${apiUrl}/bot/register`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Token-Key': loginUser.tokenKey },
-      body: JSON.stringify({
-        agentId: defaultAgentId,
-        nickName: 'OpenClaw助手',
-        headImage: avatar ?? '',
-        model: 'glm-5',
-        nodeId,
-      }),
-      signal: AbortSignal.timeout(10_000),
-    });
-    const botData = (await botRes.json()) as { code?: number; message?: string };
-    console.log('[registerNewUser] /bot/register response:', JSON.stringify(botData));
-    if (botData?.code !== 200) {
-      console.warn('[registerNewUser] bot register non-200:', botData?.message);
-    }
-  } catch (err) {
-    console.warn('[registerNewUser] auto bot creation failed (non-fatal):', err);
-  }
-
-  return {
-    userId: loginUser.id ?? 0,
-    accessToken: loginUser.accessToken ?? '',
-    tokenKey: loginUser.tokenKey,
-  };
-}
-
 // ── Persist tokenKey to openclaw.json ───────────────────────────
 
 /**
@@ -321,8 +206,7 @@ export async function persistLoginResult(
       ownerAuth: {
         openid: openid ?? '',
         userId: userId ?? 0,
-        // accessToken (JWT) intentionally omitted — box-im plugin uses Token-Key header
-        // which requires sk-xxx format. tokenKey is the correct credential for /bot/register.
+        accessToken: accessToken ?? '',
         tokenKey,
         nickname: nickname ?? '',
         avatar: avatar ?? '',
@@ -354,7 +238,36 @@ export async function persistLoginResult(
 
   await writeOpenClawConfig(cfg);
 
-  // 4. Store API key to secure storage so Gateway can load it
+  // 4. Update main agent's auth-profiles.json to use unified 'shadan' provider
+  try {
+    const mainAgentDir = join(homedir(), '.openclaw/agents/main/agent');
+    await mkdir(mainAgentDir, { recursive: true });
+    const mainAuthPath = join(mainAgentDir, 'auth-profiles.json');
+    
+    const authData = {
+      version: 1,
+      profiles: {
+        'shadan:default': {
+          type: 'api_key',
+          provider: 'shadan',
+          key: tokenKey,
+        },
+      },
+      order: {
+        shadan: ['shadan:default'],
+      },
+      lastGood: {
+        shadan: 'shadan:default',
+      },
+    };
+
+    await writeFile(mainAuthPath, JSON.stringify(authData, null, 2), 'utf-8');
+    console.log('[wx-auth] Created/updated main agent auth-profiles.json with unified shadan provider');
+  } catch (err) {
+    console.warn('[wx-auth] Failed to update main agent auth-profiles.json:', err);
+  }
+
+  // 5. Store API key to secure storage so Gateway can load it
   try {
     await storeApiKey('shadan', tokenKey);
     console.log('[wx-auth] Stored shadan API key to secure storage');
@@ -362,7 +275,14 @@ export async function persistLoginResult(
     console.warn('[wx-auth] Failed to store API key (non-fatal):', err);
   }
 
-  // 5. Inject user-specific VNC origins (uses withConfigLock + readOpenClawJson)
+  // 6. Sync bot accounts (best-effort)
+  try {
+    await syncBots();
+  } catch (err) {
+    console.warn('[wx-auth] Bot sync failed (non-fatal):', err);
+  }
+
+  // 6. Inject user-specific VNC origins into gateway.controlUi.allowedOrigins (best-effort)
   if (userId && userId > 0) {
     try {
       await ensureVncOriginsInConfig(userId, 18789);
@@ -371,19 +291,12 @@ export async function persistLoginResult(
     }
   }
 
-  // 6. Register device with IM server
+  // 6. Register device with IM server so it can build the iframe URL:
+  //    https://<accessip>:18789/#token=<gatewayToken>
   try {
     await registerDeviceWithImServer(tokenKey, nodeId, userId);
   } catch (err) {
     console.warn('[wx-auth] Device registration failed (non-fatal):', err);
-  }
-
-  // 7. Sync bot accounts LAST — must run after all other writeOpenClawConfig/writeOpenClawJson
-  //    calls to avoid race-condition overwrites of channels.box-im.accounts.
-  try {
-    await syncBots();
-  } catch (err) {
-    console.warn('[wx-auth] Bot sync failed (non-fatal):', err);
   }
 }
 
