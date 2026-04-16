@@ -190,14 +190,8 @@ export function Agents() {
 
   return (
     <div data-testid="agents-page" className="flex flex-col -m-6 dark:bg-background h-[calc(100vh-2.5rem)] overflow-hidden">
-      <div className={cn(
-        "w-full flex flex-col h-full",
-        viewMode === 'organization' ? 'p-6' : 'max-w-5xl mx-auto p-10 pt-16'
-      )}>
-        <div className={cn(
-          "flex flex-col md:flex-row md:items-start justify-between shrink-0 gap-4",
-          viewMode === 'organization' ? 'mb-4' : 'mb-8'
-        )}>
+      <div className="w-full flex flex-col h-full p-6">
+        <div className="flex flex-col md:flex-row md:items-start justify-between shrink-0 gap-4 mb-4">
           <div>
             <h1
               className="text-5xl md:text-6xl font-serif text-foreground mb-3 font-normal tracking-tight"
@@ -265,10 +259,7 @@ export function Agents() {
           </Button>
         </div>
 
-        <div className={cn(
-          "flex-1 min-h-0",
-          viewMode === 'organization' ? '' : 'overflow-y-auto pr-2 pb-10 -mr-2'
-        )}>
+        <div className="flex-1 min-h-0 overflow-y-auto pr-2 pb-10 -mr-2">
           {viewMode === 'list' ? (
             <>
               {gatewayStatus.state !== 'running' && (
@@ -289,7 +280,7 @@ export function Agents() {
                 </div>
               )}
 
-              <div className="space-y-3">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                 {visibleAgents.map((agent) => (
                   <AgentCard
                     key={agent.id}
@@ -394,62 +385,78 @@ function AgentCard({
   return (
     <div
       className={cn(
-        'group flex items-start gap-4 p-4 rounded-2xl transition-all text-left border relative overflow-hidden bg-transparent border-transparent hover:bg-black/5 dark:hover:bg-white/5',
-        agent.isDefault && 'bg-black/[0.04] dark:bg-white/[0.06]'
+        'group relative flex flex-col p-5 rounded-2xl transition-all border cursor-pointer',
+        agent.isDefault 
+          ? 'bg-[#f3f1e9] dark:bg-white/[0.06] border-black/10 dark:border-white/10 shadow-sm' 
+          : 'bg-[#f8f6f0] dark:bg-white/[0.02] border-black/5 dark:border-white/5 hover:border-black/10 dark:hover:border-white/10 hover:shadow-lg'
       )}
+      onClick={onOpenSettings}
     >
-      <div className="h-[46px] w-[46px] shrink-0 flex items-center justify-center text-primary bg-primary/10 rounded-full shadow-sm mb-3">
-        <Bot className="h-[22px] w-[22px]" />
+      {/* 状态指示点 */}
+      {agent.isDefault && (
+        <div className="absolute top-3 right-3 h-2 w-2 rounded-full bg-green-500 shadow-sm"></div>
+      )}
+
+      {/* 头像 */}
+      <div className="h-16 w-16 mx-auto mb-4 flex items-center justify-center text-primary bg-primary/10 rounded-full shadow-sm">
+        <Bot className="h-8 w-8" />
       </div>
-      <div className="flex flex-col flex-1 min-w-0 py-0.5 mt-1">
-        <div className="flex items-center justify-between gap-3 mb-1">
-          <div className="flex items-center gap-2 min-w-0">
-            <h2 className="text-[16px] font-semibold text-foreground truncate">{agent.name}</h2>
-            {agent.isDefault && (
-              <Badge
-                variant="secondary"
-                className="flex items-center gap-1 font-mono text-[10px] font-medium px-2 py-0.5 rounded-full bg-black/[0.04] dark:bg-white/[0.08] border-0 shadow-none text-foreground/70"
-              >
-                <Check className="h-3 w-3" />
-                {t('defaultBadge')}
-              </Badge>
-            )}
-          </div>
-          <div className="flex items-center gap-1 shrink-0">
-            {!agent.isDefault && (
-              <Button
-                variant="ghost"
-                size="icon"
-                className="opacity-0 group-hover:opacity-100 h-7 w-7 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-all"
-                onClick={onDelete}
-                title={t('deleteAgent')}
-              >
-                <Trash2 className="h-4 w-4" />
-              </Button>
-            )}
-            <Button
-              variant="ghost"
-              size="icon"
-              className={cn(
-                'h-7 w-7 text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/10 transition-all',
-                !agent.isDefault && 'opacity-0 group-hover:opacity-100',
-              )}
-              onClick={onOpenSettings}
-              title={t('settings')}
-            >
-              <Settings2 className="h-4 w-4" />
-            </Button>
-          </div>
+
+      {/* 名称和标签 */}
+      <div className="text-center mb-3">
+        <h2 className="text-[16px] font-serif font-semibold text-foreground mb-1 truncate" style={{ fontFamily: 'Georgia, Cambria, "Times New Roman", Times, serif' }}>
+          {agent.name}
+        </h2>
+        {agent.isDefault && (
+          <Badge
+            variant="secondary"
+            className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-primary/10 border-0 shadow-none text-primary"
+          >
+            <Check className="h-3 w-3 mr-1 inline" />
+            {t('defaultBadge')}
+          </Badge>
+        )}
+      </div>
+
+      {/* 信息 */}
+      <div className="space-y-2 mb-4 flex-1">
+        <div className="text-[12px] text-muted-foreground flex items-start gap-1.5">
+          <span className="opacity-70 shrink-0">🤖</span>
+          <span className="line-clamp-2">
+            {t('modelLine', {
+              model: agent.modelDisplay,
+              suffix: agent.inheritedModel ? ` (${t('inherited')})` : '',
+            })}
+          </span>
         </div>
-        <p className="text-[13.5px] text-muted-foreground line-clamp-2 leading-[1.5]">
-          {t('modelLine', {
-            model: agent.modelDisplay,
-            suffix: agent.inheritedModel ? ` (${t('inherited')})` : '',
-          })}
-        </p>
-        <p className="text-[13.5px] text-muted-foreground line-clamp-2 leading-[1.5]">
-          {t('channelsLine', { channels: channelsText })}
-        </p>
+        <div className="text-[12px] text-muted-foreground flex items-start gap-1.5">
+          <span className="opacity-70 shrink-0">💬</span>
+          <span className="line-clamp-2">{t('channelsLine', { channels: channelsText })}</span>
+        </div>
+      </div>
+
+      {/* 操作按钮 */}
+      <div className="flex items-center gap-2 pt-3 border-t border-black/5 dark:border-white/5" onClick={(e) => e.stopPropagation()}>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="flex-1 h-8 text-[12px] rounded-full hover:bg-black/5 dark:hover:bg-white/10"
+          onClick={onOpenSettings}
+        >
+          <Settings2 className="h-3.5 w-3.5 mr-1.5" />
+          {t('settings')}
+        </Button>
+        {!agent.isDefault && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-full"
+            onClick={onDelete}
+            title={t('deleteAgent')}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </Button>
+        )}
       </div>
     </div>
   );

@@ -2,7 +2,7 @@
  * Template Selection Dialog
  * 模板选择对话框 - 快速应用模板到员工
  */
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useCallback } from 'react';
 import { X, Check, Loader2, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -36,6 +36,17 @@ export function TemplateSelectionDialog({
       fetchTemplates();
     }
   }, [isOpen, fetchTemplates]);
+
+  // 缓存启用的技能 ID，避免重复计算
+  const enabledSkillIds = useMemo(
+    () => allSkills.filter(s => s.enabled).map(s => s.id),
+    [allSkills]
+  );
+
+  // 优化模板卡片点击处理
+  const handleSelectTemplate = useCallback((template: AgentTemplate) => {
+    setSelectedTemplate(template);
+  }, []);
 
   const handleApply = async () => {
     if (!selectedTemplate) return;
@@ -142,8 +153,14 @@ export function TemplateSelectionDialog({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-      <div className="bg-[#f3f1e9] dark:bg-card w-full max-w-3xl max-h-[85vh] rounded-2xl shadow-2xl flex flex-col">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="bg-[#f3f1e9] dark:bg-card w-full max-w-2xl max-h-[85vh] rounded-2xl shadow-2xl flex flex-col"
+      >
         {/* Header */}
         <div className="flex items-center justify-between p-6 border-b border-black/10 dark:border-white/10">
           <div className="flex items-center gap-3">
@@ -151,10 +168,10 @@ export function TemplateSelectionDialog({
               <Sparkles className="h-5 w-5 text-white" />
             </div>
             <div>
-              <h2 className="text-2xl font-serif text-foreground font-normal tracking-tight">
+              <h2 className="text-2xl font-serif text-foreground font-normal tracking-tight" style={{ fontFamily: 'Georgia, Cambria, "Times New Roman", Times, serif' }}>
                 快速选择模板
               </h2>
-              <p className="text-sm text-foreground/70 mt-0.5">
+              <p className="text-[13px] text-foreground/70 mt-0.5">
                 选择一个模板快速配置技能
               </p>
             </div>
@@ -181,10 +198,9 @@ export function TemplateSelectionDialog({
               <p className="text-foreground/70">暂无可用模板</p>
             </div>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-2">
               {templates.map((template) => {
                 const isSelected = selectedTemplate?.id === template.id;
-                const enabledSkillIds = allSkills.filter(s => s.enabled).map(s => s.id);
                 const availableSkills = template.skills.filter(skillId =>
                   enabledSkillIds.includes(skillId)
                 );
@@ -193,84 +209,62 @@ export function TemplateSelectionDialog({
                 );
 
                 return (
-                  <div
+                  <button
                     key={template.id}
-                    onClick={() => setSelectedTemplate(template)}
+                    onClick={() => handleSelectTemplate(template)}
                     className={cn(
-                      'relative p-5 rounded-xl border-2 cursor-pointer transition-all duration-200',
+                      'w-full text-left p-4 rounded-xl border transition-colors duration-100',
                       isSelected
-                        ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/20 shadow-lg scale-[1.02]'
-                        : 'border-black/10 dark:border-white/10 bg-white dark:bg-muted hover:border-blue-300 hover:shadow-md'
+                        ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/20'
+                        : 'border-black/10 dark:border-white/10 bg-white dark:bg-muted hover:border-blue-300 hover:bg-blue-50/50'
                     )}
                   >
-                    {/* 选中标记 */}
-                    {isSelected && (
-                      <div className="absolute top-3 right-3 h-6 w-6 rounded-full bg-blue-500 flex items-center justify-center">
-                        <Check className="h-4 w-4 text-white" />
+                    <div className="flex items-start gap-3">
+                      {/* 单选按钮 */}
+                      <div className={cn(
+                        "h-5 w-5 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 transition-colors duration-100",
+                        isSelected
+                          ? "border-blue-500 bg-blue-500"
+                          : "border-gray-300 dark:border-gray-600"
+                      )}>
+                        {isSelected && (
+                          <div className="h-2 w-2 rounded-full bg-white" />
+                        )}
                       </div>
-                    )}
 
-                    {/* 图标和标题 */}
-                    <div className="flex items-start gap-3 mb-3">
-                      <div className="text-3xl">{template.icon}</div>
+                      {/* 图标 */}
+                      <div className="text-2xl shrink-0">{template.icon}</div>
+
+                      {/* 内容 */}
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 mb-1">
-                          <h3 className="font-semibold text-foreground truncate">
+                          <h3 className="font-semibold text-[15px] text-foreground">
                             {template.nameZh}
                           </h3>
                           {template.recommended && (
-                            <Badge variant="secondary" className="text-xs">
+                            <Badge variant="secondary" className="text-[11px]">
                               推荐
                             </Badge>
                           )}
                         </div>
-                        <p className="text-xs text-muted-foreground">{template.name}</p>
+                        <p className="text-[12px] text-muted-foreground mb-2">
+                          {template.descriptionZh || template.description}
+                        </p>
+                        
+                        {/* 技能统计 */}
+                        <div className="flex items-center gap-2 text-[11px]">
+                          <span className="text-green-600 dark:text-green-400">
+                            ✓ {availableSkills.length} 个可用
+                          </span>
+                          {missingSkills.length > 0 && (
+                            <span className="text-orange-600 dark:text-orange-400">
+                              • {missingSkills.length} 个需安装
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </div>
-
-                    {/* 描述 */}
-                    <p className="text-sm text-foreground/70 mb-3 line-clamp-2">
-                      {template.descriptionZh || template.description}
-                    </p>
-
-                    {/* 技能统计 */}
-                    <div className="flex items-center gap-2 text-xs">
-                      <Badge variant="outline" className="bg-green-50 dark:bg-green-950/20 text-green-700 dark:text-green-400 border-green-200 dark:border-green-800">
-                        {availableSkills.length} 个可用
-                      </Badge>
-                      {missingSkills.length > 0 && (
-                        <Badge variant="outline" className="bg-orange-50 dark:bg-orange-950/20 text-orange-700 dark:text-orange-400 border-orange-200 dark:border-orange-800">
-                          {missingSkills.length} 个缺失
-                        </Badge>
-                      )}
-                    </div>
-
-                    {/* 技能列表预览 */}
-                    <div className="mt-3 flex flex-wrap gap-1.5">
-                      {template.skills.slice(0, 4).map((skillId) => {
-                        const isAvailable = enabledSkillIds.includes(skillId);
-                        return (
-                          <Badge
-                            key={skillId}
-                            variant="outline"
-                            className={cn(
-                              'text-xs',
-                              isAvailable
-                                ? 'bg-white dark:bg-muted'
-                                : 'bg-gray-100 dark:bg-gray-800 opacity-50'
-                            )}
-                          >
-                            {skillId}
-                          </Badge>
-                        );
-                      })}
-                      {template.skills.length > 4 && (
-                        <Badge variant="outline" className="text-xs">
-                          +{template.skills.length - 4}
-                        </Badge>
-                      )}
-                    </div>
-                  </div>
+                  </button>
                 );
               })}
             </div>
@@ -279,7 +273,7 @@ export function TemplateSelectionDialog({
 
         {/* Footer */}
         <div className="flex items-center justify-between p-6 border-t border-black/10 dark:border-white/10 bg-black/[0.02] dark:bg-white/[0.02]">
-          <div className="text-sm text-foreground/70">
+          <div className="text-[13px] text-foreground/70">
             {selectedTemplate ? (
               <>
                 已选择: <span className="font-semibold text-foreground">{selectedTemplate.nameZh}</span>
@@ -293,14 +287,14 @@ export function TemplateSelectionDialog({
               variant="outline"
               onClick={onClose}
               disabled={applying}
-              className="h-10 rounded-full px-5"
+              className="h-10 rounded-full px-5 text-[13px]"
             >
               取消
             </Button>
             <Button
               onClick={handleApply}
               disabled={!selectedTemplate || applying}
-              className="h-10 rounded-full px-5"
+              className="h-10 rounded-full px-5 text-[13px]"
             >
               {applying ? (
                 <>
