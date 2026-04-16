@@ -768,7 +768,7 @@ export function OrganizationView() {
         onDragOver={handleCanvasDragOver}
       >
         {/* 背景装饰 */}
-        <div className="absolute inset-0 opacity-30" style={{
+        <div className="absolute inset-0 opacity-30 pointer-events-none" style={{
           backgroundImage: `
             radial-gradient(circle at 20% 30%, rgba(59, 130, 246, 0.08) 0%, transparent 50%),
             radial-gradient(circle at 80% 70%, rgba(139, 92, 246, 0.08) 0%, transparent 50%),
@@ -777,7 +777,7 @@ export function OrganizationView() {
         }} />
         
         {/* 微妙的网格纹理 */}
-        <div className="absolute inset-0 opacity-[0.03]" style={{
+        <div className="absolute inset-0 opacity-[0.03] pointer-events-none" style={{
           backgroundImage: `
             linear-gradient(rgba(0,0,0,0.05) 1px, transparent 1px),
             linear-gradient(90deg, rgba(0,0,0,0.05) 1px, transparent 1px)
@@ -785,10 +785,10 @@ export function OrganizationView() {
           backgroundSize: '40px 40px',
         }} />
         
-        <div ref={containerRef} className="w-full h-full relative z-10" />
+        <div ref={containerRef} className="w-full h-full relative" style={{ zIndex: 1 }} />
         
         {departments.length === 0 && (
-          <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-20">
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none" style={{ zIndex: 2 }}>
             <div className="text-center">
               <div className="w-24 h-24 mx-auto mb-6 rounded-3xl bg-gradient-to-br from-blue-500/10 via-purple-500/10 to-pink-500/10 flex items-center justify-center backdrop-blur-sm border border-white/20 shadow-xl">
                 <Building2 className="w-12 h-12 text-blue-500/50" />
@@ -800,7 +800,7 @@ export function OrganizationView() {
         )}
         
         {/* 操作提示 */}
-        <div className="absolute bottom-5 right-5 bg-white/80 dark:bg-gray-800/80 backdrop-blur-md rounded-2xl px-5 py-3 text-[12px] text-muted-foreground border border-white/40 dark:border-white/10 shadow-xl z-20">
+        <div className="absolute bottom-5 right-5 bg-white/80 dark:bg-gray-800/80 backdrop-blur-md rounded-2xl px-5 py-3 text-[12px] text-muted-foreground border border-white/40 dark:border-white/10 shadow-xl" style={{ zIndex: 2 }}>
           <div className="flex items-center gap-5">
             <span className="flex items-center gap-1.5">
               <span className="text-[14px]">🖱</span>
@@ -824,7 +824,8 @@ export function OrganizationView() {
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 10 }}
-              className="absolute top-5 left-1/2 -translate-x-1/2 bg-blue-500 text-white px-6 py-3 rounded-2xl shadow-2xl z-30 font-medium text-[13px] flex items-center gap-2"
+              className="absolute top-5 left-1/2 -translate-x-1/2 bg-blue-500 text-white px-6 py-3 rounded-2xl shadow-2xl font-medium text-[13px] flex items-center gap-2"
+              style={{ zIndex: 3 }}
             >
               <motion.span
                 animate={{ rotate: [0, 10, -10, 0] }}
