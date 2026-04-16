@@ -37,7 +37,6 @@ export function SkillsConfigurationView({
   const [isDropZoneActive, setIsDropZoneActive] = useState(false);
   const [draggedSkillId, setDraggedSkillId] = useState<string | null>(null);
   const [showEmployeeDropdown, setShowEmployeeDropdown] = useState(false);
-  const [selectedTemplate, setSelectedTemplate] = useState<AgentTemplate | null>(null);
   const [applyingTemplate, setApplyingTemplate] = useState(false);
 
   // 获取本地已安装的技能和模板
@@ -67,10 +66,16 @@ export function SkillsConfigurationView({
     [employees, selectedEmployeeId]
   );
   
-  const currentSkills = useMemo(
-    () => selectedEmployeeId ? (localSkills[selectedEmployeeId] || []) : [],
-    [selectedEmployeeId, localSkills]
-  );
+  const currentSkills = useMemo(() => {
+    const skills = selectedEmployeeId ? (localSkills[selectedEmployeeId] || []) : [];
+    console.log('[SkillsConfigurationView] currentSkills:', {
+      selectedEmployeeId,
+      skills,
+      localSkills,
+      agentSkills,
+    });
+    return skills;
+  }, [selectedEmployeeId, localSkills, agentSkills]);
   
   const hasChanges = useMemo(
     () => selectedEmployeeId && JSON.stringify(currentSkills) !== JSON.stringify(agentSkills[selectedEmployeeId] || []),
@@ -211,7 +216,43 @@ export function SkillsConfigurationView({
     if (!selectedEmployeeId) return;
     setSaving(true);
     try {
-      await updateAgentSkills(selectedEmployeeId, localSkills[selectedEmployeeId] || []);
+      const skillsToSave = localSkills[selectedEmployeeId] || [];
+      
+      // 先保存技能
+      await updateAgentSkills(selectedEmployeeId, skillsToSave);
+      
+      // 保存后检查是否需要更新模板状态
+      const { agentTemplates, updateAgentTemplate } = useAgentsStore.getState();
+      const currentTemplateId = agentTemplates[selectedEmployeeId];
+      
+      if (currentTemplateId) {
+        // 如果当前使用了模板，检查技能是否与模板一致
+        const template = templates.find(t => t.id === currentTemplateId);
+        if (template) {
+          // 模板中存储的是 skillSlug，需要转换为 skillId 进行比较
+          const templateSkillIds = template.skills
+            .map(skillSlug => {
+              const skill = allSkills.find(s => (s.slug || s.id) === skillSlug);
+              return skill?.id;
+            })
+            .filter((id): id is string => id !== undefined);
+          
+          // 比较技能列表是否一致（不考虑顺序）
+          const skillsMatch = 
+            skillsToSave.length === templateSkillIds.length &&
+            skillsToSave.every(skill => templateSkillIds.includes(skill)) &&
+            templateSkillIds.every(skill => skillsToSave.includes(skill));
+          
+          if (!skillsMatch) {
+            // 技能被修改，将模板改为 null（表示"自定义"）
+            console.log('[SkillsConfigurationView] Skills modified, setting template to custom');
+            await updateAgentTemplate(selectedEmployeeId, null);
+          } else {
+            console.log('[SkillsConfigurationView] Skills match template, keeping templateId');
+          }
+        }
+      }
+      
       toast.success('技能配置已保存');
       onRefresh();
     } catch (err) {
@@ -236,7 +277,6 @@ export function SkillsConfigurationView({
     }
 
     setApplyingTemplate(true);
-    setSelectedTemplate(template);
     
     // 使用固定的 toast ID，这样新的会替换旧的
     const toastId = 'apply-template';
@@ -317,10 +357,15 @@ export function SkillsConfigurationView({
         })
         .filter((id): id is string => id !== undefined && enabledSkillIds.includes(id));
 
+      // 更新本地技能状态
       setLocalSkills((prev) => ({
         ...prev,
         [selectedEmployeeId]: skillsToApply,
       }));
+      
+      // 更新模板关联状态（重要：这样保存时才不会被判定为"自定义"）
+      const { updateAgentTemplate } = useAgentsStore.getState();
+      await updateAgentTemplate(selectedEmployeeId, template.id);
       
       if (failedSkills.length > 0) {
         toast.warning(
@@ -468,7 +513,7 @@ export function SkillsConfigurationView({
           <div className="flex items-center gap-2 mb-2">
             <Sparkles className="h-5 w-5 text-primary" />
             <h3 className="text-[17px] font-serif font-semibold text-foreground" style={{ fontFamily: 'Georgia, Cambria, "Times New Roman", Times, serif' }}>
-              快速模板
+              岗位模板
             </h3>
           </div>
           <p className="text-[13px] text-muted-foreground">
@@ -489,7 +534,24 @@ export function SkillsConfigurationView({
         ) : (
           <div className="space-y-3">
             {templates.map((template) => {
-              const isSelected = selectedTemplate?.id === template.id;
+              // 获取当前员工的模板 ID
+              const { agentTemplates } = useAgentsStore.getState();
+              const currentEmployeeTemplateId = selectedEmployeeId ? agentTemplates[selectedEmployeeId] : undefined;
+              
+              // 判断当前模板是否被选中（当前员工使用的模板）
+              const isCurrentTemplate = currentEmployeeTemplateId === template.id;
+              
+              // 调试日志
+              if (selectedEmployeeId && isCurrentTemplate) {
+                console.log('[SkillsConfigurationView] Template match:', {
+                  employeeId: selectedEmployeeId,
+                  templateId: template.id,
+                  templateName: template.nameZh,
+                  currentEmployeeTemplateId,
+                  agentTemplates,
+                });
+              }
+              
               const enabledSkillIds = allSkills.filter(s => s.enabled).map(s => s.id);
               const installedSkillSlugs = allSkills.map(s => s.slug || s.id);
               
@@ -514,10 +576,8 @@ export function SkillsConfigurationView({
                   disabled={applyingTemplate || !selectedEmployeeId || allSkillsMissing}
                   className={cn(
                     'w-full text-left p-4 rounded-xl border transition-all duration-100',
-                    isSelected && applyingTemplate
-                      ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/20 opacity-75'
-                      : isSelected
-                      ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/20'
+                    isCurrentTemplate
+                      ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/20 ring-2 ring-blue-500/20'
                       : allSkillsMissing
                       ? 'border-red-200 dark:border-red-900 bg-red-50 dark:bg-red-950/20 opacity-60 cursor-not-allowed'
                       : 'border-black/10 dark:border-white/10 bg-[#f8f6f0] dark:bg-muted hover:border-blue-300 hover:bg-[#f3f1e9] dark:hover:bg-muted/80',
@@ -534,7 +594,12 @@ export function SkillsConfigurationView({
                         <h4 className="font-semibold text-[15px] text-foreground">
                           {template.nameZh}
                         </h4>
-                        {template.recommended && !allSkillsMissing && (
+                        {isCurrentTemplate && (
+                          <Badge variant="default" className="text-[10px] px-1.5 py-0.5 bg-blue-500">
+                            使用中
+                          </Badge>
+                        )}
+                        {template.recommended && !allSkillsMissing && !isCurrentTemplate && (
                           <Badge variant="secondary" className="text-[10px] px-1.5 py-0.5">
                             推荐
                           </Badge>
@@ -564,7 +629,7 @@ export function SkillsConfigurationView({
                     </div>
                   </div>
                   
-                  {isSelected && applyingTemplate && (
+                  {applyingTemplate && isCurrentTemplate && (
                     <div className="mt-3 flex items-center gap-2 text-[12px] text-blue-600 dark:text-blue-400 font-medium">
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />
                       <span>应用中...</span>
@@ -621,27 +686,33 @@ export function SkillsConfigurationView({
                     transition={{ duration: 0.12, ease: 'easeOut' }}
                     className="absolute top-full left-0 right-0 mt-2 bg-[#f3f1e9] dark:bg-gray-800 border border-black/10 dark:border-white/10 rounded-xl shadow-xl overflow-hidden z-10 max-h-64 overflow-y-auto"
                   >
-                    {employees.map((emp, index) => (
-                      <button
-                        key={emp.id}
-                        onClick={() => {
-                          setSelectedEmployeeId(emp.id);
-                          setShowEmployeeDropdown(false);
-                        }}
-                        className={cn(
-                          "w-full text-left px-4 py-3 text-[15px] transition-colors duration-100 flex items-center justify-between",
-                          selectedEmployeeId === emp.id
-                            ? "bg-primary/10 text-primary font-semibold"
-                            : "text-foreground hover:bg-black/5 dark:hover:bg-white/5",
-                          index !== 0 && "border-t border-black/5 dark:border-white/5"
-                        )}
-                      >
-                        <span className="truncate">{emp.name}</span>
-                        {selectedEmployeeId === emp.id && (
-                          <Check className="h-4 w-4 shrink-0 ml-2" />
-                        )}
-                      </button>
-                    ))}
+                    {employees.map((emp, index) => {
+                      const empSkillsCount = (localSkills[emp.id] || []).length;
+                      return (
+                        <button
+                          key={emp.id}
+                          onClick={() => {
+                            setSelectedEmployeeId(emp.id);
+                            setShowEmployeeDropdown(false);
+                          }}
+                          className={cn(
+                            "w-full text-left px-4 py-3 text-[15px] transition-colors duration-100 flex items-center justify-between gap-2",
+                            selectedEmployeeId === emp.id
+                              ? "bg-primary/10 text-primary font-semibold"
+                              : "text-foreground hover:bg-black/5 dark:hover:bg-white/5",
+                            index !== 0 && "border-t border-black/5 dark:border-white/5"
+                          )}
+                        >
+                          <span className="truncate flex-1">{emp.name}</span>
+                          <span className="text-[12px] text-muted-foreground font-normal shrink-0">
+                            ({empSkillsCount})
+                          </span>
+                          {selectedEmployeeId === emp.id && (
+                            <Check className="h-4 w-4 shrink-0" />
+                          )}
+                        </button>
+                      );
+                    })}
                   </motion.div>
                 )}
               </AnimatePresence>
@@ -727,8 +798,20 @@ export function SkillsConfigurationView({
             >
               <AnimatePresence mode="popLayout">
                 {currentSkills.map((skillId) => {
-                  const skill = enabledSkills.find((s) => s.id === skillId);
-                  if (!skill) return null;
+                  // 尝试通过 ID 或 slug 查找技能
+                  const skill = enabledSkills.find((s) => s.id === skillId || (s.slug || s.id) === skillId);
+                  
+                  if (!skill) {
+                    console.warn('[SkillsConfigurationView] Skill not found:', {
+                      skillId,
+                      skillIdType: typeof skillId,
+                      enabledSkillsCount: enabledSkills.length,
+                      firstEnabledSkill: enabledSkills[0],
+                      allEnabledSkillIds: enabledSkills.slice(0, 3).map(s => ({ id: s.id, slug: s.slug })),
+                    });
+                    return null;
+                  }
+                  
                   return (
                     <motion.button
                       key={skillId}
