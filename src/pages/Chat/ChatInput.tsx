@@ -419,11 +419,8 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
     [stageBufferFiles],
   );
 
-  // ── Typing particles + shake ──────────────────────────────────
+  // ── Typing particles (removed shake animation) ────────────────
   const inputBoxRef = useRef<HTMLDivElement>(null);
-  const [shakeIntensity, setShakeIntensity] = useState(1); // 抖动强度倍数
-  const lastInputTimeRef = useRef(0);
-  const shakeDecayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [particles, setParticles] = useState<Array<{ id: number; x: number; y: number; color: string; size: number }>>([]);
   const particleIdRef = useRef(0);
 
@@ -447,37 +444,9 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
   const handleInputChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const prev = input;
     setInput(e.target.value);
-    // 任何内容变化都触发抖动（增加或删除）
+    // Spawn particles on any content change
     if (e.target.value.length !== prev.length) {
-      const now = Date.now();
-      const timeSinceLastInput = now - lastInputTimeRef.current;
-      
-      // 如果在 150ms 内连续输入，增加强度；否则重置为基础强度
-      if (timeSinceLastInput < 150 && timeSinceLastInput > 0) {
-        setShakeIntensity(prev => Math.min(prev + 0.6, 3.5)); // 最大 3.5 倍强度
-      } else {
-        setShakeIntensity(1); // 基础强度 1x（慢速输入）
-      }
-      
-      lastInputTimeRef.current = now;
-      
-      // 触发抖动：移除动画类，强制重排，然后重新添加
-      if (inputBoxRef.current) {
-        inputBoxRef.current.classList.remove('animate-[shake_0.15s_ease-in-out]');
-        // 强制浏览器重排（reflow）
-        void inputBoxRef.current.offsetWidth;
-        inputBoxRef.current.classList.add('animate-[shake_0.15s_ease-in-out]');
-      }
-      
       spawnParticles();
-      
-      // 500ms 后逐渐衰减强度
-      if (shakeDecayTimerRef.current) {
-        clearTimeout(shakeDecayTimerRef.current);
-      }
-      shakeDecayTimerRef.current = setTimeout(() => {
-        setShakeIntensity(1);
-      }, 500);
     }
   }, [input, spawnParticles]);
 
@@ -566,7 +535,6 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
             isExpanded ? "shadow-md p-2" : "p-1"
           )}
           style={{
-            '--shake-intensity': shakeIntensity,
             transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.2s ease-out',
           } as React.CSSProperties}
         >
@@ -598,7 +566,9 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
 
           {/* Collapsed layout: single row with buttons + textarea + send */}
           {!isExpanded && (
-            <div className="flex items-center gap-1">
+            <div 
+              className="flex items-center gap-1"
+            >
               <Button
                 variant="ghost"
                 size="icon"
@@ -610,7 +580,14 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                 <Paperclip className="h-4 w-4" />
               </Button>
 
-              <div className="flex-1 relative">
+              <div 
+                className="flex-1 relative cursor-text"
+                onClick={() => {
+                  // 点击时立即聚焦，这样会触发 onFocus -> onFocusChange(true) -> 展开
+                  // 展开后 textarea 会保持聚焦状态
+                  textareaRef.current?.focus();
+                }}
+              >
                 <Textarea
                   ref={textareaRef}
                   value={input}
@@ -619,7 +596,15 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                   onCompositionStart={() => { isComposingRef.current = true; }}
                   onCompositionEnd={() => { isComposingRef.current = false; }}
                   onPaste={handlePaste}
-                  onFocus={() => onFocusChange?.(true)}
+                  onFocus={() => {
+                    onFocusChange?.(true);
+                    // 确保在展开后仍然保持聚焦
+                    setTimeout(() => {
+                      if (textareaRef.current && document.activeElement !== textareaRef.current) {
+                        textareaRef.current.focus();
+                      }
+                    }, 50);
+                  }}
                   onBlur={() => onFocusChange?.(false)}
                   placeholder={disabled ? t('composer.gatewayDisconnectedPlaceholder') : ''}
                   disabled={disabled}
@@ -629,6 +614,10 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
               </div>
 
               <Button
+                onMouseDown={(e) => {
+                  // 阻止按钮点击时触发 textarea 的 blur 事件
+                  e.preventDefault();
+                }}
                 onClick={sending ? handleStop : handleSend}
                 disabled={sending ? !canStop : !canSend}
                 size="icon"
@@ -799,6 +788,10 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                   )}
 
                   <Button
+                    onMouseDown={(e) => {
+                      // 阻止按钮点击时触发 textarea 的 blur 事件
+                      e.preventDefault();
+                    }}
                     onClick={sending ? handleStop : handleSend}
                     disabled={sending ? !canStop : !canSend}
                     size="icon"

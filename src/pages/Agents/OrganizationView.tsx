@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Graph } from '@antv/x6';
 import dagre from 'dagre';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Building2, Plus, Trash2, Edit2, Users, Bot, X } from 'lucide-react';
+import { Building2, Plus, Trash2, Edit2, Users, Bot, X, MessageCircle } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useOrganizationStore } from '@/stores/organization';
@@ -37,6 +38,7 @@ function getColor(id: string): string {
 export function OrganizationView() {
   const containerRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<Graph | null>(null);
+  const navigate = useNavigate();
   const [selectedDept, setSelectedDept] = useState<string | null>(null);
   const [newDeptName, setNewDeptName] = useState('');
   const [editingDept, setEditingDept] = useState<{ id: string; name: string } | null>(null);
@@ -169,11 +171,15 @@ export function OrganizationView() {
 
     // 边
     Graph.registerEdge('org-edge', {
-      zIndex: -1,
+      inherit: 'edge',
+      zIndex: 0,
+      connector: { name: 'rounded' },
+      router: { name: 'orth' },
       attrs: {
         line: {
           strokeWidth: 2.5,
-          stroke: '#cbd5e1',
+          stroke: '#94a3b8',
+          strokeOpacity: 1,
           sourceMarker: null,
           targetMarker: null,
         },
@@ -200,7 +206,7 @@ export function OrganizationView() {
       },
       grid: false,
       interacting: {
-        nodeMovable: false,
+        nodeMovable: false, // 禁用简单移动，我们用拖放来改变层级
         edgeMovable: false,
         edgeLabelMovable: false,
         arrowheadMovable: false,
@@ -215,39 +221,40 @@ export function OrganizationView() {
     // 监听节点点击事件
     graph.on('node:click', ({ node }) => {
       const data = node.getData();
-      if (data?.type === 'dept') {
+      if (data?.type === 'dept' || data?.type === 'bot') {
         setSelectedDept(data.id);
       }
     });
     
-    // 监听员工节点拖动开始
+    // 监听员工节点拖动开始 - 禁用画布上的拖动
     graph.on('node:mousedown', ({ node, e }) => {
       const data = node.getData();
       if (data?.type === 'bot') {
-        setDraggingBot(data.id);
-        // 创建一个拖动数据传输对象
-        const dt = new DataTransfer();
-        dt.setData('botId', data.id);
-        // 触发拖动事件
-        const dragEvent = new DragEvent('dragstart', {
-          dataTransfer: dt,
-          bubbles: true,
-          cancelable: true,
-        });
-        e.target.dispatchEvent(dragEvent);
+        // 禁用画布上员工节点的拖动
+        e.preventDefault();
+        e.stopPropagation();
       }
     });
     
     // 监听右键菜单
     graph.on('node:contextmenu', ({ node, e }) => {
+      e.preventDefault();
+      e.stopPropagation();
       const data = node.getData();
       if (data?.type === 'dept') {
-        e.preventDefault();
+        setBotContextMenu(null); // 关闭员工菜单
         setContextMenu({ x: e.clientX, y: e.clientY, deptId: data.id });
       } else if (data?.type === 'bot') {
-        e.preventDefault();
+        setContextMenu(null); // 关闭部门菜单
         setBotContextMenu({ x: e.clientX, y: e.clientY, botId: data.id });
       }
+    });
+    
+    // 监听画布空白区域右键菜单
+    graph.on('blank:contextmenu', ({ e }) => {
+      e.preventDefault();
+      e.stopPropagation();
+      // 空白区域不显示任何菜单
     });
     
     // 监听画布点击事件（取消选择）
@@ -255,7 +262,25 @@ export function OrganizationView() {
       setSelectedDept(null);
     });
     
+    // 监听容器大小变化，自动适配画布
+    const resizeObserver = new ResizeObserver(() => {
+      if (graph.getNodes().length > 0) {
+        // 使用 requestAnimationFrame 确保在下一帧执行
+        requestAnimationFrame(() => {
+          graph.zoomToFit({ 
+            padding: 60, 
+            maxScale: 1,
+          });
+        });
+      }
+    });
+    
+    if (containerRef.current) {
+      resizeObserver.observe(containerRef.current);
+    }
+    
     return () => {
+      resizeObserver.disconnect();
       graph.dispose();
     };
   }, []);
@@ -387,85 +412,97 @@ export function OrganizationView() {
     
     // 创建或更新员工节点
     agents.forEach((agent) => {
-      const deptId = assignments[agent.id];
-      if (!deptId) return;
+      const parentId = assignments[agent.id];
+      if (!parentId) return;
       
       const nodeId = `bot-${agent.id}`;
       newNodeIds.add(nodeId);
       
       const color = getColor(agent.id);
       const emoji = getEmoji(agent.id);
+      const isDropTarget = dropTarget === agent.id;
       
       const existingNode = existingNodes.get(nodeId);
       
-      if (!existingNode) {
+      const nodeHtml = `
+        <div style="
+          width: 180px;
+          height: 90px;
+          background: ${isDropTarget ? 'linear-gradient(135deg, #10b981 0%, #059669 100%)' : '#f3f1e9'};
+          border: ${isDropTarget ? '3px' : '2px'} solid ${isDropTarget ? '#34d399' : color};
+          border-radius: 14px;
+          display: flex;
+          align-items: center;
+          padding: 12px;
+          font-family: Georgia, Cambria, 'Times New Roman', Times, serif;
+          box-shadow: ${isDropTarget ? '0 8px 16px -2px rgba(16, 185, 129, 0.4), 0 0 0 4px rgba(16, 185, 129, 0.2)' : '0 2px 4px rgba(0, 0, 0, 0.1)'};
+          animation: nodeEnter 0.4s ease-out;
+          transform: ${isDropTarget ? 'scale(1.05)' : 'scale(1)'};
+          transition: all 0.2s ease;
+        ">
+          <div style="
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            background: ${isDropTarget ? '#fff' : '#f8f6f0'};
+            border: 2px solid ${isDropTarget ? '#34d399' : color};
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            flex-shrink: 0;
+          ">${emoji}</div>
+          <div style="margin-left: 12px; flex: 1; min-width: 0;">
+            <div style="font-size: 14px; font-weight: 600; color: ${isDropTarget ? '#fff' : '#1a1a2e'}; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+              ${agent.name.length > 10 ? agent.name.slice(0, 10) + '…' : agent.name}
+            </div>
+            <div style="font-size: 12px; color: ${isDropTarget ? 'rgba(255,255,255,0.8)' : '#9ca3af'}; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+              ${isDropTarget ? '📍 释放以分配' : 'ID: ' + agent.id.slice(0, 8)}
+            </div>
+          </div>
+        </div>
+        <style>
+          @keyframes nodeEnter {
+            from {
+              opacity: 0;
+              transform: translateY(-20px) scale(0.95);
+            }
+            to {
+              opacity: 1;
+              transform: translateY(0) scale(1);
+            }
+          }
+          @keyframes nodeExit {
+            from {
+              opacity: 1;
+              transform: translateY(0) scale(1);
+            }
+            to {
+              opacity: 0;
+              transform: translateY(20px) scale(0.95);
+            }
+          }
+        </style>
+      `;
+      
+      if (existingNode) {
+        // 更新现有节点
+        existingNode.setAttrs({
+          content: {
+            html: nodeHtml,
+          },
+        });
+      } else {
         // 创建新节点
         graph.addNode({
           id: nodeId,
           shape: 'bot-node',
           x: 100,
           y: 100,
-          data: { type: 'bot', id: agent.id, deptId },
+          data: { type: 'bot', id: agent.id, parentId },
           attrs: {
             content: {
-              html: `
-                <div style="
-                  width: 180px;
-                  height: 90px;
-                  background: #f3f1e9;
-                  border: 2px solid ${color};
-                  border-radius: 14px;
-                  display: flex;
-                  align-items: center;
-                  padding: 12px;
-                  font-family: Georgia, Cambria, 'Times New Roman', Times, serif;
-                  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-                  animation: nodeEnter 0.4s ease-out;
-                ">
-                  <div style="
-                    width: 36px;
-                    height: 36px;
-                    border-radius: 50%;
-                    background: #f8f6f0;
-                    border: 2px solid ${color};
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    font-size: 20px;
-                    flex-shrink: 0;
-                  ">${emoji}</div>
-                  <div style="margin-left: 12px; flex: 1; min-width: 0;">
-                    <div style="font-size: 14px; font-weight: 600; color: #1a1a2e; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-                      ${agent.name.length > 10 ? agent.name.slice(0, 10) + '…' : agent.name}
-                    </div>
-                    <div style="font-size: 12px; color: #9ca3af; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-                      ID: ${agent.id.slice(0, 8)}
-                    </div>
-                  </div>
-                </div>
-                <style>
-                  @keyframes nodeEnter {
-                    from {
-                      opacity: 0;
-                      transform: translateY(-20px) scale(0.95);
-                    }
-                    to {
-                      opacity: 1;
-                      transform: translateY(0) scale(1);
-                    }
-                  }
-                  @keyframes nodeExit {
-                    from {
-                      opacity: 1;
-                      transform: translateY(0) scale(1);
-                    }
-                    to {
-                      opacity: 0;
-                      transform: translateY(20px) scale(0.95);
-                    }
-                  }
-                </style>
-              `,
+              html: nodeHtml,
             },
           },
         });
@@ -475,6 +512,10 @@ export function OrganizationView() {
     // 创建部门层级边
     departments.forEach((dept) => {
       if (!dept.parentId) return;
+      
+      const parentNodeId = dept.parentType === 'bot' 
+        ? `bot-${dept.parentId}` 
+        : `dept-${dept.parentId}`;
       const edgeId = `edge-dept-${dept.parentId}-${dept.id}`;
       newEdgeIds.add(edgeId);
       
@@ -482,24 +523,29 @@ export function OrganizationView() {
         graph.addEdge({
           id: edgeId,
           shape: 'org-edge',
-          source: { cell: `dept-${dept.parentId}` },
+          source: { cell: parentNodeId },
           target: { cell: `dept-${dept.id}` },
         });
       }
     });
     
-    // 创建员工到部门的边
+    // 创建员工到父节点的边
     agents.forEach((agent) => {
-      const deptId = assignments[agent.id];
-      if (!deptId) return;
-      const edgeId = `edge-bot-${agent.id}-${deptId}`;
+      const parentId = assignments[agent.id];
+      if (!parentId) return;
+      
+      // 判断父节点类型
+      const isParentBot = agents.some((a) => a.id === parentId);
+      const parentNodeId = isParentBot ? `bot-${parentId}` : `dept-${parentId}`;
+      
+      const edgeId = `edge-bot-${agent.id}-${parentId}`;
       newEdgeIds.add(edgeId);
       
       if (!existingEdges.has(edgeId)) {
         graph.addEdge({
           id: edgeId,
           shape: 'org-edge',
-          source: { cell: `dept-${deptId}` },
+          source: { cell: parentNodeId },
           target: { cell: `bot-${agent.id}` },
           attrs: {
             line: {
@@ -564,15 +610,23 @@ export function OrganizationView() {
       }
     });
     
-    // 缩放到合适大小（只在初始渲染时执行一次）
-    if (!hasInitialLayoutRef.current && allNodes.length > 0) {
-      setTimeout(() => {
-        graph.zoomToFit({ 
-          padding: 60, 
-          maxScale: 1,
-        });
-        hasInitialLayoutRef.current = true;
-      }, 100);
+    // 缩放到合适大小
+    if (allNodes.length > 0) {
+      // 如果是第一次布局，或者节点数量发生了显著变化，重新缩放
+      const shouldZoom = !hasInitialLayoutRef.current;
+      
+      if (shouldZoom) {
+        setTimeout(() => {
+          graph.zoomToFit({ 
+            padding: 60, 
+            maxScale: 1,
+          });
+          hasInitialLayoutRef.current = true;
+        }, 100);
+      }
+    } else {
+      // 如果没有节点了，重置标记
+      hasInitialLayoutRef.current = false;
     }
   }, [departments, assignments, agents, dropTarget]);
   
@@ -583,10 +637,21 @@ export function OrganizationView() {
   // 添加部门
   const handleAddDepartment = useCallback(() => {
     if (!newDeptName.trim()) return;
-    addDepartment(newDeptName.trim(), selectedDept);
+    
+    // 判断父节点类型
+    let parentType: 'dept' | 'bot' = 'dept';
+    if (selectedDept) {
+      // 检查是否是员工 ID
+      const isBot = agents.some((agent) => agent.id === selectedDept);
+      if (isBot) {
+        parentType = 'bot';
+      }
+    }
+    
+    addDepartment(newDeptName.trim(), selectedDept, parentType);
     setNewDeptName('');
     toast.success('部门已添加');
-  }, [newDeptName, selectedDept, addDepartment]);
+  }, [newDeptName, selectedDept, addDepartment, agents]);
   
   // 删除部门
   const handleDeleteDepartment = useCallback((deptId: string) => {
@@ -624,6 +689,12 @@ export function OrganizationView() {
     toast.success('员工已移除');
   }, [agents, unassignAgent]);
   
+  // 跳转到对话界面
+  const handleChatWithAgent = useCallback((agentId: string) => {
+    // 跳转到对话页面，并通过 state 传递需要创建新会话的 agentId
+    navigate('/', { state: { createNewSessionFor: agentId } });
+  }, [navigate]);
+  
   // 拖拽开始
   const handleDragStart = useCallback((e: React.DragEvent, botId: string) => {
     e.dataTransfer.setData('botId', botId);
@@ -652,17 +723,27 @@ export function OrganizationView() {
     
     const graph = graphRef.current;
     const p = graph.clientToLocal(e.clientX, e.clientY);
-    const deptNode = graph.getNodes().find((n) => {
+    const targetNode = graph.getNodes().find((n) => {
       const data = n.getData();
-      if (data?.type !== 'dept') return false;
+      if (data?.type !== 'dept' && data?.type !== 'bot') return false;
       return n.getBBox().containsPoint(p);
     });
     
-    if (deptNode) {
-      const deptId = deptNode.getData().id;
+    if (targetNode) {
+      const nodeData = targetNode.getData();
+      const parentId = nodeData.id;
+      const parentType = nodeData.type as 'dept' | 'bot';
       
-      // 立即分配，不要延迟
-      assignAgent(draggingBot, deptId);
+      // 防止将员工拖到自己身上
+      if (parentType === 'bot' && parentId === draggingBot) {
+        toast.error('不能将员工分配到自己下面');
+        setDraggingBot(null);
+        setDragPosition(null);
+        setDropTarget(null);
+        return;
+      }
+      
+      assignAgent(draggingBot, parentId, parentType);
       toast.success('员工已分配');
     }
     
@@ -675,22 +756,21 @@ export function OrganizationView() {
   const handleCanvasDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     
-    // 使用 requestAnimationFrame 优化性能
-    requestAnimationFrame(() => {
-      setDragPosition({ x: e.clientX, y: e.clientY });
-    });
+    setDragPosition({ x: e.clientX, y: e.clientY });
     
     if (!draggingBot || !graphRef.current) return;
     
     const graph = graphRef.current;
     const p = graph.clientToLocal(e.clientX, e.clientY);
-    const deptNode = graph.getNodes().find((n) => {
+    const targetNode = graph.getNodes().find((n) => {
       const data = n.getData();
-      if (data?.type !== 'dept') return false;
+      if (data?.type !== 'dept' && data?.type !== 'bot') return false;
+      // 排除自己
+      if (data?.type === 'bot' && data?.id === draggingBot) return false;
       return n.getBBox().containsPoint(p);
     });
     
-    const newTarget = deptNode ? deptNode.getData().id : null;
+    const newTarget = targetNode ? targetNode.getData().id : null;
     
     // 只在目标改变时更新状态，减少重渲染
     if (dropTarget !== newTarget) {
@@ -704,7 +784,7 @@ export function OrganizationView() {
       <motion.div
         initial={{ opacity: 0, x: -20 }}
         animate={{ opacity: 1, x: 0 }}
-        className="w-96 flex flex-col gap-6"
+        className="w-72 flex flex-col gap-6"
       >
         {/* 部门管理 */}
         <div className="rounded-2xl bg-black/[0.02] dark:bg-white/[0.02] border border-black/5 dark:border-white/5 p-5">
@@ -718,17 +798,40 @@ export function OrganizationView() {
               value={newDeptName}
               onChange={(e) => setNewDeptName(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleAddDepartment()}
-              placeholder={selectedDept ? '添加子部门' : '添加根部门'}
+              placeholder={
+                selectedDept 
+                  ? (agents.some((a) => a.id === selectedDept) 
+                      ? '添加子部门到员工' 
+                      : '添加子部门')
+                  : '添加根部门'
+              }
               className="h-10 text-[13px] rounded-xl"
             />
-            <Button
-              onClick={handleAddDepartment}
-              disabled={!newDeptName.trim()}
-              className="w-full h-10 text-[13px] font-medium rounded-xl"
-            >
-              <Plus className="w-4 h-4 mr-2" />
-              添加{selectedDept ? '子' : '根'}部门
-            </Button>
+            <div className="flex gap-2">
+              <Button
+                onClick={handleAddDepartment}
+                disabled={!newDeptName.trim()}
+                className="flex-1 h-10 text-[13px] font-medium rounded-xl"
+              >
+                <Plus className="w-4 h-4 mr-2" />
+                添加{selectedDept ? '子' : '根'}部门
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  hasInitialLayoutRef.current = false;
+                  renderGraph();
+                  toast.success('布局已重置');
+                }}
+                className="h-10 text-[13px] font-medium rounded-xl px-3"
+                title="重置布局"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4">
+                  <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"></path>
+                  <path d="M21 3v5h-5"></path>
+                </svg>
+              </Button>
+            </div>
           </div>
           
           <AnimatePresence>
@@ -740,30 +843,38 @@ export function OrganizationView() {
                 className="mt-4 pt-4 border-t border-black/5 dark:border-white/5"
               >
                 <div className="text-[13px] text-muted-foreground mb-3">
-                  当前选中: {departments.find((d) => d.id === selectedDept)?.name}
+                  当前选中: {
+                    departments.find((d) => d.id === selectedDept)?.name || 
+                    agents.find((a) => a.id === selectedDept)?.name ||
+                    '未知节点'
+                  }
                 </div>
                 <div className="flex gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      const dept = departments.find((d) => d.id === selectedDept);
-                      if (dept) setEditingDept({ id: dept.id, name: dept.name });
-                    }}
-                    className="flex-1 h-9 text-[13px] rounded-xl"
-                  >
-                    <Edit2 className="w-3.5 h-3.5 mr-1.5" />
-                    重命名
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => handleDeleteDepartment(selectedDept)}
-                    className="flex-1 h-9 text-[13px] rounded-xl text-destructive hover:text-destructive"
-                  >
-                    <Trash2 className="w-3.5 h-3.5 mr-1.5" />
-                    删除
-                  </Button>
+                  {departments.find((d) => d.id === selectedDept) && (
+                    <>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          const dept = departments.find((d) => d.id === selectedDept);
+                          if (dept) setEditingDept({ id: dept.id, name: dept.name });
+                        }}
+                        className="flex-1 h-9 text-[13px] rounded-xl"
+                      >
+                        <Edit2 className="w-3.5 h-3.5 mr-1.5" />
+                        重命名
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleDeleteDepartment(selectedDept)}
+                        className="flex-1 h-9 text-[13px] rounded-xl text-destructive hover:text-destructive"
+                      >
+                        <Trash2 className="w-3.5 h-3.5 mr-1.5" />
+                        删除
+                      </Button>
+                    </>
+                  )}
                 </div>
               </motion.div>
             )}
@@ -771,15 +882,15 @@ export function OrganizationView() {
         </div>
         
         {/* 未分配员工 */}
-        <div className="flex-1 rounded-2xl bg-black/[0.02] dark:bg-white/[0.02] border border-black/5 dark:border-white/5 p-5 overflow-hidden flex flex-col">
-          <div className="flex items-center gap-2 mb-4">
+        <div className="flex-1 rounded-2xl bg-black/[0.02] dark:bg-white/[0.02] border border-black/5 dark:border-white/5 p-5 overflow-hidden flex flex-col min-h-0">
+          <div className="flex items-center gap-2 mb-4 shrink-0">
             <Users className="w-5 h-5 text-green-600 dark:text-green-400" />
             <h3 className="text-[15px] font-semibold text-foreground">
               员工列表
             </h3>
           </div>
           
-          <div className="flex-1 overflow-y-auto -mr-2 pr-2 space-y-3">
+          <div className="flex-1 overflow-y-auto -mr-2 pr-2 space-y-3 min-h-0">
             {/* 未分配员工 */}
             {unassignedAgents.length > 0 && (
               <div>
@@ -798,9 +909,9 @@ export function OrganizationView() {
                         onDragStart={(e) => handleDragStart(e, agent.id)}
                         onDragEnd={handleDragEnd}
                         className={cn(
-                          'p-3 rounded-xl border cursor-grab active:cursor-grabbing transition-all',
-                          'bg-white dark:bg-gray-800 border-black/10 dark:border-white/10',
-                          'hover:border-blue-500/50 hover:shadow-md',
+                          'group p-3 rounded-xl border cursor-grab active:cursor-grabbing transition-all',
+                          'bg-[#f8f6f0] dark:bg-white/[0.02] border-black/5 dark:border-white/5',
+                          'hover:border-primary/40 hover:bg-[#f3f1e9] dark:hover:bg-white/[0.06] hover:shadow-md',
                           draggingBot === agent.id && 'opacity-30'
                         )}
                       >
@@ -818,6 +929,16 @@ export function OrganizationView() {
                               {agent.id.slice(0, 12)}
                             </div>
                           </div>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleChatWithAgent(agent.id);
+                            }}
+                            className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg hover:bg-primary/10 text-primary transition-all"
+                            title="开始对话"
+                          >
+                            <MessageCircle className="w-4 h-4" />
+                          </button>
                         </div>
                       </motion.div>
                     ))}
@@ -855,8 +976,8 @@ export function OrganizationView() {
                             onDragEnd={handleDragEnd}
                             className={cn(
                               'p-3 rounded-xl border cursor-grab active:cursor-grabbing transition-all',
-                              'bg-white dark:bg-gray-800 border-black/10 dark:border-white/10',
-                              'hover:border-blue-500/50 hover:shadow-lg',
+                              'bg-[#f8f6f0] dark:bg-white/[0.02] border-black/5 dark:border-white/5',
+                              'hover:border-primary/40 hover:bg-[#f3f1e9] dark:hover:bg-white/[0.06] hover:shadow-lg',
                               draggingBot === agent.id && 'opacity-30 scale-95'
                             )}
                           >
@@ -872,6 +993,16 @@ export function OrganizationView() {
                                   {agent.id.slice(0, 12)}
                                 </div>
                               </div>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleChatWithAgent(agent.id);
+                                }}
+                                className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg hover:bg-primary/10 text-primary transition-all"
+                                title="开始对话"
+                              >
+                                <MessageCircle className="w-4 h-4" />
+                              </button>
                               <button
                                 onClick={() => handleUnassignAgent(agent.id)}
                                 className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg hover:bg-red-500/10 text-red-500 transition-all"
@@ -900,9 +1031,10 @@ export function OrganizationView() {
             )}
           </div>
           
-          <div className="mt-4 pt-4 border-t border-black/5 dark:border-white/5 text-[11px] text-muted-foreground space-y-1">
-            <div>💡 拖拽员工到画布中的部门节点</div>
+          <div className="mt-4 pt-4 border-t border-black/5 dark:border-white/5 text-[11px] text-muted-foreground space-y-1 shrink-0">
+            <div>💡 拖拽员工到部门或其他员工节点</div>
             <div>❌ 点击 X 按钮移除分配</div>
+            <div>🖱 右键节点查看更多操作</div>
           </div>
         </div>
       </motion.div>
@@ -914,6 +1046,15 @@ export function OrganizationView() {
         className="flex-1 rounded-2xl overflow-hidden relative bg-[#f8f6f0] dark:bg-gray-900 border border-black/5 dark:border-white/5"
         onDrop={handleCanvasDrop}
         onDragOver={handleCanvasDragOver}
+        onDragEnd={handleDragEnd}
+        onDragEnter={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        }}
+        onDragLeave={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        }}
       >
         <div ref={containerRef} className="w-full h-full relative z-0" />
         
@@ -964,7 +1105,7 @@ export function OrganizationView() {
               >
                 👆
               </motion.span>
-              拖动到部门节点上释放
+              拖动到部门或员工节点上释放
             </motion.div>
           )}
         </AnimatePresence>
@@ -1105,10 +1246,13 @@ export function OrganizationView() {
             onClick={(e) => e.stopPropagation()}
           >
             <button
-              onClick={() => {
-                const dept = departments.find((d) => d.id === contextMenu.deptId);
-                if (dept) setEditingDept({ id: dept.id, name: dept.name });
+              onClick={(e) => {
+                e.stopPropagation();
                 setContextMenu(null);
+                setTimeout(() => {
+                  const dept = departments.find((d) => d.id === contextMenu.deptId);
+                  if (dept) setEditingDept({ id: dept.id, name: dept.name });
+                }, 0);
               }}
               className="w-full px-4 py-2.5 text-left text-[13px] text-foreground hover:bg-black/5 dark:hover:bg-white/5 transition-colors flex items-center gap-2"
             >
@@ -1116,9 +1260,13 @@ export function OrganizationView() {
               重命名
             </button>
             <button
-              onClick={() => {
-                setSelectedDept(contextMenu.deptId);
+              onClick={(e) => {
+                e.stopPropagation();
                 setContextMenu(null);
+                // 使用 setTimeout 确保菜单先关闭
+                setTimeout(() => {
+                  setSelectedDept(contextMenu.deptId);
+                }, 0);
               }}
               className="w-full px-4 py-2.5 text-left text-[13px] text-foreground hover:bg-black/5 dark:hover:bg-white/5 transition-colors flex items-center gap-2"
             >
@@ -1126,9 +1274,13 @@ export function OrganizationView() {
               添加子部门
             </button>
             <button
-              onClick={() => {
-                handleDeleteDepartment(contextMenu.deptId);
+              onClick={(e) => {
+                e.stopPropagation();
+                const deptId = contextMenu.deptId;
                 setContextMenu(null);
+                setTimeout(() => {
+                  handleDeleteDepartment(deptId);
+                }, 0);
               }}
               className="w-full px-4 py-2.5 text-left text-[13px] text-destructive hover:bg-destructive/10 transition-colors flex items-center gap-2"
             >
@@ -1150,9 +1302,27 @@ export function OrganizationView() {
             onClick={(e) => e.stopPropagation()}
           >
             <button
-              onClick={() => {
-                handleUnassignAgent(botContextMenu.botId);
+              onClick={(e) => {
+                e.stopPropagation();
+                const botId = botContextMenu.botId;
                 setBotContextMenu(null);
+                setTimeout(() => {
+                  setSelectedDept(botId);
+                }, 0);
+              }}
+              className="w-full px-4 py-2.5 text-left text-[13px] text-foreground hover:bg-black/5 dark:hover:bg-white/5 transition-colors flex items-center gap-2"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              添加子部门
+            </button>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                const botId = botContextMenu.botId;
+                setBotContextMenu(null);
+                setTimeout(() => {
+                  handleUnassignAgent(botId);
+                }, 0);
               }}
               className="w-full px-4 py-2.5 text-left text-[13px] text-destructive hover:bg-destructive/10 transition-colors flex items-center gap-2"
             >

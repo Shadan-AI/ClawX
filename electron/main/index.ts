@@ -283,6 +283,11 @@ async function initialize(): Promise<void> {
     `Runtime: platform=${process.platform}/${process.arch}, electron=${process.versions.electron}, node=${process.versions.node}, packaged=${app.isPackaged}, pid=${process.pid}, ppid=${process.ppid}`
   );
 
+  // Run configuration migrations before anything else
+  // This ensures old users get updated default settings
+  const { runConfigMigrations } = await import('./utils/config-migration');
+  await runConfigMigrations();
+
   if (!isE2EMode) {
     // Warm up network optimization (non-blocking)
     void warmupNetworkOptimization();

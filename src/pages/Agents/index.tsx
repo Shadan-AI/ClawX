@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, Bot, Check, Plus, RefreshCw, Settings2, Trash2, X, Layout, Puzzle, Building2 } from 'lucide-react';
+import { AlertCircle, Bot, Check, Plus, RefreshCw, Settings2, Trash2, X, Layout, Puzzle, Building2, MessageCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -443,14 +444,6 @@ export function Agents() {
             员工列表
           </Button>
           <Button
-            variant={viewMode === 'skills' ? 'default' : 'outline'}
-            onClick={() => setViewMode('skills')}
-            className="h-10 text-sm font-medium rounded-full px-6"
-          >
-            <Puzzle className="h-4 w-4 mr-2" />
-            技能配置
-          </Button>
-          <Button
             variant={viewMode === 'organization' ? 'default' : 'outline'}
             onClick={() => setViewMode('organization')}
             className="h-10 text-sm font-medium rounded-full px-6"
@@ -458,9 +451,20 @@ export function Agents() {
             <Building2 className="h-4 w-4 mr-2" />
             组织架构
           </Button>
+          <Button
+            variant={viewMode === 'skills' ? 'default' : 'outline'}
+            onClick={() => setViewMode('skills')}
+            className="h-10 text-sm font-medium rounded-full px-6"
+          >
+            <Puzzle className="h-4 w-4 mr-2" />
+            技能配置
+          </Button>
         </div>
 
-        <div className="flex-1 min-h-0 overflow-y-auto pr-2 pb-10 -mr-2">
+        <div className={cn(
+          "flex-1 min-h-0 pr-2 -mr-2",
+          viewMode === 'organization' ? '' : 'overflow-y-auto pb-10'
+        )}>
           {!hasCompletedInitialLoad ? (
             <motion.div 
               initial={{ opacity: 0 }}
@@ -541,6 +545,7 @@ export function Agents() {
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -20 }}
                   transition={{ duration: 0.3, ease: 'easeInOut' }}
+                  className="h-full"
                 >
                   <OrganizationView />
                 </motion.div>
@@ -682,7 +687,13 @@ function AgentCard({
   onDigitalEmployeeClick?: (event: React.MouseEvent<HTMLDivElement>) => void;
 }) {
   const { t } = useTranslation('agents');
+  const navigate = useNavigate();
   const [isShaking, setIsShaking] = useState(false);
+  
+  const handleChatWithAgent = () => {
+    // 跳转到对话页面，并通过 state 传递需要创建新会话的 agentId
+    navigate('/', { state: { createNewSessionFor: agent.id } });
+  };
   
   const boundChannelAccounts = channelGroups.flatMap((group) =>
     group.accounts
@@ -792,6 +803,15 @@ function AgentCard({
       <div className="flex items-center gap-2 pt-3 border-t border-black/5 dark:border-white/5" onClick={(e) => e.stopPropagation()}>
         {agent.isDigitalEmployee ? (
           <>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="flex-1 h-8 text-[12px] rounded-full hover:bg-black/5 dark:hover:bg-white/10"
+              onClick={handleChatWithAgent}
+            >
+              <MessageCircle className="h-3.5 w-3.5 mr-1.5" />
+              对话
+            </Button>
             <Button
               variant="ghost"
               size="sm"

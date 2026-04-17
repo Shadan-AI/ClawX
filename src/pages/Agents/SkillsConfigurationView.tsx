@@ -511,20 +511,126 @@ export function SkillsConfigurationView({
   }
 
   return (
-    <div className="flex gap-6 h-full">
-      {/* 左侧：模板选择面板 */}
-      <div className="w-80 shrink-0 flex flex-col gap-4 overflow-y-auto pr-2 -mr-2">
-        <div className="p-5 rounded-2xl border border-black/5 dark:border-white/5 bg-[#f8f6f0] dark:bg-white/[0.02] sticky top-0">
-          <div className="flex items-center gap-2 mb-2">
-            <Sparkles className="h-5 w-5 text-primary" />
-            <h3 className="text-[17px] font-serif font-semibold text-foreground" style={{ fontFamily: 'Georgia, Cambria, "Times New Roman", Times, serif' }}>
-              岗位模板
-            </h3>
+    <div className="flex flex-col gap-5 h-full">
+      {/* 顶部：当前配置员工选择器 */}
+      <div className="shrink-0 p-5 rounded-xl border border-black/10 dark:border-white/10 bg-[#f3f1e9] dark:bg-white/[0.06] overflow-visible relative z-50">
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3 flex-1 overflow-visible">
+            <div className="h-11 w-11 shrink-0 flex items-center justify-center text-primary bg-primary/10 rounded-lg">
+              <Bot className="h-5 w-5" />
+            </div>
+            <div className="flex-1 relative overflow-visible" ref={dropdownRef}>
+              <p className="text-[11px] text-muted-foreground mb-1 font-medium uppercase tracking-wide">当前配置员工</p>
+              <button
+                onClick={() => setShowEmployeeDropdown(!showEmployeeDropdown)}
+                className="w-full text-left text-[16px] font-semibold bg-transparent border-none outline-none cursor-pointer text-foreground hover:text-primary transition-colors duration-150 flex items-center justify-between gap-2"
+              >
+                <span className="truncate">{selectedEmployee?.name || '选择员工'}</span>
+                <ChevronDown className={cn(
+                  "h-4 w-4 shrink-0 transition-transform duration-200 text-muted-foreground",
+                  showEmployeeDropdown && "rotate-180"
+                )} />
+              </button>
+              
+              {/* 下拉菜单 */}
+              <AnimatePresence>
+                {showEmployeeDropdown && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -10 }}
+                    transition={{ duration: 0.15, ease: 'easeOut' }}
+                    className="absolute top-full left-0 right-0 mt-2 bg-background border border-border rounded-lg shadow-lg overflow-hidden z-[100] max-h-64 overflow-y-auto"
+                  >
+                    {employees.map((emp, index) => {
+                      const empSkillsCount = (localSkills[emp.id] || []).length;
+                      return (
+                        <button
+                          key={emp.id}
+                          onClick={() => {
+                            setSelectedEmployeeId(emp.id);
+                            setShowEmployeeDropdown(false);
+                          }}
+                          className={cn(
+                            "w-full text-left px-3 py-2.5 text-[14px] transition-colors duration-100 flex items-center justify-between gap-2",
+                            selectedEmployeeId === emp.id
+                              ? "bg-primary/10 text-primary font-medium"
+                              : "text-foreground hover:bg-muted/50",
+                            index !== 0 && "border-t border-border/40"
+                          )}
+                        >
+                          <span className="truncate flex-1">{emp.name}</span>
+                          <span className="text-[11px] text-muted-foreground font-normal shrink-0">
+                            {empSkillsCount}
+                          </span>
+                          {selectedEmployeeId === emp.id && (
+                            <Check className="h-3.5 w-3.5 shrink-0" />
+                          )}
+                        </button>
+                      );
+                    })}
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
           </div>
-          <p className="text-[13px] text-muted-foreground">
-            选择模板快速配置技能
-          </p>
+          
+          <div className="flex items-center gap-2 shrink-0">
+            <AnimatePresence mode="wait">
+              {hasChanges && (
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.95 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.95 }}
+                  transition={{ duration: 0.15 }}
+                >
+                  <Button
+                    variant="outline"
+                    onClick={handleReset}
+                    disabled={saving}
+                    className="h-9 text-[13px] font-medium rounded-lg px-4"
+                  >
+                    重置
+                  </Button>
+                </motion.div>
+              )}
+            </AnimatePresence>
+            <Button
+              onClick={handleSave}
+              disabled={saving || !hasChanges}
+              className="h-9 text-[13px] font-medium rounded-lg px-5"
+            >
+              {saving ? (
+                <>
+                  <RefreshCw className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                  保存中...
+                </>
+              ) : (
+                '保存配置'
+              )}
+            </Button>
+          </div>
         </div>
+      </div>
+
+      {/* 底部：左右分栏 */}
+      <div className="flex gap-5 flex-1 min-h-0 relative z-10">
+        {/* 左侧：模板选择面板 */}
+      <div className="w-80 shrink-0 flex flex-col overflow-y-auto pr-2 -mr-2">
+        {/* 整个模板区域的大框 */}
+        <div className="p-4 rounded-xl border border-black/10 dark:border-white/10 bg-[#f3f1e9] dark:bg-white/[0.06]">
+          {/* 标题 */}
+          <div className="mb-4 pb-3 border-b border-black/10 dark:border-white/10">
+            <div className="flex items-center gap-2 mb-1.5">
+              <Sparkles className="h-4 w-4 text-primary" />
+              <h3 className="text-[16px] font-bold text-foreground">
+                岗位模板
+              </h3>
+            </div>
+            <p className="text-[12px] text-muted-foreground leading-relaxed">
+              选择模板快速配置技能
+            </p>
+          </div>
           
         {/* 模板列表 */}
         {templatesLoading ? (
@@ -537,7 +643,7 @@ export function SkillsConfigurationView({
             <p className="text-[13px] text-muted-foreground">暂无可用模板</p>
           </div>
         ) : (
-          <div className="space-y-3">
+          <div className="space-y-2.5">
             {templates.map((template) => {
               // 检查当前员工是否使用了这个模板
               const { agentTemplates } = useAgentsStore.getState();
@@ -582,53 +688,56 @@ export function SkillsConfigurationView({
                   onClick={() => handleApplyTemplate(template)}
                   disabled={applyingTemplate || !selectedEmployeeId || allSkillsMissing}
                   className={cn(
-                    'w-full text-left p-4 rounded-xl border transition-all duration-100',
+                    'w-full text-left p-3.5 rounded-lg border transition-all duration-200',
                     isCurrentTemplate
-                      ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/20 ring-2 ring-blue-500/20'
+                      ? 'border-primary bg-primary/5 shadow-sm'
                       : allSkillsMissing
-                      ? 'border-red-200 dark:border-red-900 bg-red-50 dark:bg-red-950/20 opacity-60 cursor-not-allowed'
-                      : 'border-black/10 dark:border-white/10 bg-[#f8f6f0] dark:bg-muted hover:border-blue-300 hover:bg-[#f3f1e9] dark:hover:bg-muted/80',
+                      ? 'border-black/5 dark:border-white/5 bg-black/5 dark:bg-white/[0.02] opacity-60 cursor-not-allowed'
+                      : 'border-black/5 dark:border-white/5 bg-[#f8f6f0] dark:bg-white/[0.02] hover:border-primary/50 hover:bg-[#f3f1e9] dark:hover:bg-white/[0.06]',
                     !selectedEmployeeId && 'opacity-50 cursor-not-allowed'
                   )}
                 >
-                  <div className="flex items-start gap-3">
+                  <div className="flex items-start gap-2.5">
                     {/* 图标 */}
-                    <div className="text-3xl shrink-0">{template.icon}</div>
+                    <div className="text-2xl shrink-0">{template.icon}</div>
 
                     {/* 内容 */}
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-1">
-                        <h4 className="font-semibold text-[15px] text-foreground">
+                        <h4 className="font-semibold text-[14px] text-foreground">
                           {template.nameZh}
                         </h4>
                         {isCurrentTemplate && (
-                          <Badge variant="default" className="text-[10px] px-1.5 py-0.5 bg-blue-500">
+                          <Badge variant="default" className="text-[10px] px-1.5 py-0">
                             使用中
                           </Badge>
                         )}
                         {template.recommended && !allSkillsMissing && !isCurrentTemplate && (
-                          <Badge variant="secondary" className="text-[10px] px-1.5 py-0.5">
+                          <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
                             推荐
                           </Badge>
                         )}
                       </div>
-                      <p className="text-[12px] text-muted-foreground mb-2.5 line-clamp-2 leading-relaxed">
+                      <p className="text-[11px] text-muted-foreground mb-2 line-clamp-2 leading-relaxed">
                         {template.descriptionZh || template.description}
                       </p>
                       
                       {/* 技能统计 */}
                       {allSkillsMissing ? (
-                        <div className="text-[11px] font-medium text-red-600 dark:text-red-400">
-                          ⚠️ 所有技能不可用
+                        <div className="flex items-center gap-1.5 text-[11px] font-medium text-destructive bg-destructive/10 px-2 py-1 rounded-md w-fit">
+                          <span>⚠️</span>
+                          <span>所有技能不可用</span>
                         </div>
                       ) : (
                         <div className="flex items-center gap-2 text-[11px] font-medium">
-                          <span className="text-green-600 dark:text-green-400">
-                            ✓ {availableSkills.length} 可用
+                          <span className="flex items-center gap-1 text-green-600 dark:text-green-400 bg-green-500/10 px-2 py-1 rounded-md">
+                            <span>✓</span>
+                            <span>{availableSkills.length} 可用</span>
                           </span>
                           {missingSkills.length > 0 && (
-                            <span className="text-orange-600 dark:text-orange-400">
-                              • {missingSkills.length} 需安装
+                            <span className="flex items-center gap-1 text-orange-600 dark:text-orange-400 bg-orange-500/10 px-2 py-1 rounded-md">
+                              <span>•</span>
+                              <span>{missingSkills.length} 需安装</span>
                             </span>
                           )}
                         </div>
@@ -637,7 +746,7 @@ export function SkillsConfigurationView({
                   </div>
                   
                   {applyingTemplate && isCurrentTemplate && (
-                    <div className="mt-3 flex items-center gap-2 text-[12px] text-blue-600 dark:text-blue-400 font-medium">
+                    <div className="mt-3 pt-3 border-t border-border/50 flex items-center gap-2 text-[12px] text-primary font-medium">
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />
                       <span>应用中...</span>
                     </div>
@@ -647,130 +756,25 @@ export function SkillsConfigurationView({
             })}
           </div>
         )}
+        </div>
       </div>
 
-      {/* 右侧：技能配置区域 */}
+      {/* 右侧：已选技能 */}
       <div className="flex-1 min-w-0 space-y-6 overflow-y-auto pr-2 -mr-2">
-      {/* 员工选择器 + 已选技能 - 合并卡片 */}
-      <div
-        className={cn(
-          'p-6 rounded-2xl border transition-all duration-200',
-          isDropZoneActive
-            ? 'border-primary/50 bg-primary/5 shadow-lg'
-            : 'border-black/5 dark:border-white/5 bg-black/[0.02] dark:bg-white/[0.02]'
-        )}
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-      >
-        {/* 顶部：员工选择器 */}
-        <div className="flex items-center gap-4 mb-6">
-          <div className="flex items-center gap-3 flex-1">
-            <div className="h-12 w-12 shrink-0 flex items-center justify-center text-primary bg-primary/10 rounded-full shadow-sm">
-              <Bot className="h-6 w-6" />
-            </div>
-            <div className="flex-1 relative" ref={dropdownRef}>
-              <p className="text-[11px] text-muted-foreground mb-1.5 font-medium uppercase tracking-wider">当前配置员工</p>
-              <button
-                onClick={() => setShowEmployeeDropdown(!showEmployeeDropdown)}
-                className="w-full text-left text-[17px] font-serif font-semibold bg-transparent border-none outline-none cursor-pointer text-foreground hover:text-primary transition-colors duration-150 flex items-center justify-between gap-2"
-                style={{ fontFamily: 'Georgia, Cambria, "Times New Roman", Times, serif' }}
-              >
-                <span className="truncate">{selectedEmployee?.name || '选择员工'}</span>
-                <ChevronDown className={cn(
-                  "h-4 w-4 shrink-0 transition-transform duration-200",
-                  showEmployeeDropdown && "rotate-180"
-                )} />
-              </button>
-              
-              {/* 自定义下拉菜单 */}
-              <AnimatePresence>
-                {showEmployeeDropdown && (
-                  <motion.div
-                    initial={{ opacity: 0, scale: 0.95, y: -5 }}
-                    animate={{ opacity: 1, scale: 1, y: 0 }}
-                    exit={{ opacity: 0, scale: 0.95, y: -5 }}
-                    transition={{ duration: 0.12, ease: 'easeOut' }}
-                    className="absolute top-full left-0 right-0 mt-2 bg-[#f3f1e9] dark:bg-gray-800 border border-black/10 dark:border-white/10 rounded-xl shadow-xl overflow-hidden z-10 max-h-64 overflow-y-auto"
-                  >
-                    {employees.map((emp, index) => {
-                      const empSkillsCount = (localSkills[emp.id] || []).length;
-                      return (
-                        <button
-                          key={emp.id}
-                          onClick={() => {
-                            setSelectedEmployeeId(emp.id);
-                            setShowEmployeeDropdown(false);
-                          }}
-                          className={cn(
-                            "w-full text-left px-4 py-3 text-[15px] transition-colors duration-100 flex items-center justify-between gap-2",
-                            selectedEmployeeId === emp.id
-                              ? "bg-primary/10 text-primary font-semibold"
-                              : "text-foreground hover:bg-black/5 dark:hover:bg-white/5",
-                            index !== 0 && "border-t border-black/5 dark:border-white/5"
-                          )}
-                        >
-                          <span className="truncate flex-1">{emp.name}</span>
-                          <span className="text-[12px] text-muted-foreground font-normal shrink-0">
-                            ({empSkillsCount})
-                          </span>
-                          {selectedEmployeeId === emp.id && (
-                            <Check className="h-4 w-4 shrink-0" />
-                          )}
-                        </button>
-                      );
-                    })}
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </div>
-          </div>
-          
-          <div className="flex items-center gap-2 shrink-0">
-            <AnimatePresence mode="wait">
-              {hasChanges && (
-                <motion.div
-                  initial={{ opacity: 0, scale: 0.95 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.95 }}
-                  transition={{ duration: 0.15 }}
-                >
-                  <Button
-                    variant="outline"
-                    onClick={handleReset}
-                    disabled={saving}
-                    className="h-9 text-[13px] font-medium rounded-full px-4 border-black/10 dark:border-white/10 bg-transparent hover:bg-black/5 dark:hover:bg-white/5 shadow-none"
-                  >
-                    重置
-                  </Button>
-                </motion.div>
-              )}
-            </AnimatePresence>
-            <Button
-              onClick={handleSave}
-              disabled={saving || !hasChanges}
-              className="h-9 text-[13px] font-medium rounded-full px-5 shadow-none"
-            >
-              {saving ? (
-                <>
-                  <RefreshCw className="h-3.5 w-3.5 mr-1.5 animate-spin" />
-                  保存中...
-                </>
-              ) : (
-                '保存配置'
-              )}
-            </Button>
-          </div>
-        </div>
-
-        {/* 已选技能区域 */}
-        <motion.div 
-          layout
-          transition={{ type: 'spring', stiffness: 400, damping: 30 }}
-          className="p-5 rounded-xl bg-[#f8f6f0] dark:bg-white/[0.02] border border-black/5 dark:border-white/5"
+        {/* 已选技能区域 - 第二层容器 */}
+        <div
+          className={cn(
+            'p-6 rounded-2xl border transition-all duration-200',
+            isDropZoneActive
+              ? 'border-primary bg-primary/5 shadow-lg shadow-primary/10'
+              : 'border-black/10 dark:border-white/10 bg-[#f3f1e9] dark:bg-white/[0.06]'
+          )}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
         >
           <div className="flex items-center justify-between mb-4">
-            <p className="text-[13px] font-semibold text-foreground flex items-center gap-2">
+            <p className="text-[15px] font-semibold text-foreground flex items-center gap-2">
               <Puzzle className="h-4 w-4" />
               已选技能
             </p>
@@ -824,7 +828,7 @@ export function SkillsConfigurationView({
                     <motion.button
                       key={skillId}
                       layout
-                      initial={{ opacity: 0, scale: 0.8, y: -10 }}
+                      initial={{ scale: 0.8, y: -10 }}
                       animate={{ opacity: 1, scale: 1, y: 0 }}
                       exit={{ opacity: 0, scale: 0.8, x: -20 }}
                       transition={{ 
@@ -834,22 +838,21 @@ export function SkillsConfigurationView({
                         mass: 0.8
                       }}
                       onClick={() => handleRemoveSkill(skillId)}
-                      className="group inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white dark:bg-white/[0.08] hover:bg-black/5 dark:hover:bg-white/[0.12] border border-black/10 dark:border-white/10 transition-all duration-200 text-[13px] font-medium shadow-sm hover:shadow-md"
+                      className="group inline-flex items-center gap-2 px-3.5 py-2.5 rounded-lg bg-primary/5 hover:bg-primary/8 border border-primary/20 hover:border-primary/30 transition-all duration-200 text-[13px] font-medium"
                     >
                       <span className="text-[16px]">{skill.icon || '🔧'}</span>
-                      <span className="text-foreground">{skill.name}</span>
+                      <span className="text-foreground/90 font-bold">{skill.name}</span>
                       {!skill.enabled && (
-                        <span className="text-[10px] text-orange-600 dark:text-orange-400">未启用</span>
+                        <span className="text-[10px] text-orange-600 dark:text-orange-400 font-semibold">未启用</span>
                       )}
-                      <X className="h-3.5 w-3.5 text-foreground/40 group-hover:text-foreground/70 transition-colors duration-200" />
+                      <X className="h-3.5 w-3.5 text-foreground/70 group-hover:text-foreground transition-colors duration-200" />
                     </motion.button>
                   );
                 })}
               </AnimatePresence>
             </motion.div>
           )}
-        </motion.div>
-      </div>
+        </div>
 
       {/* 搜索和筛选 */}
       <div className="space-y-3 px-0.5">
@@ -859,7 +862,7 @@ export function SkillsConfigurationView({
             placeholder="搜索技能..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="pl-11 pr-10 h-11 rounded-xl border-black/10 dark:border-white/10 bg-[#f8f6f0] dark:bg-muted focus:bg-background focus-visible:ring-2 focus-visible:ring-blue-500/50 focus-visible:ring-offset-0 focus-visible:border-blue-500 transition-colors duration-150 text-[13px]"
+            className="pl-11 pr-10 h-11 rounded-xl border-border bg-muted/50 focus:bg-background focus-visible:ring-2 focus-visible:ring-primary/50 focus-visible:ring-offset-0 focus-visible:border-primary transition-colors duration-150 text-[13px]"
           />
           <AnimatePresence>
             {searchQuery && (
@@ -904,7 +907,7 @@ export function SkillsConfigurationView({
                   'px-3.5 py-1.5 rounded-full text-[12px] font-medium transition-all duration-150 flex items-center gap-1.5 whitespace-nowrap',
                   selectedCategory === cat
                     ? 'bg-primary text-primary-foreground shadow-sm'
-                    : 'bg-[#f8f6f0] dark:bg-muted hover:bg-black/5 dark:hover:bg-muted/80 text-muted-foreground hover:text-foreground border border-black/5 dark:border-white/5'
+                    : 'bg-muted/50 hover:bg-accent text-muted-foreground hover:text-foreground border border-border'
                 )}
               >
                 <span>{categoryIcon}</span>
@@ -959,10 +962,10 @@ export function SkillsConfigurationView({
                       'group relative flex flex-col items-center gap-3 p-4 rounded-xl border text-center select-none',
                       'transition-all duration-200 ease-out',
                       isSelected
-                        ? 'border-primary bg-primary/5 shadow-sm'
+                        ? 'border-primary bg-primary/5'
                         : isDragging
-                        ? 'border-primary/30 bg-[#f8f6f0] dark:bg-white/[0.02] cursor-grabbing opacity-50'
-                        : 'border-black/10 dark:border-white/10 bg-[#f8f6f0] dark:bg-white/[0.02] hover:border-primary/30 hover:bg-white dark:hover:bg-white/5 cursor-grab hover:shadow-md'
+                        ? 'border-primary/30 bg-black/5 dark:bg-white/[0.02] cursor-grabbing opacity-50'
+                        : 'border-black/5 dark:border-white/5 bg-[#f8f6f0] dark:bg-white/[0.02] hover:border-primary/40 hover:bg-[#f3f1e9] dark:hover:bg-white/[0.06] cursor-grab'
                     )}
                   >
                     <div className="text-[32px] pointer-events-none">
@@ -998,6 +1001,7 @@ export function SkillsConfigurationView({
       </div>
 
       {/* Template Selection Dialog */}
+      </div>
       </div>
     </div>
   );
