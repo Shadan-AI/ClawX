@@ -285,7 +285,7 @@ async function initialize(): Promise<void> {
 
   // Run configuration migrations before anything else
   // This ensures old users get updated default settings
-  const { runConfigMigrations } = await import('./utils/config-migration');
+  const { runConfigMigrations } = await import('../utils/config-migration');
   await runConfigMigrations();
 
   if (!isE2EMode) {
