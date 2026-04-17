@@ -41,9 +41,14 @@ export function SkillsConfigurationView({
 
   // 获取本地已安装的技能和模板
   useEffect(() => {
-    void fetchSkills();
-    void fetchTemplates();
-  }, [fetchSkills, fetchTemplates]);
+    // 只在数据为空时才加载
+    if (allSkills.length === 0 && !skillsLoading) {
+      void fetchSkills();
+    }
+    if (templates.length === 0 && !templatesLoading) {
+      void fetchTemplates();
+    }
+  }, [fetchSkills, fetchTemplates, allSkills.length, skillsLoading, templates.length, templatesLoading]);
 
   // 搜索防抖
   useEffect(() => {
@@ -534,8 +539,10 @@ export function SkillsConfigurationView({
         ) : (
           <div className="space-y-3">
             {templates.map((template) => {
-              // TODO: 从后端获取员工的 template_id，目前暂时禁用"使用中"标记
-              const isCurrentTemplate = false;
+              // 检查当前员工是否使用了这个模板
+              const { agentTemplates } = useAgentsStore.getState();
+              const currentTemplateId = selectedEmployeeId ? agentTemplates[selectedEmployeeId] : undefined;
+              const isCurrentTemplate = currentTemplateId === template.id;
               
               const enabledSkillIds = allSkills.filter(s => s.enabled).map(s => s.id);
               const installedSkillSlugs = allSkills.map(s => s.slug || s.id);
@@ -798,16 +805,17 @@ export function SkillsConfigurationView({
             >
               <AnimatePresence mode="popLayout">
                 {currentSkills.map((skillId) => {
-                  // 尝试通过 ID 或 slug 查找技能
-                  const skill = enabledSkills.find((s) => s.id === skillId || (s.slug || s.id) === skillId);
+                  // 尝试通过 ID 或 slug 查找技能（在所有技能中查找，不仅限于已启用的）
+                  const skill = allSkills.find((s) => s.id === skillId || (s.slug || s.id) === skillId);
                   
                   if (!skill) {
                     console.warn('[SkillsConfigurationView] Skill not found:', {
                       skillId,
                       skillIdType: typeof skillId,
+                      allSkillsCount: allSkills.length,
                       enabledSkillsCount: enabledSkills.length,
-                      firstEnabledSkill: enabledSkills[0],
-                      allEnabledSkillIds: enabledSkills.slice(0, 3).map(s => ({ id: s.id, slug: s.slug })),
+                      firstSkill: allSkills[0],
+                      sampleSkillIds: allSkills.slice(0, 3).map(s => ({ id: s.id, slug: s.slug })),
                     });
                     return null;
                   }
@@ -830,6 +838,9 @@ export function SkillsConfigurationView({
                     >
                       <span className="text-[16px]">{skill.icon || '🔧'}</span>
                       <span className="text-foreground">{skill.name}</span>
+                      {!skill.enabled && (
+                        <span className="text-[10px] text-orange-600 dark:text-orange-400">未启用</span>
+                      )}
                       <X className="h-3.5 w-3.5 text-foreground/40 group-hover:text-foreground/70 transition-colors duration-200" />
                     </motion.button>
                   );

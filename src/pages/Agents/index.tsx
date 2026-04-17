@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, Bot, Check, Plus, RefreshCw, Settings2, Trash2, X, Layout, Puzzle, Building2 } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -143,29 +144,36 @@ export function Agents() {
   useEffect(() => {
     let mounted = true;
     
-    // 使用 Promise.allSettled 而不是 Promise.all，这样即使某个失败也不影响其他
-    void Promise.allSettled([
-      fetchAgents(), 
-      fetchChannelAccounts(), 
-      refreshProviderSnapshot(),
-      fetchDigitalEmployees(),
-      fetchTemplates(),
-      fetchSkills()
-    ]).then((results) => {
-      // 记录哪些失败了
-      results.forEach((result, index) => {
-        const names = ['fetchAgents', 'fetchChannelAccounts', 'refreshProviderSnapshot', 'fetchDigitalEmployees', 'fetchTemplates', 'fetchSkills'];
-        if (result.status === 'rejected') {
-          console.error(`[Agents/init] ${names[index]} failed:`, result.reason);
-        } else {
-          console.log(`[Agents/init] ${names[index]} succeeded`);
+    // 分阶段加载：先加载基础数据，再加载 agents
+    const loadData = async () => {
+      try {
+        // 第一阶段：并行加载基础数据（模板、技能、数字员工）
+        await Promise.allSettled([
+          fetchDigitalEmployees(),
+          fetchTemplates(),
+          fetchSkills(),
+          refreshProviderSnapshot(),
+        ]);
+        
+        console.log('[Agents/init] Phase 1 completed: templates, skills, employees loaded');
+        
+        // 第二阶段：加载 agents 和 channels（此时 agentTemplates 已经有数据了）
+        await Promise.allSettled([
+          fetchAgents(),
+          fetchChannelAccounts(),
+        ]);
+        
+        console.log('[Agents/init] Phase 2 completed: agents and channels loaded');
+      } catch (error) {
+        console.error('[Agents/init] Load error:', error);
+      } finally {
+        if (mounted) {
+          setHasCompletedInitialLoad(true);
         }
-      });
-    }).finally(() => {
-      if (mounted) {
-        setHasCompletedInitialLoad(true);
       }
-    });
+    };
+    
+    void loadData();
     
     return () => {
       mounted = false;
@@ -453,46 +461,91 @@ export function Agents() {
         </div>
 
         <div className="flex-1 min-h-0 overflow-y-auto pr-2 pb-10 -mr-2">
-          {viewMode === 'list' ? (
-            <>
-              {gatewayStatus.state !== 'running' && (
-                <div className="mb-8 p-4 rounded-xl border border-yellow-500/50 bg-yellow-500/10 flex items-center gap-3">
-                  <AlertCircle className="h-5 w-5 text-yellow-600 dark:text-yellow-400" />
-                  <span className="text-yellow-700 dark:text-yellow-400 text-sm font-medium">
-                    {t('gatewayWarning')}
-                  </span>
+          {!hasCompletedInitialLoad ? (
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="flex flex-col items-center justify-center h-full min-h-[400px]"
+            >
+              <div className="relative">
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <div className="w-20 h-20 border-4 border-primary/20 rounded-full"></div>
                 </div>
-              )}
-
-              {error && (
-                <div className="mb-8 p-4 rounded-xl border border-destructive/50 bg-destructive/10 flex items-center gap-3">
-                  <AlertCircle className="h-5 w-5 text-destructive" />
-                  <span className="text-destructive text-sm font-medium">
-                    {error}
-                  </span>
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <div className="w-20 h-20 border-4 border-primary border-t-transparent rounded-full animate-spin"></div>
                 </div>
-              )}
-
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                {visibleAgents.map((agent) => (
-                  <AgentCard
-                    key={agent.id}
-                    agent={agent}
-                    channelGroups={visibleChannelGroups}
-                    onOpenSettings={() => setActiveAgentId(agent.id)}
-                    onDelete={() => setAgentToDelete(agent)}
-                    onDigitalEmployeeClick={handleDigitalEmployeeClick}
-                  />
-                ))}
+                <Bot className="relative h-10 w-10 text-primary mt-5 ml-5" />
               </div>
-            </>
-          ) : viewMode === 'skills' ? (
-            <SkillsConfigurationView
-              employees={visibleAgents}
-              onRefresh={handleRefresh}
-            />
+              <p className="mt-8 text-sm text-muted-foreground font-medium">加载数字员工中...</p>
+              <p className="mt-2 text-xs text-muted-foreground">正在同步模板和技能配置</p>
+            </motion.div>
           ) : (
-            <OrganizationView />
+            <AnimatePresence mode="wait">
+              {viewMode === 'list' ? (
+                <motion.div
+                  key="list"
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -20 }}
+                  transition={{ duration: 0.3, ease: 'easeInOut' }}
+                >
+                  {gatewayStatus.state !== 'running' && (
+                    <div className="mb-8 p-4 rounded-xl border border-yellow-500/50 bg-yellow-500/10 flex items-center gap-3">
+                      <AlertCircle className="h-5 w-5 text-yellow-600 dark:text-yellow-400" />
+                      <span className="text-yellow-700 dark:text-yellow-400 text-sm font-medium">
+                        {t('gatewayWarning')}
+                      </span>
+                    </div>
+                  )}
+
+                  {error && (
+                    <div className="mb-8 p-4 rounded-xl border border-destructive/50 bg-destructive/10 flex items-center gap-3">
+                      <AlertCircle className="h-5 w-5 text-destructive" />
+                      <span className="text-destructive text-sm font-medium">
+                        {error}
+                      </span>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                    {visibleAgents.map((agent) => (
+                      <AgentCard
+                        key={agent.id}
+                        agent={agent}
+                        channelGroups={visibleChannelGroups}
+                        onOpenSettings={() => setActiveAgentId(agent.id)}
+                        onDelete={() => setAgentToDelete(agent)}
+                        onDigitalEmployeeClick={handleDigitalEmployeeClick}
+                      />
+                    ))}
+                  </div>
+                </motion.div>
+              ) : viewMode === 'skills' ? (
+                <motion.div
+                  key="skills"
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -20 }}
+                  transition={{ duration: 0.3, ease: 'easeInOut' }}
+                >
+                  <SkillsConfigurationView
+                    employees={visibleAgents}
+                    onRefresh={handleRefresh}
+                  />
+                </motion.div>
+              ) : (
+                <motion.div
+                  key="organization"
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -20 }}
+                  transition={{ duration: 0.3, ease: 'easeInOut' }}
+                >
+                  <OrganizationView />
+                </motion.div>
+              )}
+            </AnimatePresence>
           )}
         </div>
       </div>

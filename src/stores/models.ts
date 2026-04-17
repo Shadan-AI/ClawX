@@ -493,6 +493,10 @@ export const useModelsStore = create<ModelState>((set, get) => ({
       
       const result = await response.json();
       console.log('[models] Template update response:', result);
+      
+      if (result.code !== 200) {
+        throw new Error(result.message || '更新模板失败');
+      }
     } catch (err) {
       console.error('[models] Failed to update employee template:', err);
       throw err;

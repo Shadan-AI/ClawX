@@ -180,6 +180,7 @@ export interface BotInfo {
   model?: string;
   deviceNodeId?: string;
   skills?: string[];
+  templateId?: number | null; // 添加 templateId 字段
 }
 
 export interface BoxImSyncResult {
@@ -323,6 +324,7 @@ export async function fetchBotsFromApi(apiUrl: string, tokenKey: string): Promis
     model: b.model ?? undefined,
     deviceNodeId: b.deviceNodeId ?? b.nodeId ?? undefined,
     skills: b.skills ? (typeof b.skills === 'string' ? JSON.parse(b.skills) : b.skills) : undefined,
+    templateId: b.templateId ?? null, // 添加 templateId
   }));
 }
 

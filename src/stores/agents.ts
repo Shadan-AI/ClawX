@@ -61,7 +61,7 @@ export const useAgentsStore = create<AgentsState>((set, get) => ({
   channelOwners: {},
   channelAccountOwners: {},
   agentSkills: {},
-  agentTemplates: loadAgentTemplates(), // 从 localStorage 加载
+  agentTemplates: {}, // 初始为空，从数据库加载
   loading: false,
   error: null,
 
@@ -257,16 +257,14 @@ export const useAgentsStore = create<AgentsState>((set, get) => ({
     console.log('[agents] updateAgentTemplate called:', { agentId, templateId });
     
     // 更新本地状态
-    set((state) => {
-      const newTemplates = {
+    set((state) => ({
+      agentTemplates: {
         ...state.agentTemplates,
         [agentId]: templateId,
-      };
-      saveAgentTemplates(newTemplates);
-      return { agentTemplates: newTemplates };
-    });
+      },
+    }));
     
-    // 尝试同步到数据库（如果有对应的 Box-IM 数字员工）
+    // 同步到数据库（如果有对应的 Box-IM 数字员工）
     try {
       const { useModelsStore } = await import('./models');
       const digitalEmployees = useModelsStore.getState().digitalEmployees;
@@ -281,9 +279,12 @@ export const useAgentsStore = create<AgentsState>((set, get) => ({
         console.log('[agents] Syncing template to database...');
         await useModelsStore.getState().updateEmployeeTemplate(employee.id, templateId);
         console.log('[agents] Template synced to database');
+      } else {
+        console.warn('[agents] No matching Box-IM employee found for agentId:', agentId);
       }
     } catch (dbError) {
-      console.warn('[agents] Failed to sync template to database:', dbError);
+      console.error('[agents] Failed to sync template to database:', dbError);
+      throw dbError; // 抛出错误，让调用者知道同步失败
     }
   },
 
