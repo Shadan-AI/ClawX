@@ -185,7 +185,7 @@ export const useModelsStore = create<ModelState>((set, get) => ({
       if (employee?.model) modelId = employee.model;
     }
     if (!modelId) {
-      modelId = models.find(m => m.id === 'glm-5')?.id || models[0]?.id;
+      modelId = models.find(m => m.id === 'step-3.5-flash')?.id || models[0]?.id;
     }
 
     if (modelId && models.some(m => m.id === modelId)) {
