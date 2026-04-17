@@ -96,8 +96,8 @@ importers:
         specifier: ^1.2.8
         version: 1.2.8(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@shadanai/openclaw':
-        specifier: 2026.4.7-1
-        version: 2026.4.7-1(@napi-rs/canvas@0.1.97)(encoding@0.1.13)
+        specifier: 2026.4.11
+        version: 2026.4.11(@napi-rs/canvas@0.1.97)(encoding@0.1.13)
       '@soimy/dingtalk':
         specifier: ^3.5.1
         version: 3.5.1(openclaw@2026.4.1(@napi-rs/canvas@0.1.97)(encoding@0.1.13))
@@ -867,15 +867,6 @@ packages:
 
   '@floating-ui/utils@0.2.11':
     resolution: {integrity: sha512-RiB/yIh78pcIxl6lLMG0CgBXAZ2Y0eVHqMPYugu+9U0AeT6YBeiJpf7lbdJNIugFP5SIjwNRgo4DhR1Qxi26Gg==}
-
-  '@google/genai@1.49.0':
-    resolution: {integrity: sha512-hO69Zl0H3x+L0KL4stl1pLYgnqnwHoLqtKy6MRlNnW8TAxjqMdOUVafomKd4z1BePkzoxJWbYILny9a2Zk43VQ==}
-    engines: {node: '>=20.0.0'}
-    peerDependencies:
-      '@modelcontextprotocol/sdk': ^1.25.2
-    peerDependenciesMeta:
-      '@modelcontextprotocol/sdk':
-        optional: true
 
   '@google/genai@1.50.1':
     resolution: {integrity: sha512-YbkX7H9+1Pt8wOt7DDREy8XSoiL6fRDzZQRyaVBarFf8MR3zHGqVdvM4cLbDXqPhxqvegZShgfxb8kw9C7YhAQ==}
@@ -2112,8 +2103,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@shadanai/openclaw@2026.4.7-1':
-    resolution: {integrity: sha512-r/e6RuvaeKAWkcXKrz+5+bc7srT9OeGpYjkQSHF3yFYrOToCSCWDMot1vJernDlkUiGTve0AZkEBXWgKoLnH6Q==}
+  '@shadanai/openclaw@2026.4.11':
+    resolution: {integrity: sha512-wE9scnn7FEgCFQrgqSIh3WoS/kqrLRB26m1kA76gwV7KpFQqTFRcFo1/XALXAgHHqJZFU6Bg2pgBgyqgeCB7gg==}
     engines: {node: '>=22.16.0'}
     hasBin: true
     peerDependencies:
@@ -5811,10 +5802,6 @@ packages:
     resolution: {integrity: sha512-Xi4agocCbRzt0yYMZGMA6ApD7gvtUFaxm4ZmeacWI4cZxaF6C+8I8QfofC20NAePiB/IcvZmzkJ7XPa471AEtA==}
     engines: {node: '>=20.18.1'}
 
-  undici@7.24.8:
-    resolution: {integrity: sha512-6KQ/+QxK49Z/p3HO6E5ZCZWNnCasyZLa5ExaVYyvPxUwKtbCPMKELJOqh7EqOle0t9cH/7d2TaaTRRa6Nhs4YQ==}
-    engines: {node: '>=20.18.1'}
-
   undici@7.25.0:
     resolution: {integrity: sha512-xXnp4kTyor2Zq+J1FfPI6Eq3ew5h6Vl0F/8d9XU5zZQf1tX9s2Su1/3PiMmUANFULpmksxkClamIZcaUqryHsQ==}
     engines: {node: '>=20.18.1'}
@@ -7128,7 +7115,7 @@ snapshots:
 
   '@floating-ui/utils@0.2.11': {}
 
-  '@google/genai@1.49.0(@modelcontextprotocol/sdk@1.27.1(zod@4.3.6))':
+  '@google/genai@1.50.1(@modelcontextprotocol/sdk@1.27.1(zod@4.3.6))':
     dependencies:
       google-auth-library: 10.6.2
       p-retry: 4.6.2
@@ -7472,7 +7459,7 @@ snapshots:
     dependencies:
       '@anthropic-ai/sdk': 0.73.0(zod@4.3.6)
       '@aws-sdk/client-bedrock-runtime': 3.1029.0
-      '@google/genai': 1.49.0(@modelcontextprotocol/sdk@1.27.1(zod@4.3.6))
+      '@google/genai': 1.50.1(@modelcontextprotocol/sdk@1.27.1(zod@4.3.6))
       '@mistralai/mistralai': 1.14.1
       '@sinclair/typebox': 0.34.49
       ajv: 8.18.0
@@ -7481,7 +7468,7 @@ snapshots:
       openai: 6.26.0(ws@8.20.0)(zod@4.3.6)
       partial-json: 0.1.7
       proxy-agent: 6.5.0
-      undici: 7.24.8
+      undici: 7.25.0
       zod-to-json-schema: 3.25.2(zod@4.3.6)
     transitivePeerDependencies:
       - '@modelcontextprotocol/sdk'
@@ -7535,7 +7522,7 @@ snapshots:
       minimatch: 10.2.5
       proper-lockfile: 4.1.2
       strip-ansi: 7.2.0
-      undici: 7.24.8
+      undici: 7.25.0
       yaml: 2.8.3
     optionalDependencies:
       '@mariozechner/clipboard': 0.3.2
@@ -8344,7 +8331,7 @@ snapshots:
 
   '@rollup/rollup-win32-x64-msvc@4.60.1': {}
 
-  '@shadanai/openclaw@2026.4.7-1(@napi-rs/canvas@0.1.97)(encoding@0.1.13)':
+  '@shadanai/openclaw@2026.4.11(@napi-rs/canvas@0.1.97)(encoding@0.1.13)':
     dependencies:
       '@agentclientprotocol/sdk': 0.16.1(zod@4.3.6)
       '@anthropic-ai/vertex-sdk': 0.14.4(encoding@0.1.13)(zod@4.3.6)
@@ -8388,7 +8375,7 @@ snapshots:
       sqlite-vec: 0.1.7
       tar: 7.5.12
       tslog: 4.10.2
-      undici: 7.24.8
+      undici: 7.25.0
       uuid: 13.0.0
       ws: 8.20.0
       yaml: 2.8.3
@@ -12918,8 +12905,6 @@ snapshots:
   undici-types@7.18.2: {}
 
   undici@7.24.6: {}
-
-  undici@7.24.8: {}
 
   undici@7.25.0: {}
 
