@@ -5,6 +5,7 @@
  * are in the toolbar; messages render with markdown + streaming.
  */
 import { useEffect, useState, useCallback, useLayoutEffect } from 'react';
+import { useLocation } from 'react-router-dom';
 import { AlertCircle, Loader2, Sparkles } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useChatStore, type RawMessage } from '@/stores/chat';
@@ -22,12 +23,31 @@ import { useMinLoading } from '@/hooks/use-min-loading';
 
 export function Chat() {
   const { t } = useTranslation('chat');
+  const location = useLocation();
   const gatewayStatus = useGatewayStore((s) => s.status);
   const isGatewayRunning = gatewayStatus.state === 'running';
 
   const messages = useChatStore((s) => s.messages);
   const currentSessionKey = useChatStore((s) => s.currentSessionKey);
   const loading = useChatStore((s) => s.loading);
+  
+  // 处理从员工列表跳转过来创建新会话的情况
+  useEffect(() => {
+    const state = location.state as { createNewSessionFor?: string } | null;
+    if (state?.createNewSessionFor) {
+      const agentId = state.createNewSessionFor;
+      // 创建新会话，sessionKey 格式必须是 agent:agentId:session-timestamp
+      const newSessionKey = `agent:${agentId}:session-${Date.now()}`;
+      
+      console.log('[Chat] Creating new session for agent:', { agentId, newSessionKey });
+      
+      // 切换到新会话（switchSession 会自动更新 currentAgentId）
+      useChatStore.getState().switchSession(newSessionKey);
+      
+      // 清除 location state，避免重复触发
+      window.history.replaceState({}, document.title);
+    }
+  }, [location]);
   const sending = useChatStore((s) => s.sending);
   const error = useChatStore((s) => s.error);
   const showThinking = useChatStore((s) => s.showThinking);
@@ -56,9 +76,29 @@ export function Chat() {
 
   const scrollToBottom = useCallback(() => {
     if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      // 使用平滑滚动
+      scrollRef.current.scrollTo({
+        top: scrollRef.current.scrollHeight,
+        behavior: 'smooth'
+      });
     }
   }, [scrollRef]);
+
+  // 包装 sendMessage，在发送后自动滚动到底部
+  const handleSendMessage = useCallback((text: string, attachments?: any[], targetAgentId?: string | null) => {
+    sendMessage(text, attachments, targetAgentId);
+  }, [sendMessage]);
+
+  // 监听消息变化，当有新消息时自动滚动到底部
+  useEffect(() => {
+    if (messages.length > 0) {
+      // 延迟滚动，确保消息已完全渲染到 DOM
+      const timer = setTimeout(() => {
+        scrollToBottom();
+      }, 100);
+      return () => clearTimeout(timer);
+    }
+  }, [messages.length, scrollToBottom]);
 
   // 检查是否在底部
   const checkIsAtBottom = useCallback(() => {

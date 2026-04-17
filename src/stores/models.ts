@@ -140,7 +140,7 @@ export const useModelsStore = create<ModelState>((set, get) => ({
     try {
       const models = await fetchModelsFromOneApi(tokenKey);
       const currentModelId = get().currentModelId;
-      const defaultModelId = models.find(m => m.id === 'glm-5')?.id || models[0]?.id || null;
+      const defaultModelId = models.find(m => m.id === 'step-3.5-flash')?.id || models[0]?.id || null;
       set({ models, loading: false, currentModelId: currentModelId || defaultModelId, isLoggedIn: true, error: null });
     } catch (err) {
       set({ models: [], loading: false, error: err instanceof Error ? err.message : '获取模型列表失败' });
@@ -185,7 +185,7 @@ export const useModelsStore = create<ModelState>((set, get) => ({
       if (employee?.model) modelId = employee.model;
     }
     if (!modelId) {
-      modelId = models.find(m => m.id === 'glm-5')?.id || models[0]?.id;
+      modelId = models.find(m => m.id === 'step-3.5-flash')?.id || models[0]?.id;
     }
 
     if (modelId && models.some(m => m.id === modelId)) {
