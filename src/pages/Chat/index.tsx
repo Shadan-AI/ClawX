@@ -31,10 +31,22 @@ export function Chat() {
   const currentSessionKey = useChatStore((s) => s.currentSessionKey);
   const loading = useChatStore((s) => s.loading);
   
+  // 技能快速使用状态
+  const [quickUseSkill, setQuickUseSkill] = useState<{ name: string; slug: string; description: string } | null>(null);
+  
   // 处理从员工列表跳转过来创建新会话的情况
   useEffect(() => {
-    const state = location.state as { createNewSessionFor?: string } | null;
-    if (state?.createNewSessionFor) {
+    const state = location.state as { createNewSessionFor?: string; quickUseSkill?: { name: string; slug: string; description: string } } | null;
+    
+    // 处理技能快速使用
+    if (state?.quickUseSkill) {
+      console.log('[Chat] Quick use skill:', state.quickUseSkill);
+      setQuickUseSkill(state.quickUseSkill);
+      // 清除 location state，避免重复触发
+      window.history.replaceState({}, document.title);
+    }
+    // 处理创建新会话
+    else if (state?.createNewSessionFor) {
       const agentId = state.createNewSessionFor;
       // 创建新会话，sessionKey 格式必须是 agent:agentId:session-timestamp
       const newSessionKey = `agent:${agentId}:session-${Date.now()}`;
@@ -338,6 +350,8 @@ export function Chat() {
             sending={sending}
             isExpanded={isInputExpanded}
             onFocusChange={setIsInputFocused}
+            quickUseSkill={quickUseSkill}
+            onSkillUsed={() => setQuickUseSkill(null)}
           />
         </div>
       </div>

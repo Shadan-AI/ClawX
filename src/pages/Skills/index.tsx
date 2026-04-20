@@ -3,6 +3,7 @@
  * Browse and manage AI skills
  */
 import { useEffect, useState, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Search,
   Puzzle,
@@ -18,6 +19,7 @@ import {
   FileCode,
   Globe,
   Copy,
+  MessageCircle,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -392,6 +394,7 @@ function SkillDetailDialog({ skill, isOpen, onClose, onToggle, onUninstall, onOp
 }
 
 export function Skills() {
+  const navigate = useNavigate();
   const {
     skills,
     loading,
@@ -598,6 +601,19 @@ export function Skills() {
       }
     }
   }, [installSkill, enableSkill, t, skillsDirPath]);
+
+  const handleQuickUse = useCallback((skill: { name: string; slug: string; description: string }) => {
+    // 跳转到对话页面，传递技能信息
+    navigate('/', {
+      state: {
+        quickUseSkill: {
+          name: skill.name,
+          slug: skill.slug,
+          description: skill.description,
+        }
+      }
+    });
+  }, [navigate]);
 
   const handleInstallMarket = useCallback(async (slug: string) => {
     try {
@@ -854,6 +870,16 @@ export function Skills() {
                           v{skill.version}
                         </span>
                       )}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleQuickUse({ name: skill.name, slug: skill.slug || skill.id, description: skill.description })}
+                        className="h-8 px-3 text-[13px] font-medium gap-1.5 hover:bg-primary/10 hover:text-primary transition-colors"
+                        title={t('quickUse', '立即使用')}
+                      >
+                        <MessageCircle className="h-3.5 w-3.5" />
+                        {t('quickUse', '对话')}
+                      </Button>
                       <Switch
                         checked={skill.enabled}
                         onCheckedChange={(checked) => handleToggle(skill.id, checked)}

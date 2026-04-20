@@ -7,7 +7,7 @@
  * are sent with the message (no base64 over WebSocket).
  */
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { SendHorizontal, Square, X, Paperclip, FileText, Film, Music, FileArchive, File, Loader2, AtSign, ChevronDown, Check, RefreshCw, Brain, Bot } from 'lucide-react';
+import { SendHorizontal, Square, X, Paperclip, FileText, Film, Music, FileArchive, File, Loader2, AtSign, ChevronDown, Check, RefreshCw, Brain, Bot, Puzzle } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -18,6 +18,7 @@ import { cn } from '@/lib/utils';
 import { useAgentsStore } from '@/stores/agents';
 import { useChatStore } from '@/stores/chat';
 import { useModelsStore } from '@/stores/models';
+import { useSkillsStore } from '@/stores/skills';
 import type { AgentSummary } from '@/types/agent';
 import { useTranslation } from 'react-i18next';
 
@@ -42,6 +43,8 @@ interface ChatInputProps {
   isEmpty?: boolean;
   isExpanded?: boolean;
   onFocusChange?: (focused: boolean) => void;
+  quickUseSkill?: { name: string; slug: string; description: string } | null;
+  onSkillUsed?: () => void;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -88,16 +91,69 @@ function readFileAsBase64(file: globalThis.File): Promise<string> {
 
 // ── Component ────────────────────────────────────────────────────
 
-export function ChatInput({ onSend, onStop, disabled = false, sending = false, isExpanded = true, onFocusChange }: ChatInputProps) {
+export function ChatInput({ onSend, onStop, disabled = false, sending = false, isExpanded = true, onFocusChange, quickUseSkill, onSkillUsed }: ChatInputProps) {
   const { t } = useTranslation('chat');
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState<FileAttachment[]>([]);
   const [targetAgentId, setTargetAgentId] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [skillPickerOpen, setSkillPickerOpen] = useState(false);
+  const [skillSearchQuery, setSkillSearchQuery] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const pickerRef = useRef<HTMLDivElement>(null);
+  const skillPickerRef = useRef<HTMLDivElement>(null);
   const isComposingRef = useRef(false);
   const agents = useAgentsStore((s) => s.agents);
+  const skills = useSkillsStore((s) => s.skills);
+
+  // 获取已启用的技能列表
+  const enabledSkills = useMemo(() => {
+    return (skills || []).filter(skill => skill.enabled && !skill.isCore);
+  }, [skills]);
+
+  // 过滤技能列表
+  const filteredSkills = useMemo(() => {
+    if (!skillSearchQuery) return enabledSkills;
+    const query = skillSearchQuery.toLowerCase();
+    return enabledSkills.filter(skill => 
+      skill.name.toLowerCase().includes(query) ||
+      skill.description.toLowerCase().includes(query) ||
+      (skill.slug || '').toLowerCase().includes(query)
+    );
+  }, [enabledSkills, skillSearchQuery]);
+
+  // 处理技能快速使用
+  const [activeSkill, setActiveSkill] = useState<{ name: string; slug: string; description: string } | null>(null);
+  
+  useEffect(() => {
+    if (quickUseSkill) {
+      setActiveSkill(quickUseSkill);
+      // 不填充文本,只设置技能标签
+      setInput('');
+      // 聚焦输入框
+      if (textareaRef.current) {
+        textareaRef.current.focus();
+      }
+      // 通知父组件技能已使用
+      onSkillUsed?.();
+    }
+  }, [quickUseSkill, onSkillUsed]);
+
+  // 清除技能标签
+  const handleClearSkill = useCallback(() => {
+    setActiveSkill(null);
+    setInput('');
+    textareaRef.current?.focus();
+  }, []);
+
+  // 选择技能
+  const handleSelectSkill = useCallback((skill: { name: string; slug: string; description: string }) => {
+    setActiveSkill(skill);
+    setInput(''); // 清空输入框,只显示技能标签
+    setSkillPickerOpen(false);
+    setSkillSearchQuery('');
+    textareaRef.current?.focus();
+  }, []);
   const currentAgentId = useChatStore((s) => s.currentAgentId);
   const currentAgentName = useMemo(
     () => (agents ?? []).find((agent) => agent.id === currentAgentId)?.name ?? currentAgentId,
@@ -174,6 +230,20 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
       document.removeEventListener('mousedown', handlePointerDown);
     };
   }, [pickerOpen]);
+
+  // 点击外部关闭技能选择器
+  useEffect(() => {
+    if (!skillPickerOpen) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!skillPickerRef.current?.contains(event.target as Node)) {
+        setSkillPickerOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+    };
+  }, [skillPickerOpen]);
 
   useEffect(() => {
     if (!modelMenuOpen) return;
@@ -329,7 +399,13 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
     const readyAttachments = attachments.filter(a => a.status === 'ready');
     // Capture values before clearing — clear input immediately for snappy UX,
     // but keep attachments available for the async send
-    const textToSend = input.trim();
+    let textToSend = input.trim();
+    
+    // 如果有选中的技能,在消息前添加技能提示
+    if (activeSkill && textToSend) {
+      textToSend = `使用 ${activeSkill.name} 技能: ${textToSend}`;
+    }
+    
     const attachmentsToSend = readyAttachments.length > 0 ? readyAttachments : undefined;
     console.log(`[handleSend] text="${textToSend.substring(0, 50)}", attachments=${attachments.length}, ready=${readyAttachments.length}, sending=${!!attachmentsToSend}`);
     if (attachmentsToSend) {
@@ -340,13 +416,14 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
     }
     setInput('');
     setAttachments([]);
+    setActiveSkill(null); // 发送后清除技能选择
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
     onSend(textToSend, attachmentsToSend, targetAgentId);
     setTargetAgentId(null);
     setPickerOpen(false);
-  }, [input, attachments, canSend, onSend, targetAgentId]);
+  }, [input, attachments, canSend, onSend, targetAgentId, activeSkill]);
 
   const handleStop = useCallback(() => {
     if (!canStop) return;
@@ -443,9 +520,27 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
 
   const handleInputChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const prev = input;
-    setInput(e.target.value);
+    const newValue = e.target.value;
+    setInput(newValue);
+    
+    // 检测斜杠命令
+    if (newValue.startsWith('/') && !prev.startsWith('/')) {
+      // 刚输入 /
+      setSkillPickerOpen(true);
+      setSkillSearchQuery('');
+    } else if (newValue.startsWith('/')) {
+      // 继续输入搜索
+      const query = newValue.slice(1);
+      setSkillSearchQuery(query);
+      setSkillPickerOpen(true);
+    } else {
+      // 不是斜杠命令
+      setSkillPickerOpen(false);
+      setSkillSearchQuery('');
+    }
+    
     // Spawn particles on any content change
-    if (e.target.value.length !== prev.length) {
+    if (newValue.length !== prev.length) {
       spawnParticles();
     }
   }, [input, spawnParticles]);
@@ -463,14 +558,31 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
       <div className="w-full">
         {/* Toolbar - only shown when expanded */}
         {isExpanded && (
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-2">
+          <div className="flex flex-col gap-3 mb-3">
+            {/* 第一行: 当前员工 + 使用技能 */}
+            <div className="flex items-center gap-2 flex-wrap">
               <div className="flex items-center gap-1.5 rounded-full border border-black/10 bg-white/70 dark:bg-white/5 px-3 py-1.5 text-[12px] font-medium text-foreground/80 dark:border-white/10">
                 <Bot className="h-3.5 w-3.5 text-primary" />
                 <span>{t('toolbar.currentAgent', { agent: currentAgentName })}</span>
               </div>
+              
+              {/* Skill Tag - 横着排列 */}
+              {activeSkill && (
+                <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-primary/10 border border-primary/20 text-primary animate-in fade-in-0 slide-in-from-left-2 duration-200">
+                  <span className="text-[12px] font-medium">🎯 {activeSkill.name}</span>
+                  <button
+                    onClick={handleClearSkill}
+                    className="hover:bg-primary/20 rounded-full p-0.5 transition-colors"
+                    title="取消使用技能"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              )}
             </div>
-            <div className="flex items-center gap-1">
+            
+            {/* 第二行: 工具按钮 */}
+            <div className="flex items-center justify-end gap-1">
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
@@ -675,6 +787,72 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                   >
                     <Paperclip className="h-5 w-5" />
                   </Button>
+
+                  {/* Skill Picker */}
+                  {enabledSkills.length > 0 && (
+                    <div ref={skillPickerRef} className="relative">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className={cn(
+                          'h-9 w-9 rounded-full text-muted-foreground hover:bg-black/5 dark:hover:bg-white/10 hover:text-foreground transition-colors',
+                          (skillPickerOpen || activeSkill) && 'bg-primary/10 text-primary hover:bg-primary/20'
+                        )}
+                        onClick={() => {
+                          if (activeSkill) {
+                            handleClearSkill();
+                          } else {
+                            setInput('/');
+                            setSkillPickerOpen(true);
+                            textareaRef.current?.focus();
+                          }
+                        }}
+                        disabled={disabled || sending}
+                        title={activeSkill ? `当前技能: ${activeSkill.name}` : '选择技能 (/)'}
+                      >
+                        <Puzzle className="h-4 w-4" />
+                      </Button>
+                      <AnimatePresence>
+                        {skillPickerOpen && filteredSkills.length > 0 && (
+                          <motion.div
+                            initial={{ opacity: 0, y: 8, scale: 0.95 }}
+                            animate={{ opacity: 1, y: 0, scale: 1 }}
+                            exit={{ opacity: 0, y: 8, scale: 0.95 }}
+                            transition={{ duration: 0.15, ease: 'easeOut' }}
+                            className="absolute left-0 bottom-full z-20 mb-2 w-72 overflow-hidden rounded-2xl border border-black/10 bg-white p-1.5 shadow-xl dark:border-white/10 dark:bg-card"
+                          >
+                            <div className="px-3 py-2 text-[11px] font-medium text-muted-foreground/80">
+                              选择技能 {skillSearchQuery && `(搜索: ${skillSearchQuery})`}
+                            </div>
+                            <div className="max-h-64 overflow-y-auto">
+                              {filteredSkills.map((skill) => (
+                                <button
+                                  key={skill.id}
+                                  onClick={() => handleSelectSkill({ name: skill.name, slug: skill.slug || skill.id, description: skill.description })}
+                                  className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors hover:bg-black/5 dark:hover:bg-white/5"
+                                >
+                                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-lg">
+                                    {skill.icon || '🔧'}
+                                  </div>
+                                  <div className="flex-1 overflow-hidden">
+                                    <div className="truncate text-[13px] font-medium text-foreground">
+                                      {skill.name}
+                                    </div>
+                                    <div className="truncate text-[11px] text-muted-foreground">
+                                      {skill.description}
+                                    </div>
+                                  </div>
+                                  {activeSkill?.slug === (skill.slug || skill.id) && (
+                                    <Check className="h-4 w-4 shrink-0 text-primary" />
+                                  )}
+                                </button>
+                              ))}
+                            </div>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </div>
+                  )}
 
                   {showAgentPicker && (
                     <div ref={pickerRef} className="relative">
