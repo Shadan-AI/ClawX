@@ -620,6 +620,15 @@ function getCanonicalPrefixFromSessions(sessions: ChatSession[]): string | null 
 }
 
 function getAgentIdFromSessionKey(sessionKey: string): string {
+  // Handle box-im sessions: box-im:325:bot-xxx -> bot-xxx
+  if (sessionKey.startsWith('box-im:')) {
+    const parts = sessionKey.split(':');
+    if (parts.length >= 3) {
+      return parts[2]; // Return the bot ID
+    }
+  }
+  
+  // Handle canonical format: agent:agentId:...
   if (!sessionKey.startsWith('agent:')) return 'main';
   const parts = sessionKey.split(':');
   return parts[1] || 'main';
@@ -1014,6 +1023,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   currentAgentId: 'main',
   sessionLabels: {},
   sessionLastActivity: {},
+  channelBindings: {},
 
   showThinking: true,
   thinkingLevel: null,
@@ -1032,17 +1042,42 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     _loadSessionsInFlight = (async () => {
       try {
-        const data = await useGatewayStore.getState().rpc<Record<string, unknown>>('sessions.list', {});
+        const data = await useGatewayStore.getState().rpc<Record<string, unknown>>('sessions.list', {
+          includeDerivedTitles: true,
+        });
         if (data) {
           const rawSessions = Array.isArray(data.sessions) ? data.sessions : [];
-          const sessions: ChatSession[] = rawSessions.map((s: Record<string, unknown>) => ({
-            key: String(s.key || ''),
-            label: s.label ? String(s.label) : undefined,
-            displayName: s.displayName ? String(s.displayName) : undefined,
-            thinkingLevel: s.thinkingLevel ? String(s.thinkingLevel) : undefined,
-            model: s.model ? String(s.model) : undefined,
-            updatedAt: parseSessionUpdatedAtMs(s.updatedAt),
-          })).filter((s: ChatSession) => s.key);
+          const sessions: ChatSession[] = rawSessions.map((s: Record<string, unknown>) => {
+            // Extract origin data first
+            const origin = s.origin && typeof s.origin === 'object' ? s.origin as Record<string, unknown> : undefined;
+            
+            // For channel sessions (box-im, wechat, etc.), prioritize origin.label (sender nickname)
+            // Otherwise use derivedTitle (from first user message) or fall back to displayName/label
+            const title = origin?.label ? String(origin.label) :
+                         s.derivedTitle ? String(s.derivedTitle) : 
+                         s.displayName ? String(s.displayName) : 
+                         s.label ? String(s.label) : undefined;
+            
+            return {
+              key: String(s.key || ''),
+              label: s.label ? String(s.label) : undefined,
+              displayName: title,  // Use the best available title
+              thinkingLevel: s.thinkingLevel ? String(s.thinkingLevel) : undefined,
+              model: s.model ? String(s.model) : undefined,
+              updatedAt: parseSessionUpdatedAtMs(s.updatedAt),
+              sessionId: s.sessionId ? String(s.sessionId) : undefined,  // Store sessionId for direct file reading
+              sessionFile: s.sessionFile ? String(s.sessionFile) : undefined,  // Also store sessionFile if provided
+              origin: origin ? {
+                accountId: origin.accountId ? String(origin.accountId) : undefined,
+                provider: origin.provider ? String(origin.provider) : undefined,
+                label: origin.label ? String(origin.label) : undefined,
+                chatType: origin.chatType ? String(origin.chatType) : undefined,
+                from: origin.from ? String(origin.from) : undefined,
+                to: origin.to ? String(origin.to) : undefined,
+                threadId: origin.threadId !== undefined ? origin.threadId as string | number : undefined,
+              } : undefined,
+            };
+          }).filter((s: ChatSession) => s.key);
 
           const canonicalBySuffix = new Map<string, string>();
           for (const session of sessions) {
@@ -1154,6 +1189,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
       await _loadSessionsInFlight;
     } finally {
       _loadSessionsInFlight = null;
+    }
+  },
+
+  // ── Load channel bindings ──
+
+  loadChannelBindings: async () => {
+    try {
+      const result = await hostApiFetch<{
+        success: boolean;
+        bindings?: Array<{ channelType: string; accountId: string; agentId: string }>;
+      }>('/api/channels/bindings');
+      
+      if (result.success && result.bindings) {
+        const bindingsMap: Record<string, string> = {};
+        for (const binding of result.bindings) {
+          bindingsMap[binding.accountId] = binding.agentId;
+        }
+        set({ channelBindings: bindingsMap });
+      }
+    } catch (err) {
+      console.error('[loadChannelBindings] Failed:', err);
     }
   },
 
@@ -1303,7 +1359,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   // ── Load chat history ──
 
   loadHistory: async (quiet = false) => {
-    const { currentSessionKey } = get();
+    const currentSessionKey = get().currentSessionKey;
+    
     const existingLoad = _historyLoadInFlight.get(currentSessionKey);
     if (existingLoad) {
       await existingLoad;
@@ -1314,6 +1371,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (quiet && Date.now() - lastLoadAt < HISTORY_LOAD_MIN_INTERVAL_MS) {
       return;
     }
+
 
     if (!quiet) set({ loading: true, error: null });
 
@@ -1367,7 +1425,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // Guard: if the user switched sessions while this async load was in
       // flight, discard the result to prevent overwriting the new session's
       // messages with stale data from the old session.
-      if (!isCurrentSession()) return;
+      if (!isCurrentSession()) {
+        return;
+      }
 
       // Before filtering: attach images/files from tool_result messages to the next assistant message
       const messagesWithToolImages = enrichWithToolResultFiles(rawMessages);
@@ -1476,6 +1536,43 @@ export const useChatStore = create<ChatState>((set, get) => ({
         if (data) {
           let rawMessages = Array.isArray(data.messages) ? data.messages as RawMessage[] : [];
           const thinkingLevel = data.thinkingLevel ? String(data.thinkingLevel) : null;
+          
+          // Fallback: if RPC returned 0 messages but session has sessionId or sessionFile, read it directly
+          if (rawMessages.length === 0) {
+            const currentSession = get().sessions.find(s => s.key === currentSessionKey);
+            
+            // Try sessionFile first (absolute path), then construct from sessionId
+            let agentId: string | undefined;
+            let sessionId: string | undefined;
+            
+            if (currentSession?.sessionFile) {
+              const match = currentSession.sessionFile.match(/agents[/\\]([^/\\]+)[/\\]sessions[/\\]([^/\\]+)\.jsonl$/);
+              if (match) {
+                [, agentId, sessionId] = match;
+              }
+            } else if (currentSession?.sessionId) {
+              // Extract agentId from session key: agent:main:box-im:... -> main
+              const keyParts = currentSessionKey.split(':');
+              if (keyParts.length >= 2 && keyParts[0] === 'agent') {
+                agentId = keyParts[1];
+              }
+              sessionId = currentSession.sessionId;
+            }
+            
+            if (agentId && sessionId) {
+              try {
+                const transcriptData = await hostApiFetch<{ success: boolean; messages?: RawMessage[] }>(
+                  `/api/sessions/transcript?agentId=${encodeURIComponent(agentId)}&sessionId=${encodeURIComponent(sessionId)}`,
+                );
+                if (transcriptData.success && transcriptData.messages) {
+                  rawMessages = transcriptData.messages;
+                }
+              } catch (err) {
+                console.warn('[loadHistory] Direct file read failed:', err);
+              }
+            }
+          }
+          
           if (rawMessages.length === 0 && isCronSessionKey(currentSessionKey)) {
             rawMessages = await loadCronFallbackMessages(currentSessionKey, 200);
           }
@@ -1490,7 +1587,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           }
         }
       } catch (err) {
-        console.warn('Failed to load chat history:', err);
+        console.warn('[loadHistory] Failed to load chat history:', err);
         const fallbackMessages = await loadCronFallbackMessages(currentSessionKey, 200);
         if (fallbackMessages.length > 0) {
           applyLoadedMessages(fallbackMessages, null);

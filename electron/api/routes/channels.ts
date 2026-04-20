@@ -1172,6 +1172,31 @@ export async function handleChannelRoutes(
     return true;
   }
 
+  if (url.pathname === '/api/channels/bindings' && req.method === 'GET') {
+    try {
+      const config = await readOpenClawConfig();
+      const bindings: Array<{ channelType: string; accountId: string; agentId: string }> = [];
+      
+      // Extract bindings from config
+      if (config.bindings && Array.isArray(config.bindings)) {
+        for (const binding of config.bindings) {
+          if (binding.match?.channel && binding.match?.accountId && binding.agentId) {
+            bindings.push({
+              channelType: binding.match.channel,
+              accountId: binding.match.accountId,
+              agentId: binding.agentId,
+            });
+          }
+        }
+      }
+      
+      sendJson(res, 200, { success: true, bindings });
+    } catch (error) {
+      sendJson(res, 500, { success: false, error: String(error) });
+    }
+    return true;
+  }
+
   if (url.pathname === '/api/channels/config/validate' && req.method === 'POST') {
     try {
       const body = await parseJsonBody<{ channelType: string }>(req);

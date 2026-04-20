@@ -46,6 +46,17 @@ export interface ChatSession {
   thinkingLevel?: string;
   model?: string;
   updatedAt?: number;
+  sessionId?: string;  // Session UUID for constructing file paths
+  sessionFile?: string;  // Absolute path to the .jsonl file (if provided by Gateway)
+  origin?: {
+    accountId?: string;
+    provider?: string;
+    label?: string;
+    chatType?: string;
+    from?: string;
+    to?: string;
+    threadId?: string | number;
+  };
 }
 
 export interface ToolStatus {
@@ -83,6 +94,8 @@ export interface ChatState {
   sessionLabels: Record<string, string>;
   /** Last message timestamp (ms) per session key, used for sorting */
   sessionLastActivity: Record<string, number>;
+  /** Channel account ID → Agent ID bindings */
+  channelBindings: Record<string, string>;
 
   // Thinking
   showThinking: boolean;
@@ -90,6 +103,7 @@ export interface ChatState {
 
   // Actions
   loadSessions: () => Promise<void>;
+  loadChannelBindings: () => Promise<void>;
   switchSession: (key: string) => void;
   newSession: () => void;
   deleteSession: (key: string) => Promise<void>;

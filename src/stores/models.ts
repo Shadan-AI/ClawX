@@ -96,6 +96,15 @@ async function fetchModelsFromOneApi(tokenKey: string): Promise<OneApiModel[]> {
 }
 
 function getAgentIdFromSessionKey(sessionKey: string): string {
+  // Handle box-im sessions: box-im:325:bot-xxx -> bot-xxx
+  if (sessionKey.startsWith('box-im:')) {
+    const parts = sessionKey.split(':');
+    if (parts.length >= 3) {
+      return parts[2]; // Return the bot ID
+    }
+  }
+  
+  // Handle canonical format: agent:agentId:...
   if (!sessionKey.startsWith('agent:')) return 'main';
   const [, agentId] = sessionKey.split(':');
   return agentId || 'main';

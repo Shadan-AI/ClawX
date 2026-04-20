@@ -112,6 +112,15 @@ function getSessionBucket(activityMs: number, nowMs: number): SessionBucketKey {
 const INITIAL_NOW_MS = Date.now();
 
 function getAgentIdFromSessionKey(sessionKey: string): string {
+  // Handle box-im sessions: box-im:325:bot-xxx -> bot-xxx
+  if (sessionKey.startsWith('box-im:')) {
+    const parts = sessionKey.split(':');
+    if (parts.length >= 3) {
+      return parts[2]; // Return the bot ID
+    }
+  }
+  
+  // Handle canonical format: agent:agentId:...
   if (!sessionKey.startsWith('agent:')) return 'main';
   const [, agentId] = sessionKey.split(':');
   return agentId || 'main';
@@ -130,6 +139,8 @@ export function Sidebar() {
   const deleteSession = useChatStore((s) => s.deleteSession);
   const loadSessions = useChatStore((s) => s.loadSessions);
   const loadHistory = useChatStore((s) => s.loadHistory);
+  const channelBindings = useChatStore((s) => s.channelBindings);
+  const loadChannelBindings = useChatStore((s) => s.loadChannelBindings);
 
   const gatewayStatus = useGatewayStore((s) => s.status);
   const isGatewayRunning = gatewayStatus.state === 'running';
@@ -140,13 +151,14 @@ export function Sidebar() {
     const hasExistingMessages = useChatStore.getState().messages.length > 0;
     (async () => {
       await loadSessions();
+      await loadChannelBindings();
       if (cancelled) return;
       await loadHistory(hasExistingMessages);
     })();
     return () => {
       cancelled = true;
     };
-  }, [isGatewayRunning, loadHistory, loadSessions]);
+  }, [isGatewayRunning, loadHistory, loadSessions, loadChannelBindings]);
   const agents = useAgentsStore((s) => s.agents);
   const fetchAgents = useAgentsStore((s) => s.fetchAgents);
 
@@ -155,6 +167,20 @@ export function Sidebar() {
 
   const getSessionLabel = (key: string, displayName?: string, label?: string) =>
     sessionLabels[key] ?? label ?? displayName ?? key;
+
+  // Get agent ID from session, using channel bindings for box-im sessions
+  const getAgentIdFromSession = (session: ChatSession): string => {
+    // For box-im sessions, use the binding map
+    if (session.origin?.provider === 'box-im' && session.origin?.accountId) {
+      const boundAgentId = channelBindings[session.origin.accountId];
+      if (boundAgentId) {
+        return boundAgentId;
+      }
+    }
+    
+    // Fall back to extracting from session key
+    return getAgentIdFromSessionKey(session.key);
+  };
 
   const openDevConsole = async () => {
     try {
@@ -202,11 +228,11 @@ export function Sidebar() {
     const query = searchQuery.toLowerCase();
     return sessions.filter((s) => {
       const label = getSessionLabel(s.key, s.displayName, s.label).toLowerCase();
-      const agentId = getAgentIdFromSessionKey(s.key);
+      const agentId = getAgentIdFromSession(s);
       const agentName = (agentNameById[agentId] || agentId).toLowerCase();
       return label.includes(query) || agentName.includes(query);
     });
-  }, [sessions, searchQuery, sessionLabels, agentNameById]);
+  }, [sessions, searchQuery, sessionLabels, agentNameById, channelBindings]);
 
   const sessionBuckets: Array<{ key: SessionBucketKey; label: string; sessions: typeof sessions }> = [
     { key: 'today', label: t('chat:historyBuckets.today'), sessions: [] },
@@ -356,7 +382,7 @@ export function Sidebar() {
                       {bucket.label}
                     </div>
                     {bucket.sessions.map((s) => {
-                      const agentId = getAgentIdFromSessionKey(s.key);
+                      const agentId = getAgentIdFromSession(s);
                       const agentName = agentNameById[agentId] || agentId;
                       const isRenaming = sessionToRename?.key === s.key;
                       

@@ -38,17 +38,25 @@ export const useAgentTemplatesStore = create<AgentTemplatesState>((set, get) => 
   error: null,
 
   /**
-   * 获取所有模板列表（使用公开接口，无需认证）
+   * 获取所有模板列表（需要认证）
    */
   fetchTemplates: async () => {
     set({ loading: true, error: null });
     try {
       console.log('[agent-templates] Fetching templates...');
       
-      const response = await fetch(`${API_BASE_URL}/agent/public/templates`, {
+      const tokenKey = await getTokenKey();
+      if (!tokenKey) {
+        console.warn('[agent-templates] No tokenKey, cannot fetch templates');
+        set({ templates: [], loading: false });
+        return;
+      }
+      
+      const response = await fetch(`${API_BASE_URL}/agent/template/list`, {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
+          'Token-Key': tokenKey,
         },
       });
       
@@ -62,12 +70,12 @@ export const useAgentTemplatesStore = create<AgentTemplatesState>((set, get) => 
         console.log('[agent-templates] Fetched templates:', result.data?.length || 0);
         set({ templates: result.data || [], loading: false });
       } else {
-        throw new Error(result.message || '获取模板列表失败');
+        console.warn('[agent-templates] API returned error:', result.message);
+        set({ templates: [], loading: false });
       }
     } catch (error) {
       console.error('[agent-templates] Failed to fetch templates:', error);
-      set({ error: String(error), loading: false });
-      toast.error('获取模板列表失败: ' + String(error));
+      set({ templates: [], loading: false });
     }
   },
 

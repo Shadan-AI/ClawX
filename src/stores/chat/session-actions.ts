@@ -4,6 +4,15 @@ import { DEFAULT_CANONICAL_PREFIX, DEFAULT_SESSION_KEY, type ChatSession, type R
 import type { ChatGet, ChatSet, SessionHistoryActions } from './store-api';
 
 function getAgentIdFromSessionKey(sessionKey: string): string {
+  // Handle box-im sessions: box-im:325:bot-xxx -> bot-xxx
+  if (sessionKey.startsWith('box-im:')) {
+    const parts = sessionKey.split(':');
+    if (parts.length >= 3) {
+      return parts[2]; // Return the bot ID
+    }
+  }
+  
+  // Handle canonical format: agent:agentId:...
   if (!sessionKey.startsWith('agent:')) return 'main';
   const [, agentId] = sessionKey.split(':');
   return agentId || 'main';
@@ -32,20 +41,40 @@ export function createSessionActions(
         const result = await invokeIpc(
           'gateway:rpc',
           'sessions.list',
-          {}
+          { includeDerivedTitles: true }
         ) as { success: boolean; result?: Record<string, unknown>; error?: string };
 
         if (result.success && result.result) {
           const data = result.result;
           const rawSessions = Array.isArray(data.sessions) ? data.sessions : [];
-          const sessions: ChatSession[] = rawSessions.map((s: Record<string, unknown>) => ({
-            key: String(s.key || ''),
-            label: s.label ? String(s.label) : undefined,
-            displayName: s.displayName ? String(s.displayName) : undefined,
-            thinkingLevel: s.thinkingLevel ? String(s.thinkingLevel) : undefined,
-            model: s.model ? String(s.model) : undefined,
-            updatedAt: parseSessionUpdatedAtMs(s.updatedAt),
-          })).filter((s: ChatSession) => s.key);
+          
+          const sessions: ChatSession[] = rawSessions.map((s: Record<string, unknown>) => {
+            // Use derivedTitle (from first user message) if available, otherwise fall back to displayName or label
+            const title = s.derivedTitle ? String(s.derivedTitle) : 
+                         s.displayName ? String(s.displayName) : 
+                         s.label ? String(s.label) : undefined;
+            
+            // Extract origin data
+            const origin = s.origin && typeof s.origin === 'object' ? s.origin as Record<string, unknown> : undefined;
+            
+            return {
+              key: String(s.key || ''),
+              label: s.label ? String(s.label) : undefined,
+              displayName: title,  // Use the best available title
+              thinkingLevel: s.thinkingLevel ? String(s.thinkingLevel) : undefined,
+              model: s.model ? String(s.model) : undefined,
+              updatedAt: parseSessionUpdatedAtMs(s.updatedAt),
+              origin: origin ? {
+                accountId: origin.accountId ? String(origin.accountId) : undefined,
+                provider: origin.provider ? String(origin.provider) : undefined,
+                label: origin.label ? String(origin.label) : undefined,
+                chatType: origin.chatType ? String(origin.chatType) : undefined,
+                from: origin.from ? String(origin.from) : undefined,
+                to: origin.to ? String(origin.to) : undefined,
+                threadId: origin.threadId !== undefined ? origin.threadId as string | number : undefined,
+              } : undefined,
+            };
+          }).filter((s: ChatSession) => s.key);
 
           const canonicalBySuffix = new Map<string, string>();
           for (const session of sessions) {
@@ -58,18 +87,9 @@ export function createSessionActions(
             }
           }
 
-          // Deduplicate: if both short and canonical existed, keep canonical only
+          // Deduplicate sessions
           const seen = new Set<string>();
           const dedupedSessions = sessions.filter((s) => {
-            // Always include box-im sessions (both short and canonical formats)
-            if (s.key.includes('box-im:')) {
-              if (!seen.has(s.key)) {
-                seen.add(s.key);
-                return true;
-              }
-              return false;
-            }
-            
             if (!s.key.startsWith('agent:') && canonicalBySuffix.has(s.key)) return false;
             if (seen.has(s.key)) return false;
             seen.add(s.key);

@@ -556,72 +556,6 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
       onDrop={handleDrop}
     >
       <div className="w-full">
-        {/* Toolbar - only shown when expanded */}
-        {isExpanded && (
-          <div className="flex flex-col gap-3 mb-3">
-            {/* 第一行: 当前员工 + 使用技能 */}
-            <div className="flex items-center gap-2 flex-wrap">
-              <div className="flex items-center gap-1.5 rounded-full border border-black/10 bg-white/70 dark:bg-white/5 px-3 py-1.5 text-[12px] font-medium text-foreground/80 dark:border-white/10">
-                <Bot className="h-3.5 w-3.5 text-primary" />
-                <span>{t('toolbar.currentAgent', { agent: currentAgentName })}</span>
-              </div>
-              
-              {/* Skill Tag - 横着排列 */}
-              {activeSkill && (
-                <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-primary/10 border border-primary/20 text-primary animate-in fade-in-0 slide-in-from-left-2 duration-200">
-                  <span className="text-[12px] font-medium">🎯 {activeSkill.name}</span>
-                  <button
-                    onClick={handleClearSkill}
-                    className="hover:bg-primary/20 rounded-full p-0.5 transition-colors"
-                    title="取消使用技能"
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                </div>
-              )}
-            </div>
-            
-            {/* 第二行: 工具按钮 */}
-            <div className="flex items-center justify-end gap-1">
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7"
-                    onClick={() => refresh()}
-                    disabled={loading}
-                  >
-                    <RefreshCw className={cn('h-3.5 w-3.5', loading && 'animate-spin')} />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>
-                  <p>{t('toolbar.refresh')}</p>
-                </TooltipContent>
-              </Tooltip>
-
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className={cn(
-                      'h-7 w-7',
-                      showThinking && 'bg-primary/10 text-primary',
-                    )}
-                    onClick={toggleThinking}
-                  >
-                    <Brain className="h-3.5 w-3.5" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>
-                  <p>{showThinking ? t('toolbar.hideThinking') : t('toolbar.showThinking')}</p>
-                </TooltipContent>
-              </Tooltip>
-            </div>
-          </div>
-        )}
-
         {/* Attachment Previews */}
         {attachments.length > 0 && (
           <div className={cn(
@@ -753,7 +687,7 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
 
           {/* Expanded layout: textarea on top, buttons on bottom row */}
           {isExpanded && (
-            <div className="flex flex-col">
+            <div className="flex flex-col relative">
               {/* Textarea - full width, taller */}
               <div className="relative px-2 pt-2">
                 <Textarea
@@ -764,8 +698,24 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                   onCompositionStart={() => { isComposingRef.current = true; }}
                   onCompositionEnd={() => { isComposingRef.current = false; }}
                   onPaste={handlePaste}
-                  onFocus={() => onFocusChange?.(true)}
-                  onBlur={() => onFocusChange?.(false)}
+                  onFocus={(e) => {
+                    onFocusChange?.(true);
+                    // 将光标移到文本末尾
+                    const target = e.target;
+                    const length = target.value.length;
+                    setTimeout(() => {
+                      target.setSelectionRange(length, length);
+                    }, 0);
+                  }}
+                  onBlur={(e) => {
+                    // 检查焦点是否移到了输入框容器内的其他元素
+                    // 如果是，不触发 blur（保持展开状态）
+                    const relatedTarget = e.relatedTarget as HTMLElement;
+                    if (relatedTarget && inputBoxRef.current?.contains(relatedTarget)) {
+                      return;
+                    }
+                    onFocusChange?.(false);
+                  }}
                   placeholder={disabled ? t('composer.gatewayDisconnectedPlaceholder') : ''}
                   disabled={disabled}
                   className="resize-none border-0 focus-visible:ring-0 focus-visible:ring-offset-0 shadow-none bg-transparent px-1 placeholder:text-muted-foreground/60 min-h-[36px] max-h-[200px] py-1.5 text-base leading-relaxed w-full"
@@ -775,8 +725,28 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
 
               {/* Bottom row: left buttons + right send/model */}
               <div className="flex items-center justify-between px-1 pb-1">
-                {/* Left: attach + @ */}
-                <div className="flex items-center gap-0.5">
+                {/* Left: current agent + skill tag + attach + @ */}
+                <div className="flex items-center gap-1">
+                  {/* 当前对话对象 */}
+                  <div className="flex items-center gap-1.5 rounded-full border border-black/5 bg-white/70 dark:bg-white/5 px-2.5 py-1 text-[11px] font-medium text-foreground/70 dark:border-white/10">
+                    <Bot className="h-3 w-3 text-primary" />
+                    <span>{currentAgentName}</span>
+                  </div>
+                  
+                  {/* Skill Tag */}
+                  {activeSkill && (
+                    <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-primary/10 border border-primary/20 text-primary text-[11px] font-medium">
+                      <span>🎯 {activeSkill.name}</span>
+                      <button
+                        onClick={handleClearSkill}
+                        className="hover:bg-primary/20 rounded-full p-0.5 transition-colors"
+                        title="取消使用技能"
+                      >
+                        <X className="h-2.5 w-2.5" />
+                      </button>
+                    </div>
+                  )}
+                  
                   <Button
                     variant="ghost"
                     size="icon"
@@ -788,9 +758,8 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                     <Paperclip className="h-5 w-5" />
                   </Button>
 
-                  {/* Skill Picker */}
-                  {enabledSkills.length > 0 && (
-                    <div ref={skillPickerRef} className="relative">
+                  {/* Skill Picker - 始终显示 */}
+                  <div ref={skillPickerRef} className="relative">
                       <Button
                         variant="ghost"
                         size="icon"
@@ -802,18 +771,16 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                           if (activeSkill) {
                             handleClearSkill();
                           } else {
-                            setInput('/');
-                            setSkillPickerOpen(true);
-                            textareaRef.current?.focus();
+                            setSkillPickerOpen(!skillPickerOpen);
                           }
                         }}
                         disabled={disabled || sending}
-                        title={activeSkill ? `当前技能: ${activeSkill.name}` : '选择技能 (/)'}
+                        title={activeSkill ? `当前技能: ${activeSkill.name}` : '选择技能'}
                       >
                         <Puzzle className="h-4 w-4" />
                       </Button>
                       <AnimatePresence>
-                        {skillPickerOpen && filteredSkills.length > 0 && (
+                        {skillPickerOpen && (
                           <motion.div
                             initial={{ opacity: 0, y: 8, scale: 0.95 }}
                             animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -824,7 +791,8 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                             <div className="px-3 py-2 text-[11px] font-medium text-muted-foreground/80">
                               选择技能 {skillSearchQuery && `(搜索: ${skillSearchQuery})`}
                             </div>
-                            <div className="max-h-64 overflow-y-auto">
+                            {filteredSkills.length > 0 ? (
+                              <div className="max-h-64 overflow-y-auto">
                               {filteredSkills.map((skill) => (
                                 <button
                                   key={skill.id}
@@ -848,11 +816,16 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                                 </button>
                               ))}
                             </div>
+                            ) : (
+                              <div className="px-3 py-6 text-center text-[12px] text-muted-foreground">
+                                暂无可用技能<br/>
+                                <span className="text-[11px]">请前往技能市场安装</span>
+                              </div>
+                            )}
                           </motion.div>
                         )}
                       </AnimatePresence>
                     </div>
-                  )}
 
                   {showAgentPicker && (
                     <div ref={pickerRef} className="relative">
@@ -902,8 +875,46 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                   )}
                 </div>
 
-                {/* Right: model picker + send */}
-                <div className="flex items-center gap-1.5">
+                {/* Right: refresh + thinking + model picker + send */}
+                <div className="flex items-center gap-1">
+                  {/* Refresh button */}
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-9 w-9 rounded-full text-muted-foreground hover:bg-black/5 dark:hover:bg-white/10 hover:text-foreground"
+                        onClick={() => refresh()}
+                        disabled={loading}
+                      >
+                        <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p>{t('toolbar.refresh')}</p>
+                    </TooltipContent>
+                  </Tooltip>
+
+                  {/* Thinking toggle */}
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className={cn(
+                          'h-9 w-9 rounded-full text-muted-foreground hover:bg-black/5 dark:hover:bg-white/10 hover:text-foreground',
+                          showThinking && 'bg-primary/10 text-primary hover:bg-primary/20'
+                        )}
+                        onClick={toggleThinking}
+                      >
+                        <Brain className="h-4 w-4" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p>{showThinking ? t('toolbar.hideThinking') : t('toolbar.showThinking')}</p>
+                    </TooltipContent>
+                  </Tooltip>
+                  
                   {models.length > 0 && (
                     <div ref={modelMenuRef} className="relative">
                       <button
