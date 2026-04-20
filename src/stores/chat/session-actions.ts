@@ -61,6 +61,15 @@ export function createSessionActions(
           // Deduplicate: if both short and canonical existed, keep canonical only
           const seen = new Set<string>();
           const dedupedSessions = sessions.filter((s) => {
+            // Always include box-im sessions (both short and canonical formats)
+            if (s.key.includes('box-im:')) {
+              if (!seen.has(s.key)) {
+                seen.add(s.key);
+                return true;
+              }
+              return false;
+            }
+            
             if (!s.key.startsWith('agent:') && canonicalBySuffix.has(s.key)) return false;
             if (seen.has(s.key)) return false;
             seen.add(s.key);
