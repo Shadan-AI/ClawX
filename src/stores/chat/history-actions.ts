@@ -179,7 +179,8 @@ export function createHistoryActions(
         const result = await invokeIpc(
           'gateway:rpc',
           'chat.history',
-          { sessionKey: currentSessionKey, limit: 200 }
+          { sessionKey: currentSessionKey, limit: 200 },
+          60000  // 60 秒超时，适应大会话历史
         ) as { success: boolean; result?: Record<string, unknown>; error?: string };
 
         if (result.success && result.result) {
@@ -200,11 +201,26 @@ export function createHistoryActions(
         }
       } catch (err) {
         console.warn('Failed to load chat history:', err);
-        const fallbackMessages = await loadCronFallbackMessages(currentSessionKey, 200);
-        if (fallbackMessages.length > 0) {
-          applyLoadedMessages(fallbackMessages, null);
+        const errorMsg = String(err);
+        
+        // 如果是超时错误，尝试 fallback
+        if (errorMsg.includes('timeout')) {
+          const fallbackMessages = await loadCronFallbackMessages(currentSessionKey, 200);
+          if (fallbackMessages.length > 0) {
+            applyLoadedMessages(fallbackMessages, null);
+          } else {
+            // 新会话超时：直接显示空会话，不报错
+            console.log('New session timeout - treating as empty session');
+            applyLoadedMessages([], null);
+          }
         } else {
-          applyLoadFailure(String(err));
+          // 其他错误：尝试 fallback
+          const fallbackMessages = await loadCronFallbackMessages(currentSessionKey, 200);
+          if (fallbackMessages.length > 0) {
+            applyLoadedMessages(fallbackMessages, null);
+          } else {
+            applyLoadFailure(errorMsg);
+          }
         }
       }
     },

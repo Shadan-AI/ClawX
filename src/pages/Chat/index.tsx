@@ -279,7 +279,18 @@ export function Chat() {
                 transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
                 className="space-y-5"
               >
-                {messages.map((msg, idx) => (
+                {messages
+                  .filter((msg) => {
+                    // 过滤掉 HEARTBEAT 系统消息
+                    if (msg.role === 'system') {
+                      const text = extractText(msg);
+                      if (text.includes('Read HEARTBEAT.md') || text.includes('HEARTBEAT_OK')) {
+                        return false;
+                      }
+                    }
+                    return true;
+                  })
+                  .map((msg, idx) => (
                   <ChatMessage
                     key={msg.id || `msg-${idx}`}
                     message={msg}
@@ -310,7 +321,17 @@ export function Chat() {
 
                 {/* Activity indicator: waiting for next AI turn after tool execution */}
                 {sending && pendingFinal && !shouldRenderStreaming && (
-                  <ActivityIndicator phase="tool_processing" />
+                  <div className="flex gap-3">
+                    <ActivityIndicator phase="tool_processing" />
+                    <button
+                      onClick={() => {
+                        abortRun();
+                      }}
+                      className="text-xs text-muted-foreground hover:text-foreground underline"
+                    >
+                      Cancel
+                    </button>
+                  </div>
                 )}
 
                 {/* Typing indicator when sending but no stream content yet */}

@@ -638,6 +638,55 @@ export function Skills() {
     }
   }, [uninstallSkill, t]);
 
+  const handleInstallLocal = useCallback(async () => {
+    try {
+      // 打开文件/文件夹选择对话框
+      const result = await invokeIpc<{ success: boolean; path?: string; skillName?: string; error?: string }>('skill:installLocal');
+      
+      if (!result.success) {
+        if (result.error) {
+          toast.error(t('toast.failedInstallLocal', '本地安装失败') + ': ' + result.error);
+        }
+        return;
+      }
+
+      if (result.path) {
+        toast.success(t('toast.installedLocal', '本地技能安装成功'));
+        
+        // 重启 Gateway 以重新扫描技能
+        const gatewayStatus = useGatewayStore.getState().status;
+        if (gatewayStatus.state === 'running') {
+          toast.info('正在重启 Gateway 以加载新技能...');
+          await useGatewayStore.getState().restart();
+          
+          // 等待 Gateway 真正启动完成（轮询状态）
+          let retries = 0;
+          const maxRetries = 30; // 最多等待 30 秒
+          while (retries < maxRetries) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            const currentStatus = useGatewayStore.getState().status;
+            if (currentStatus.state === 'running') {
+              // Gateway 已启动，再等待 2 秒确保技能加载完成
+              await new Promise(resolve => setTimeout(resolve, 2000));
+              break;
+            }
+            retries++;
+          }
+          
+          if (retries >= maxRetries) {
+            toast.warning('Gateway 重启超时，请手动刷新技能列表');
+          }
+        }
+        
+        // 刷新技能列表
+        await fetchSkills();
+        toast.success('技能列表已更新');
+      }
+    } catch (err) {
+      toast.error(t('toast.failedInstallLocal', '本地安装失败') + ': ' + String(err));
+    }
+  }, [fetchSkills, t]);
+
   if (loading) {
     return (
       <div className="flex flex-col -m-6 dark:bg-background min-h-[calc(100vh-2.5rem)] items-center justify-center">
@@ -782,6 +831,15 @@ export function Skills() {
                 </Button>
               </>
             )}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleInstallLocal}
+              className="h-8 text-[13px] font-medium rounded-md px-3 border-black/10 dark:border-white/10 bg-transparent hover:bg-black/5 dark:hover:bg-white/5 shadow-none"
+            >
+              <FolderOpen className="h-3.5 w-3.5 mr-1.5" />
+              {t('actions.installLocal', '本地安装')}
+            </Button>
             <Button
               variant="outline"
               size="sm"

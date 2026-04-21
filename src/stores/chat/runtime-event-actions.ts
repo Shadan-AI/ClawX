@@ -7,14 +7,21 @@ export function createRuntimeEventActions(set: ChatSet, get: ChatGet): Pick<Runt
     handleChatEvent: (event: Record<string, unknown>) => {
       const runId = String(event.runId || '');
       const eventState = String(event.state || '');
+      console.log('[DEBUG handleChatEvent] Received event:', { runId, eventState, hasMessage: !!event.message, eventKeys: Object.keys(event) });
       const eventSessionKey = event.sessionKey != null ? String(event.sessionKey) : null;
       const { activeRunId, currentSessionKey } = get();
 
       // Only process events for the current session (when sessionKey is present)
-      if (eventSessionKey != null && eventSessionKey !== currentSessionKey) return;
+      if (eventSessionKey != null && eventSessionKey !== currentSessionKey) {
+        console.log('[DEBUG handleChatEvent] Skipping event - session mismatch:', { eventSessionKey, currentSessionKey });
+        return;
+      }
 
       // Only process events for the active run (or if no active run set)
-      if (activeRunId && runId && runId !== activeRunId) return;
+      if (activeRunId && runId && runId !== activeRunId) {
+        console.log('[DEBUG handleChatEvent] Skipping event - run mismatch:', { runId, activeRunId });
+        return;
+      }
 
       setLastChatEventAt(Date.now());
 
@@ -46,6 +53,7 @@ export function createRuntimeEventActions(set: ChatSet, get: ChatGet): Pick<Runt
         }
       }
 
+      console.log('[DEBUG handleChatEvent] Calling handleRuntimeEventState with resolvedState:', resolvedState);
       handleRuntimeEventState(set, get, event, resolvedState, runId);
     },
   };

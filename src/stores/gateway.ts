@@ -100,8 +100,10 @@ function maybeLoadHistory(
 }
 
 function handleGatewayNotification(notification: { method?: string; params?: Record<string, unknown> } | undefined): void {
+  console.log('[DEBUG handleGatewayNotification] Received notification:', notification);
   const payload = notification;
   if (!payload || payload.method !== 'agent' || !payload.params || typeof payload.params !== 'object') {
+    console.log('[DEBUG handleGatewayNotification] Skipping - invalid payload or method');
     return;
   }
 
@@ -109,6 +111,24 @@ function handleGatewayNotification(notification: { method?: string; params?: Rec
   const data = (p.data && typeof p.data === 'object') ? (p.data as Record<string, unknown>) : {};
   const phase = data.phase ?? p.phase;
   const hasChatData = (p.state ?? data.state) || (p.message ?? data.message);
+  console.log('[DEBUG handleGatewayNotification] Parsed:', { phase, hasChatData, state: p.state ?? data.state });
+
+  // Handle error phase even without chat data
+  if (phase === 'error') {
+    const errorMessage = data.error ?? p.error ?? data.message ?? p.message ?? 'An error occurred';
+    console.log('[DEBUG handleGatewayNotification] Error phase detected:', errorMessage);
+    import('./chat')
+      .then(({ useChatStore }) => {
+        useChatStore.getState().handleChatEvent({
+          state: 'error',
+          errorMessage: String(errorMessage),
+          runId: p.runId ?? data.runId,
+          sessionKey: p.sessionKey ?? data.sessionKey,
+        });
+      })
+      .catch(() => {});
+    return;
+  }
 
   if (hasChatData) {
     const normalizedEvent: Record<string, unknown> = {

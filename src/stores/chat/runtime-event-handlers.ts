@@ -72,6 +72,7 @@ export function handleRuntimeEventState(
           break;
         }
         case 'final': {
+          console.log('[DEBUG] Received final event, hasOutput:', hasOutput, 'toolOnly:', toolOnly, 'finalMsg:', finalMsg);
           clearErrorRecoveryTimer();
           if (get().error) set({ error: null });
           // Message complete - add to history and clear streaming
@@ -132,7 +133,7 @@ export function handleRuntimeEventState(
                   messages: snapshotMsgs.length > 0 ? [...s.messages, ...snapshotMsgs] : s.messages,
                   streamingText: '',
                   streamingMessage: null,
-                  pendingFinal: true,
+                  pendingFinal: false,  // FIX: Clear pendingFinal when tool result is received
                   pendingToolImages: toolFiles.length > 0
                     ? [...s.pendingToolImages, ...toolFiles]
                     : s.pendingToolImages,
@@ -162,19 +163,20 @@ export function handleRuntimeEventState(
 
               // Check if message already exists (prevent duplicates)
               const alreadyExists = s.messages.some(m => m.id === msgId);
+              console.log('[DEBUG] Message processing - msgId:', msgId, 'alreadyExists:', alreadyExists, 'toolOnly:', toolOnly, 'hasOutput:', hasOutput);
               if (alreadyExists) {
                 return toolOnly ? {
                   streamingText: '',
                   streamingMessage: null,
-                  pendingFinal: true,
+                  pendingFinal: false,  // FIX: Don't wait if message already exists
                   streamingTools,
                   ...clearPendingImages,
                 } : {
                   streamingText: '',
                   streamingMessage: null,
-                  sending: hasOutput ? false : s.sending,
-                  activeRunId: hasOutput ? null : s.activeRunId,
-                  pendingFinal: hasOutput ? false : true,
+                  sending: false,  // FIX: Always stop sending when final message arrives
+                  activeRunId: null,
+                  pendingFinal: false,
                   streamingTools,
                   ...clearPendingImages,
                 };
@@ -183,16 +185,16 @@ export function handleRuntimeEventState(
                 messages: [...s.messages, msgWithImages],
                 streamingText: '',
                 streamingMessage: null,
-                pendingFinal: true,
+                pendingFinal: false,  // FIX: Don't set pendingFinal for tool-only messages
                 streamingTools,
                 ...clearPendingImages,
               } : {
                 messages: [...s.messages, msgWithImages],
                 streamingText: '',
                 streamingMessage: null,
-                sending: hasOutput ? false : s.sending,
-                activeRunId: hasOutput ? null : s.activeRunId,
-                pendingFinal: hasOutput ? false : true,
+                sending: false,  // FIX: Always stop sending when final message arrives
+                activeRunId: null,
+                pendingFinal: false,
                 streamingTools,
                 ...clearPendingImages,
               };
@@ -205,7 +207,7 @@ export function handleRuntimeEventState(
             }
           } else {
             // No message in final event - reload history to get complete data
-            set({ streamingText: '', streamingMessage: null, pendingFinal: true });
+            set({ streamingText: '', streamingMessage: null, pendingFinal: false, sending: false, activeRunId: null });
             get().loadHistory();
           }
           break;

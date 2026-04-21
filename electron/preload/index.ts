@@ -117,6 +117,7 @@ const electronAPI = {
         'skill:updateConfig',
         'skill:getConfig',
         'skill:getAllConfigs',
+        'skill:installLocal',
         // Box-IM
         'box-im:getTokenKey',
         'box-im:logout',

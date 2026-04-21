@@ -736,6 +736,114 @@ function registerSkillConfigHandlers(): void {
   ipcMain.handle('skill:getAllConfigs', async () => {
     return await getAllSkillConfigs();
   });
+
+  // Install skill from local file/folder
+  ipcMain.handle('skill:installLocal', async () => {
+    try {
+      // 打开文件选择对话框
+      const result = await dialog.showOpenDialog({
+        title: '选择技能文件或文件夹',
+        properties: ['openFile', 'openDirectory'],
+        filters: [
+          { name: '技能文件夹', extensions: [] },
+          { name: '所有文件', extensions: ['*'] }
+        ]
+      });
+
+      if (result.canceled || result.filePaths.length === 0) {
+        return { success: false };
+      }
+
+      const sourcePath = result.filePaths[0];
+      const skillsDir = await getOpenClawSkillsDir();
+      
+      // 确保技能目录存在
+      await ensureDir(skillsDir);
+
+      // 判断是否为文件夹
+      const fs = await import('node:fs/promises');
+      const stat = await fs.stat(sourcePath);
+      
+      if (!stat.isDirectory()) {
+        return {
+          success: false,
+          error: '请选择技能文件夹（不支持压缩文件）'
+        };
+      }
+
+      // 检查是否有 SKILL.md 文件
+      const skillMdPath = join(sourcePath, 'SKILL.md');
+      if (!existsSync(skillMdPath)) {
+        return {
+          success: false,
+          error: '所选文件夹不是有效的技能（缺少 SKILL.md 文件）'
+        };
+      }
+
+      // 读取 SKILL.md 获取技能名称
+      const skillMdContent = await fs.readFile(skillMdPath, 'utf-8');
+      const nameMatch = skillMdContent.match(/^---\s*\nname:\s*(.+?)\s*\n/m);
+      const skillNameFromMd = nameMatch ? nameMatch[1].trim() : null;
+
+      if (!skillNameFromMd) {
+        return {
+          success: false,
+          error: '无法从 SKILL.md 中读取技能名称（请确保 frontmatter 中有 name 字段）'
+        };
+      }
+
+      // 检查技能名称是否已存在（扫描所有已安装技能的 SKILL.md）
+      const existingDirs = await fs.readdir(skillsDir);
+      for (const dir of existingDirs) {
+        const existingSkillMdPath = join(skillsDir, dir, 'SKILL.md');
+        if (existsSync(existingSkillMdPath)) {
+          try {
+            const existingContent = await fs.readFile(existingSkillMdPath, 'utf-8');
+            const existingNameMatch = existingContent.match(/^---\s*\nname:\s*(.+?)\s*\n/m);
+            const existingName = existingNameMatch ? existingNameMatch[1].trim() : null;
+            if (existingName === skillNameFromMd) {
+              return {
+                success: false,
+                error: `技能 "${skillNameFromMd}" 已存在（位于 ${dir} 文件夹）。请修改 SKILL.md 中的 name 字段后再安装。`
+              };
+            }
+          } catch {
+            // 忽略读取失败的技能
+          }
+        }
+      }
+
+      // 使用文件夹名称作为目标路径
+      const folderName = basename(sourcePath);
+      const targetPath = join(skillsDir, folderName);
+      
+      // 检查目标文件夹是否已存在
+      if (existsSync(targetPath)) {
+        return {
+          success: false,
+          error: `文件夹 "${folderName}" 已存在。请重命名后再安装。`
+        };
+      }
+
+      // 复制文件夹
+      await fs.cp(sourcePath, targetPath, { recursive: true });
+      
+      logger.info(`[skill:installLocal] Installed skill "${skillNameFromMd}" from ${sourcePath} to ${targetPath}`);
+      
+      return {
+        success: true,
+        path: targetPath,
+        skillName: skillNameFromMd,
+        folderName
+      };
+    } catch (error) {
+      logger.error('[skill:installLocal] Failed:', error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error)
+      };
+    }
+  });
 }
 
 function registerBoxImConfigHandlers(): void {

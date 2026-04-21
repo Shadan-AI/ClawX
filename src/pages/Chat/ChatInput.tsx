@@ -106,21 +106,21 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
   const agents = useAgentsStore((s) => s.agents);
   const skills = useSkillsStore((s) => s.skills);
 
-  // 获取已启用的技能列表
-  const enabledSkills = useMemo(() => {
-    return (skills || []).filter(skill => skill.enabled && !skill.isCore);
+  // 获取所有非核心技能列表（包括未启用的）
+  const availableSkills = useMemo(() => {
+    return (skills || []).filter(skill => !skill.isCore);
   }, [skills]);
 
   // 过滤技能列表
   const filteredSkills = useMemo(() => {
-    if (!skillSearchQuery) return enabledSkills;
+    if (!skillSearchQuery) return availableSkills;
     const query = skillSearchQuery.toLowerCase();
-    return enabledSkills.filter(skill => 
+    return availableSkills.filter(skill => 
       skill.name.toLowerCase().includes(query) ||
       skill.description.toLowerCase().includes(query) ||
       (skill.slug || '').toLowerCase().includes(query)
     );
-  }, [enabledSkills, skillSearchQuery]);
+  }, [availableSkills, skillSearchQuery]);
 
   // 处理技能快速使用
   const [activeSkill, setActiveSkill] = useState<{ name: string; slug: string; description: string } | null>(null);
@@ -796,15 +796,34 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                               {filteredSkills.map((skill) => (
                                 <button
                                   key={skill.id}
-                                  onClick={() => handleSelectSkill({ name: skill.name, slug: skill.slug || skill.id, description: skill.description })}
-                                  className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors hover:bg-black/5 dark:hover:bg-white/5"
+                                  onClick={() => {
+                                    if (!skill.enabled) {
+                                      // 未启用的技能，提示用户
+                                      return;
+                                    }
+                                    handleSelectSkill({ name: skill.name, slug: skill.slug || skill.id, description: skill.description });
+                                  }}
+                                  disabled={!skill.enabled}
+                                  className={cn(
+                                    "flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors",
+                                    skill.enabled 
+                                      ? "hover:bg-black/5 dark:hover:bg-white/5 cursor-pointer" 
+                                      : "opacity-50 cursor-not-allowed"
+                                  )}
                                 >
                                   <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-lg">
                                     {skill.icon || '🔧'}
                                   </div>
                                   <div className="flex-1 overflow-hidden">
-                                    <div className="truncate text-[13px] font-medium text-foreground">
-                                      {skill.name}
+                                    <div className="flex items-center gap-2">
+                                      <div className="truncate text-[13px] font-medium text-foreground">
+                                        {skill.name}
+                                      </div>
+                                      {!skill.enabled && (
+                                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
+                                          未启用
+                                        </span>
+                                      )}
                                     </div>
                                     <div className="truncate text-[11px] text-muted-foreground">
                                       {skill.description}

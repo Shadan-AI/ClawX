@@ -1004,6 +1004,31 @@ function hasNonToolAssistantContent(message: RawMessage | undefined): boolean {
 
 // ── Store ────────────────────────────────────────────────────────
 
+// Timeout protection for pendingFinal state
+let pendingFinalTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearPendingFinalTimer() {
+  if (pendingFinalTimer) {
+    clearTimeout(pendingFinalTimer);
+    pendingFinalTimer = null;
+  }
+}
+
+function startPendingFinalTimer(get: () => ChatState, set: (state: Partial<ChatState>) => void) {
+  clearPendingFinalTimer();
+  pendingFinalTimer = setTimeout(() => {
+    const { pendingFinal, sending } = get();
+    if (pendingFinal && sending) {
+      console.warn('[Chat] pendingFinal timeout (30s) - forcing clear');
+      set({ 
+        pendingFinal: false, 
+        sending: false,
+        error: 'Tool processing timeout - please try again'
+      });
+    }
+  }, 30000); // 30 seconds timeout
+}
+
 export const useChatStore = create<ChatState>((set, get) => ({
   messages: [],
   loading: false,
@@ -1511,6 +1536,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         });
         if (hasRecentAssistantActivity) {
           set({ pendingFinal: true });
+          startPendingFinalTimer(get, set);
         }
       }
 
@@ -1524,6 +1550,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         if (recentAssistant) {
           clearHistoryPoll();
           set({ sending: false, activeRunId: null, pendingFinal: false });
+          clearPendingFinalTimer();
         }
       }
       };
@@ -1811,6 +1838,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     clearErrorRecoveryTimer();
     const { currentSessionKey } = get();
     set({ sending: false, streamingText: '', streamingMessage: null, pendingFinal: false, lastUserMessageAt: null, pendingToolImages: [] });
+    clearPendingFinalTimer();
     set({ streamingTools: [] });
 
     try {
