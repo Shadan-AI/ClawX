@@ -48,6 +48,7 @@ import { applyProxySettings } from './proxy';
 import { syncLaunchAtStartupSettingFromStore } from './launch-at-startup';
 import { proxyAwareFetch } from '../utils/proxy-fetch';
 import { getRecentTokenUsageHistory } from '../utils/token-usage';
+import { readAgentProfile, saveAgentProfile, getAgentWorkspaceDir } from '../utils/agent-profile';
 import { getProviderService } from '../services/providers/provider-service';
 import {
   getOpenClawProviderKey,
@@ -152,6 +153,9 @@ export function registerIpcHandlers(
 
   // File staging handlers (upload/send separation)
   registerFileHandlers();
+
+  // Agent profile handlers (edit markdown files)
+  registerAgentProfileHandlers();
 }
 
 function registerUnifiedRequestHandlers(gatewayManager: GatewayManager): void {
@@ -2788,6 +2792,29 @@ function registerSessionHandlers(): void {
     } catch (err) {
       logger.error(`[session:delete] Unexpected error for ${sessionKey}:`, err);
       return { success: false, error: String(err) };
+    }
+  });
+}
+
+/**
+ * Agent Profile Handlers
+ * Handle reading and writing agent markdown files
+ */
+function registerAgentProfileHandlers(): void {
+  ipcMain.handle('agent-profile:read', async (_, params: { agentId: string; filename: string }) => {
+    return await readAgentProfile(params.agentId, params.filename);
+  });
+
+  ipcMain.handle('agent-profile:save', async (_, params: { agentId: string; filename: string; content: string }) => {
+    return await saveAgentProfile(params.agentId, params.filename, params.content);
+  });
+
+  ipcMain.handle('agent-profile:getDir', async (_, params: { agentId: string }) => {
+    try {
+      const dirPath = getAgentWorkspaceDir(params.agentId);
+      return { success: true, path: dirPath };
+    } catch (error) {
+      return { success: false, error: String(error) };
     }
   });
 }

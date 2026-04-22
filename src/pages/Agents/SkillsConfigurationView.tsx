@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
-import { Bot, Check, Puzzle, RefreshCw, Search, X, Sparkles, ChevronDown, Loader2 } from 'lucide-react';
+import { Bot, Check, Puzzle, RefreshCw, Search, X, Sparkles, ChevronDown, Loader2, FileText, Eye, Edit3, Save, RotateCcw, FolderOpen } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { marked } from 'marked';
+import DOMPurify from 'dompurify';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -38,6 +40,16 @@ export function SkillsConfigurationView({
   const [draggedSkillId, setDraggedSkillId] = useState<string | null>(null);
   const [showEmployeeDropdown, setShowEmployeeDropdown] = useState(false);
   const [applyingTemplate, setApplyingTemplate] = useState(false);
+  const [viewMode, setViewMode] = useState<'skills' | 'profile'>('skills');
+  
+  // Profile editor states
+  const [selectedMdFile, setSelectedMdFile] = useState('AGENTS.md');
+  const [mdContent, setMdContent] = useState('');
+  const [originalMdContent, setOriginalMdContent] = useState('');
+  const [isMdPreview, setIsMdPreview] = useState(false);
+  const [mdLoading, setMdLoading] = useState(false);
+  const [mdSaving, setMdSaving] = useState(false);
+  const [previewHtml, setPreviewHtml] = useState({ __html: '' });
 
   // 获取本地已安装的技能和模板
   useEffect(() => {
@@ -86,6 +98,95 @@ export function SkillsConfigurationView({
     () => selectedEmployeeId && JSON.stringify(currentSkills) !== JSON.stringify(agentSkills[selectedEmployeeId] || []),
     [selectedEmployeeId, currentSkills, agentSkills]
   );
+
+  const MD_FILES = ['AGENTS.md', 'SOUL.md', 'TOOLS.md', 'IDENTITY.md', 'USER.md', 'HEARTBEAT.md'];
+
+  // Load MD file when switching files or agents
+  useEffect(() => {
+    if (viewMode === 'profile' && selectedEmployeeId) {
+      loadMdFile(selectedMdFile);
+    }
+  }, [selectedEmployeeId, selectedMdFile, viewMode]);
+
+  // Update preview when content changes
+  useEffect(() => {
+    if (isMdPreview && mdContent) {
+      marked(mdContent).then((html) => {
+        const sanitized = DOMPurify.sanitize(html);
+        setPreviewHtml({ __html: sanitized });
+      });
+    }
+  }, [isMdPreview, mdContent]);
+
+  const loadMdFile = async (filename: string) => {
+    if (!selectedEmployeeId) return;
+    setMdLoading(true);
+    try {
+      const result = await window.electron.ipcRenderer.invoke('agent-profile:read', {
+        agentId: selectedEmployeeId,
+        filename,
+      }) as { success: boolean; content?: string; error?: string };
+      
+      if (result.success) {
+        setMdContent(result.content || '');
+        setOriginalMdContent(result.content || '');
+      } else {
+        toast.error(`加载失败: ${result.error}`);
+      }
+    } catch (error) {
+      toast.error(`加载失败: ${String(error)}`);
+    } finally {
+      setMdLoading(false);
+    }
+  };
+
+  const handleMdSave = async () => {
+    if (!selectedEmployeeId) return;
+    setMdSaving(true);
+    try {
+      const result = await window.electron.ipcRenderer.invoke('agent-profile:save', {
+        agentId: selectedEmployeeId,
+        filename: selectedMdFile,
+        content: mdContent,
+      }) as { success: boolean; error?: string };
+      
+      if (result.success) {
+        setOriginalMdContent(mdContent);
+        toast.success('保存成功');
+      } else {
+        toast.error(`保存失败: ${result.error}`);
+      }
+    } catch (error) {
+      toast.error(`保存失败: ${String(error)}`);
+    } finally {
+      setMdSaving(false);
+    }
+  };
+
+  const handleMdReset = () => {
+    setMdContent(originalMdContent);
+    toast.info('已重置');
+  };
+
+  const handleOpenMdFolder = async () => {
+    if (!selectedEmployeeId) return;
+    try {
+      const workspaceDir = await window.electron.ipcRenderer.invoke('agent-profile:getDir', {
+        agentId: selectedEmployeeId,
+      }) as { success: boolean; path?: string; error?: string };
+      
+      if (workspaceDir.success && workspaceDir.path) {
+        await window.electron.openExternal(`file://${workspaceDir.path}`);
+        toast.success('已打开文件夹');
+      } else {
+        toast.error(`打开失败: ${workspaceDir.error}`);
+      }
+    } catch (error) {
+      toast.error(`打开失败: ${String(error)}`);
+    }
+  };
+
+  const hasMdChanges = mdContent !== originalMdContent;
 
   // 只显示已启用的技能供配置
   const enabledSkills = useMemo(
@@ -759,7 +860,7 @@ export function SkillsConfigurationView({
         </div>
       </div>
 
-      {/* 右侧：已选技能 */}
+      {/* 右侧：已选技能 / 岗位定义 */}
       <div className="flex-1 min-w-0 space-y-6 overflow-y-auto pr-2 -mr-2">
         {/* 已选技能区域 - 第二层容器 */}
         <div
@@ -774,87 +875,229 @@ export function SkillsConfigurationView({
           onDrop={handleDrop}
         >
           <div className="flex items-center justify-between mb-4">
-            <p className="text-[15px] font-semibold text-foreground flex items-center gap-2">
-              <Puzzle className="h-4 w-4" />
-              已选技能
-            </p>
-            <AnimatePresence mode="wait">
-              <motion.span
-                key={currentSkills.length}
-                initial={{ scale: 1.2, opacity: 0 }}
-                animate={{ scale: 1, opacity: 1 }}
-                transition={{ type: 'spring', stiffness: 500, damping: 25 }}
-                className="text-[12px] font-medium text-foreground/70 bg-black/5 dark:bg-white/5 px-3 py-1 rounded-full"
+            <div className="flex items-center gap-2">
+              <Button
+                variant={viewMode === 'skills' ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => setViewMode('skills')}
+                className="h-8 text-[12px] font-medium rounded-lg px-3"
               >
-                {currentSkills.length} 个
-              </motion.span>
-            </AnimatePresence>
+                <Puzzle className="h-3.5 w-3.5 mr-1.5" />
+                已选技能
+              </Button>
+              <Button
+                variant={viewMode === 'profile' ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => setViewMode('profile')}
+                disabled={!selectedEmployeeId}
+                className="h-8 text-[12px] font-medium rounded-lg px-3"
+              >
+                <FileText className="h-3.5 w-3.5 mr-1.5" />
+                岗位定义
+              </Button>
+            </div>
+            {viewMode === 'skills' && (
+              <AnimatePresence mode="wait">
+                <motion.span
+                  key={currentSkills.length}
+                  initial={{ scale: 1.2, opacity: 0 }}
+                  animate={{ scale: 1, opacity: 1 }}
+                  transition={{ type: 'spring', stiffness: 500, damping: 25 }}
+                  className="text-[12px] font-medium text-foreground/70 bg-black/5 dark:bg-white/5 px-3 py-1 rounded-full"
+                >
+                  {currentSkills.length} 个
+                </motion.span>
+              </AnimatePresence>
+            )}
           </div>
           
-          {currentSkills.length === 0 ? (
-            <motion.div 
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="flex items-center justify-center py-8 text-muted-foreground"
-            >
-              <p className="text-[13px]">
-                {isDropZoneActive ? '松开鼠标添加技能' : '拖拽技能到这里或点击下方技能卡片'}
-              </p>
-            </motion.div>
-          ) : (
-            <motion.div 
-              layout
-              className="flex flex-wrap gap-2"
-            >
-              <AnimatePresence mode="popLayout">
-                {currentSkills.map((skillId) => {
-                  // 尝试通过 ID 或 slug 查找技能（在所有技能中查找，不仅限于已启用的）
-                  const skill = allSkills.find((s) => s.id === skillId || (s.slug || s.id) === skillId);
-                  
-                  if (!skill) {
-                    console.warn('[SkillsConfigurationView] Skill not found:', {
-                      skillId,
-                      skillIdType: typeof skillId,
-                      allSkillsCount: allSkills.length,
-                      enabledSkillsCount: enabledSkills.length,
-                      firstSkill: allSkills[0],
-                      sampleSkillIds: allSkills.slice(0, 3).map(s => ({ id: s.id, slug: s.slug })),
-                    });
-                    return null;
-                  }
-                  
-                  return (
-                    <motion.button
-                      key={skillId}
-                      layout
-                      initial={{ scale: 0.8, y: -10 }}
-                      animate={{ opacity: 1, scale: 1, y: 0 }}
-                      exit={{ opacity: 0, scale: 0.8, x: -20 }}
-                      transition={{ 
-                        type: 'spring',
-                        stiffness: 500,
-                        damping: 30,
-                        mass: 0.8
-                      }}
-                      onClick={() => handleRemoveSkill(skillId)}
-                      className="group inline-flex items-center gap-2 px-3.5 py-2.5 rounded-lg bg-primary/5 hover:bg-primary/8 border border-primary/20 hover:border-primary/30 transition-all duration-200 text-[13px] font-medium"
-                    >
-                      <span className="text-[16px]">{skill.icon || '🔧'}</span>
-                      <span className="text-foreground/90 font-bold">{skill.name}</span>
-                      {!skill.enabled && (
-                        <span className="text-[10px] text-orange-600 dark:text-orange-400 font-semibold">未启用</span>
+          <AnimatePresence mode="wait">
+            {viewMode === 'profile' ? (
+              <motion.div
+                key="profile-view"
+                initial={{ opacity: 0, x: 20 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -20 }}
+                transition={{ duration: 0.3 }}
+                className="flex flex-col h-[600px]"
+              >
+                {selectedEmployeeId ? (
+                  <>
+                    {/* MD File tabs */}
+                    <div className="flex items-center gap-1 mb-3 border-b border-border pb-2">
+                      {MD_FILES.map((file) => (
+                        <button
+                          key={file}
+                          onClick={() => setSelectedMdFile(file)}
+                          className={cn(
+                            'px-3 py-1.5 text-xs font-medium rounded transition-colors',
+                            selectedMdFile === file
+                              ? 'bg-primary text-primary-foreground'
+                              : 'bg-muted hover:bg-muted/80 text-muted-foreground'
+                          )}
+                        >
+                          {file.replace('.md', '')}
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* Toolbar */}
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant={isMdPreview ? 'outline' : 'default'}
+                          size="sm"
+                          onClick={() => setIsMdPreview(false)}
+                          className="h-8 text-xs"
+                        >
+                          <Edit3 className="h-3 w-3 mr-1" />
+                          编辑
+                        </Button>
+                        <Button
+                          variant={isMdPreview ? 'default' : 'outline'}
+                          size="sm"
+                          onClick={() => setIsMdPreview(true)}
+                          className="h-8 text-xs"
+                        >
+                          <Eye className="h-3 w-3 mr-1" />
+                          预览
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={handleOpenMdFolder}
+                          className="h-8 text-xs"
+                          title="在文件管理器中打开"
+                        >
+                          <FolderOpen className="h-3 w-3 mr-1" />
+                          打开文件夹
+                        </Button>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {hasMdChanges && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={handleMdReset}
+                            disabled={mdSaving}
+                            className="h-8 text-xs"
+                          >
+                            <RotateCcw className="h-3 w-3 mr-1" />
+                            重置
+                          </Button>
+                        )}
+                        <Button
+                          variant="default"
+                          size="sm"
+                          onClick={handleMdSave}
+                          disabled={!hasMdChanges || mdSaving}
+                          className="h-8 text-xs"
+                        >
+                          <Save className="h-3 w-3 mr-1" />
+                          {mdSaving ? '保存中...' : '保存'}
+                        </Button>
+                      </div>
+                    </div>
+
+                    {/* Content area */}
+                    <div className="flex-1 border border-border rounded-lg overflow-hidden">
+                      {mdLoading ? (
+                        <div className="flex items-center justify-center h-full">
+                          <div className="text-sm text-muted-foreground">加载中...</div>
+                        </div>
+                      ) : isMdPreview ? (
+                        <div
+                          className="prose prose-sm max-w-none p-4 overflow-auto h-full bg-background"
+                          dangerouslySetInnerHTML={previewHtml}
+                        />
+                      ) : (
+                        <textarea
+                          value={mdContent}
+                          onChange={(e) => setMdContent(e.target.value)}
+                          className="w-full h-full p-4 bg-background text-foreground font-mono text-sm resize-none focus:outline-none"
+                          placeholder="在此编辑 Markdown 内容..."
+                        />
                       )}
-                      <X className="h-3.5 w-3.5 text-foreground/70 group-hover:text-foreground transition-colors duration-200" />
-                    </motion.button>
-                  );
-                })}
-              </AnimatePresence>
-            </motion.div>
-          )}
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex items-center justify-center h-full text-muted-foreground">
+                    <p className="text-[13px]">请先选择一个员工</p>
+                  </div>
+                )}
+              </motion.div>
+            ) : currentSkills.length === 0 ? (
+              <motion.div 
+                key="skills-empty"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="flex items-center justify-center py-8 text-muted-foreground"
+              >
+                <p className="text-[13px]">
+                  {isDropZoneActive ? '松开鼠标添加技能' : '拖拽技能到这里或点击下方技能卡片'}
+                </p>
+              </motion.div>
+            ) : (
+              <motion.div 
+                key="skills-list"
+                initial={{ opacity: 0, x: -20 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: 20 }}
+                transition={{ duration: 0.3 }}
+                layout
+                className="flex flex-wrap gap-2"
+              >
+                <AnimatePresence mode="popLayout">
+                  {currentSkills.map((skillId) => {
+                    // 尝试通过 ID 或 slug 查找技能（在所有技能中查找，不仅限于已启用的）
+                    const skill = allSkills.find((s) => s.id === skillId || (s.slug || s.id) === skillId);
+                    
+                    if (!skill) {
+                      console.warn('[SkillsConfigurationView] Skill not found:', {
+                        skillId,
+                        skillIdType: typeof skillId,
+                        allSkillsCount: allSkills.length,
+                        enabledSkillsCount: enabledSkills.length,
+                        firstSkill: allSkills[0],
+                        sampleSkillIds: allSkills.slice(0, 3).map(s => ({ id: s.id, slug: s.slug })),
+                      });
+                      return null;
+                    }
+                    
+                    return (
+                      <motion.button
+                        key={skillId}
+                        layout
+                        initial={{ scale: 0.8, y: -10 }}
+                        animate={{ opacity: 1, scale: 1, y: 0 }}
+                        exit={{ opacity: 0, scale: 0.8, x: -20 }}
+                        transition={{ 
+                          type: 'spring',
+                          stiffness: 500,
+                          damping: 30,
+                          mass: 0.8
+                        }}
+                        onClick={() => handleRemoveSkill(skillId)}
+                        className="group inline-flex items-center gap-2 px-3.5 py-2.5 rounded-lg bg-primary/5 hover:bg-primary/8 border border-primary/20 hover:border-primary/30 transition-all duration-200 text-[13px] font-medium"
+                      >
+                        <span className="text-[16px]">{skill.icon || '🔧'}</span>
+                        <span className="text-foreground/90 font-bold">{skill.name}</span>
+                        {!skill.enabled && (
+                          <span className="text-[10px] text-orange-600 dark:text-orange-400 font-semibold">未启用</span>
+                        )}
+                        <X className="h-3.5 w-3.5 text-foreground/70 group-hover:text-foreground transition-colors duration-200" />
+                      </motion.button>
+                    );
+                  })}
+                </AnimatePresence>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
 
-      {/* 搜索和筛选 */}
+      {/* 搜索和筛选 - 只在技能视图显示 */}
+      {viewMode === 'skills' && (
       <div className="space-y-3 px-0.5">
         <div className="relative">
           <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none z-10" />
@@ -918,8 +1161,10 @@ export function SkillsConfigurationView({
           })}
         </div>
       </div>
+      )}
 
-      {/* 可用技能网格 */}
+      {/* 可用技能网格 - 只在技能视图显示 */}
+      {viewMode === 'skills' && (
       <div>
         <div className="flex items-center justify-between mb-4">
           <p className="text-[15px] font-serif font-semibold text-foreground" style={{ fontFamily: 'Georgia, Cambria, "Times New Roman", Times, serif' }}>
@@ -999,6 +1244,7 @@ export function SkillsConfigurationView({
           )}
         </AnimatePresence>
       </div>
+      )}
 
       {/* Template Selection Dialog */}
       </div>

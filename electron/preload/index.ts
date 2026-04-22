@@ -150,6 +150,10 @@ const electronAPI = {
         'openclaw:getConfigDir',
         'openclaw:getSkillsDir',
         'openclaw:getCliCommand',
+        // Agent Profile
+        'agent-profile:read',
+        'agent-profile:save',
+        'agent-profile:getDir',
       ];
 
       if (validChannels.includes(channel)) {
