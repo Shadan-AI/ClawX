@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
-import { Bot, Check, Puzzle, RefreshCw, Search, X, Sparkles, ChevronDown, Loader2, FileText, Eye, Edit3, Save, RotateCcw, FolderOpen } from 'lucide-react';
+import { Bot, Check, Puzzle, RefreshCw, Search, X, Sparkles, ChevronDown, Loader2, FileText, Eye, Edit3, Save, RotateCcw, FolderOpen, FileCode } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
@@ -101,24 +101,80 @@ export function SkillsConfigurationView({
 
   const MD_FILES = ['AGENTS.md', 'SOUL.md', 'TOOLS.md', 'IDENTITY.md', 'USER.md', 'HEARTBEAT.md'];
 
-  // Load MD file when switching files or agents
-  useEffect(() => {
-    if (viewMode === 'profile' && selectedEmployeeId) {
-      loadMdFile(selectedMdFile);
-    }
-  }, [selectedEmployeeId, selectedMdFile, viewMode]);
+  const DEFAULT_TEMPLATES: Record<string, string> = {
+    'AGENTS.md': `# AGENTS
 
-  // Update preview when content changes
-  useEffect(() => {
-    if (isMdPreview && mdContent) {
-      marked(mdContent).then((html) => {
-        const sanitized = DOMPurify.sanitize(html);
-        setPreviewHtml({ __html: sanitized });
-      });
-    }
-  }, [isMdPreview, mdContent]);
+This file defines the agent's role and responsibilities.
 
-  const loadMdFile = async (filename: string) => {
+## Role
+Describe the agent's primary role and purpose.
+
+## Responsibilities
+- List key responsibilities
+- Define scope of work
+- Specify limitations
+`,
+    'SOUL.md': `# SOUL
+
+This file defines the agent's personality and communication style.
+
+## Personality
+Describe the agent's personality traits.
+
+## Communication Style
+- Tone and manner of speaking
+- Level of formality
+- Preferred language patterns
+`,
+    'TOOLS.md': `# TOOLS
+
+This file lists the tools and capabilities available to the agent.
+
+## Available Tools
+- List tools the agent can use
+- Describe when to use each tool
+- Specify any tool-specific guidelines
+`,
+    'IDENTITY.md': `# IDENTITY
+
+This file defines the agent's identity and metadata.
+
+## Basic Information
+- Name: [Agent Name]
+- Emoji: [Emoji]
+- Avatar: [Avatar URL or path]
+
+## Description
+Brief description of the agent.
+`,
+    'USER.md': `# USER
+
+This file contains information about the user and their preferences.
+
+## User Preferences
+- Communication preferences
+- Working style
+- Specific requirements
+
+## Context
+Additional context about the user's needs and expectations.
+`,
+    'HEARTBEAT.md': `# HEARTBEAT
+
+This file contains periodic tasks and reminders for the agent.
+
+## Periodic Tasks
+- List recurring tasks
+- Specify check intervals
+- Define success criteria
+
+## Reminders
+- Important reminders
+- Scheduled checks
+`,
+  };
+
+  const loadMdFile = useCallback(async (filename: string) => {
     if (!selectedEmployeeId) return;
     setMdLoading(true);
     try {
@@ -138,7 +194,24 @@ export function SkillsConfigurationView({
     } finally {
       setMdLoading(false);
     }
-  };
+  }, [selectedEmployeeId]);
+
+  // Load MD file when switching files or agents
+  useEffect(() => {
+    if (viewMode === 'profile' && selectedEmployeeId) {
+      loadMdFile(selectedMdFile);
+    }
+  }, [selectedEmployeeId, selectedMdFile, viewMode, loadMdFile]);
+
+  // Update preview when content changes
+  useEffect(() => {
+    if (isMdPreview && mdContent) {
+      marked(mdContent).then((html) => {
+        const sanitized = DOMPurify.sanitize(html);
+        setPreviewHtml({ __html: sanitized });
+      });
+    }
+  }, [isMdPreview, mdContent]);
 
   const handleMdSave = async () => {
     if (!selectedEmployeeId) return;
@@ -184,6 +257,12 @@ export function SkillsConfigurationView({
     } catch (error) {
       toast.error(`打开失败: ${String(error)}`);
     }
+  };
+
+  const handleLoadDefaultTemplate = () => {
+    const defaultContent = DEFAULT_TEMPLATES[selectedMdFile] || '';
+    setMdContent(defaultContent);
+    toast.info('已加载默认模板');
   };
 
   const hasMdChanges = mdContent !== originalMdContent;
@@ -961,6 +1040,16 @@ export function SkillsConfigurationView({
                         >
                           <Eye className="h-3 w-3 mr-1" />
                           预览
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={handleLoadDefaultTemplate}
+                          className="h-8 text-xs"
+                          title="加载默认模板"
+                        >
+                          <FileCode className="h-3 w-3 mr-1" />
+                          默认模板
                         </Button>
                         <Button
                           variant="outline"
