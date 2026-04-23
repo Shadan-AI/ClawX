@@ -32,7 +32,8 @@ export function TemplateDialog({ employeeId, isOpen, onClose, onApplied }: Templ
     if (isOpen && templates.length === 0) {
       fetchTemplates();
     }
-  }, [isOpen, templates.length, fetchTemplates]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, templates.length]);
 
   const selectedTemplate = templates.find((t) => t.id === selectedTemplateId);
 

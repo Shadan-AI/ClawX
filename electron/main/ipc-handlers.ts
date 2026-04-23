@@ -48,7 +48,7 @@ import { applyProxySettings } from './proxy';
 import { syncLaunchAtStartupSettingFromStore } from './launch-at-startup';
 import { proxyAwareFetch } from '../utils/proxy-fetch';
 import { getRecentTokenUsageHistory } from '../utils/token-usage';
-import { readAgentProfile, saveAgentProfile, getAgentWorkspaceDir } from '../utils/agent-profile';
+import { readAgentProfile, saveAgentProfile, getAgentWorkspaceDir, syncAgentProfile } from '../utils/agent-profile';
 import { getProviderService } from '../services/providers/provider-service';
 import {
   getOpenClawProviderKey,
@@ -69,7 +69,7 @@ import {
   type AppRequest,
   type AppResponse,
 } from './ipc/request-helpers';
-import { getTokenKey as getBoxImTokenKey, logoutBoxIm, syncBots } from '../utils/box-im-sync';
+import { getTokenKey as getBoxImTokenKey, logoutBoxIm, syncBots, checkProfileSync, syncProfileFiles, downloadProfileFile, uploadProfileFile_Single } from '../utils/box-im-sync';
 import {
   createWxScene,
   pollWxScan,
@@ -876,6 +876,47 @@ function registerBoxImConfigHandlers(): void {
       return { success: true, ...result };
     } catch (err) {
       logger.error('[box-im] Sync bots failed:', err);
+      return { success: false, error: String(err) };
+    }
+  });
+
+  // Profile sync handlers
+  ipcMain.handle('box-im:checkProfileSync', async (_, agentId: string) => {
+    try {
+      const statuses = await checkProfileSync(agentId);
+      return { success: true, statuses };
+    } catch (err) {
+      logger.error(`[box-im] Check profile sync failed for ${agentId}:`, err);
+      return { success: false, error: String(err) };
+    }
+  });
+
+  ipcMain.handle('box-im:syncProfile', async (_, agentId: string) => {
+    try {
+      const result = await syncProfileFiles(agentId);
+      return { success: true, ...result };
+    } catch (err) {
+      logger.error(`[box-im] Profile sync failed for ${agentId}:`, err);
+      return { success: false, error: String(err) };
+    }
+  });
+
+  ipcMain.handle('box-im:downloadProfileFile', async (_, agentId: string, filename: string) => {
+    try {
+      const success = await downloadProfileFile(agentId, filename);
+      return { success };
+    } catch (err) {
+      logger.error(`[box-im] Download profile file failed for ${agentId}/${filename}:`, err);
+      return { success: false, error: String(err) };
+    }
+  });
+
+  ipcMain.handle('box-im:uploadProfileFile', async (_, agentId: string, filename: string) => {
+    try {
+      const success = await uploadProfileFile_Single(agentId, filename);
+      return { success };
+    } catch (err) {
+      logger.error(`[box-im] Upload profile file failed for ${agentId}/${filename}:`, err);
       return { success: false, error: String(err) };
     }
   });
@@ -2816,5 +2857,9 @@ function registerAgentProfileHandlers(): void {
     } catch (error) {
       return { success: false, error: String(error) };
     }
+  });
+
+  ipcMain.handle('agent-profile:sync', async (_, params: { agentId: string }) => {
+    return await syncAgentProfile(params.agentId);
   });
 }

@@ -35,7 +35,8 @@ export function TemplateSelectionDialog({
     if (isOpen) {
       fetchTemplates();
     }
-  }, [isOpen, fetchTemplates]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen]);
 
   // 缓存启用的技能 ID，避免重复计算
   const enabledSkillIds = useMemo(

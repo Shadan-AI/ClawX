@@ -49,6 +49,8 @@ export function SkillsConfigurationView({
   const [isMdPreview, setIsMdPreview] = useState(false);
   const [mdLoading, setMdLoading] = useState(false);
   const [mdSaving, setMdSaving] = useState(false);
+  const [mdSyncing, setMdSyncing] = useState(false);
+  const [mdSource, setMdSource] = useState<'LOCAL' | 'TEMPLATE' | 'USER' | 'DEFAULT'>('LOCAL');
   const [previewHtml, setPreviewHtml] = useState({ __html: '' });
 
   // 获取本地已安装的技能和模板
@@ -60,7 +62,8 @@ export function SkillsConfigurationView({
     if (templates.length === 0 && !templatesLoading) {
       void fetchTemplates();
     }
-  }, [fetchSkills, fetchTemplates, allSkills.length, skillsLoading, templates.length, templatesLoading]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allSkills.length, skillsLoading, templates.length, templatesLoading]);
 
   // 搜索防抖
   useEffect(() => {
@@ -181,11 +184,12 @@ This file contains periodic tasks and reminders for the agent.
       const result = await window.electron.ipcRenderer.invoke('agent-profile:read', {
         agentId: selectedEmployeeId,
         filename,
-      }) as { success: boolean; content?: string; error?: string };
+      }) as { success: boolean; content?: string; source?: string; error?: string };
       
       if (result.success) {
         setMdContent(result.content || '');
         setOriginalMdContent(result.content || '');
+        setMdSource((result.source as any) || 'LOCAL');
       } else {
         toast.error(`加载失败: ${result.error}`);
       }
@@ -216,21 +220,31 @@ This file contains periodic tasks and reminders for the agent.
   const handleMdSave = async () => {
     if (!selectedEmployeeId) return;
     setMdSaving(true);
+    
+    // 显示保存中的提示
+    const savingToast = toast.loading('💾 正在保存到本地...');
+    
     try {
       const result = await window.electron.ipcRenderer.invoke('agent-profile:save', {
         agentId: selectedEmployeeId,
         filename: selectedMdFile,
         content: mdContent,
-      }) as { success: boolean; error?: string };
+      }) as { success: boolean; isCustomized?: boolean; error?: string };
       
       if (result.success) {
         setOriginalMdContent(mdContent);
-        toast.success('保存成功');
+        setMdSource('USER'); // 保存后变为自定义
+        
+        // 更新提示信息
+        toast.success(
+          `✅ 保存成功！\n💾 已保存到本地\n☁️ 已上传到云端${result.isCustomized ? '\n✏️ 文件已标记为自定义' : ''}`,
+          { id: savingToast, duration: 3000 }
+        );
       } else {
-        toast.error(`保存失败: ${result.error}`);
+        toast.error(`❌ 保存失败\n${result.error || '未知错误'}`, { id: savingToast, duration: 4000 });
       }
     } catch (error) {
-      toast.error(`保存失败: ${String(error)}`);
+      toast.error(`❌ 保存失败\n${String(error)}`, { id: savingToast, duration: 4000 });
     } finally {
       setMdSaving(false);
     }
@@ -263,6 +277,41 @@ This file contains periodic tasks and reminders for the agent.
     const defaultContent = DEFAULT_TEMPLATES[selectedMdFile] || '';
     setMdContent(defaultContent);
     toast.info('已加载默认模板');
+  };
+
+  const handleSyncProfile = async () => {
+    if (!selectedEmployeeId) return;
+    setMdSyncing(true);
+    try {
+      toast.info('正在同步岗位定义文件...', { duration: 1000 });
+      
+      const result = await window.electron.ipcRenderer.invoke('agent-profile:sync', {
+        agentId: selectedEmployeeId,
+      }) as { success: boolean; synced?: number; errors?: number; error?: string };
+      
+      if (result.success) {
+        const synced = result.synced || 0;
+        const errors = result.errors || 0;
+        
+        if (synced > 0) {
+          toast.success(
+            `✅ 同步完成！\n📥 已同步 ${synced} 个文件${errors > 0 ? `\n⚠️ ${errors} 个文件失败` : ''}`,
+            { duration: 3000 }
+          );
+        } else {
+          toast.info('所有文件已是最新，无需同步', { duration: 2000 });
+        }
+        
+        // Reload current file to show updated content
+        await loadMdFile(selectedMdFile);
+      } else {
+        toast.error(`❌ 同步失败\n${result.error || '未知错误'}`, { duration: 4000 });
+      }
+    } catch (error) {
+      toast.error(`❌ 同步失败\n${String(error)}`, { duration: 4000 });
+    } finally {
+      setMdSyncing(false);
+    }
   };
 
   const hasMdChanges = mdContent !== originalMdContent;
@@ -1002,6 +1051,22 @@ This file contains periodic tasks and reminders for the agent.
               >
                 {selectedEmployeeId ? (
                   <>
+                    {/* 说明区域 */}
+                    <div className="mb-3 p-3 rounded-lg bg-blue-500/5 border border-blue-500/20">
+                      <div className="flex items-start gap-2">
+                        <div className="text-blue-500 mt-0.5">ℹ️</div>
+                        <div className="flex-1 text-xs text-foreground/70 space-y-1">
+                          <p className="font-medium text-foreground/90">岗位定义文件说明：</p>
+                          <ul className="space-y-0.5 ml-3 list-disc">
+                            <li><strong>📦 使用模板</strong>：从模板继承，未自定义</li>
+                            <li><strong>✏️ 已自定义</strong>：已修改并保存到云端</li>
+                            <li><strong>💾 本地文件</strong>：仅保存在本地，未同步</li>
+                            <li><strong>☁️ 云端同步</strong>：保存时自动上传，点击"同步"可下载最新版本</li>
+                          </ul>
+                        </div>
+                      </div>
+                    </div>
+                    
                     {/* MD File tabs */}
                     <div className="flex items-center gap-1 mb-3 border-b border-border pb-2">
                       {MD_FILES.map((file) => (
@@ -1023,6 +1088,33 @@ This file contains periodic tasks and reminders for the agent.
                     {/* Toolbar */}
                     <div className="flex items-center justify-between mb-3">
                       <div className="flex items-center gap-2">
+                        {/* 文件来源标识 */}
+                        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-muted/50 border border-border/50">
+                          <span className="text-[10px] font-medium text-muted-foreground">来源:</span>
+                          {mdSource === 'TEMPLATE' && (
+                            <Badge variant="outline" className="h-5 text-[10px] px-1.5 bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/30">
+                              📦 使用模板
+                            </Badge>
+                          )}
+                          {mdSource === 'USER' && (
+                            <Badge variant="outline" className="h-5 text-[10px] px-1.5 bg-green-500/10 text-green-600 dark:text-green-400 border-green-500/30">
+                              ✏️ 已自定义
+                            </Badge>
+                          )}
+                          {mdSource === 'LOCAL' && (
+                            <Badge variant="outline" className="h-5 text-[10px] px-1.5 bg-gray-500/10 text-gray-600 dark:text-gray-400 border-gray-500/30">
+                              💾 本地文件
+                            </Badge>
+                          )}
+                          {mdSource === 'DEFAULT' && (
+                            <Badge variant="outline" className="h-5 text-[10px] px-1.5 bg-orange-500/10 text-orange-600 dark:text-orange-400 border-orange-500/30">
+                              📄 默认内容
+                            </Badge>
+                          )}
+                        </div>
+                        
+                        <div className="h-4 w-px bg-border" />
+                        
                         <Button
                           variant={isMdPreview ? 'outline' : 'default'}
                           size="sm"
@@ -1040,6 +1132,17 @@ This file contains periodic tasks and reminders for the agent.
                         >
                           <Eye className="h-3 w-3 mr-1" />
                           预览
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={handleSyncProfile}
+                          disabled={mdSyncing}
+                          className="h-8 text-xs"
+                          title="同步所有岗位定义文件"
+                        >
+                          <RefreshCw className={cn("h-3 w-3 mr-1", mdSyncing && "animate-spin")} />
+                          {mdSyncing ? '同步中...' : '同步'}
                         </Button>
                         <Button
                           variant="outline"

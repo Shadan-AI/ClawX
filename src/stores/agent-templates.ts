@@ -21,6 +21,7 @@ interface AgentTemplatesState {
   templates: AgentTemplate[];
   loading: boolean;
   error: string | null;
+  lastFetchTime: number; // 添加最后请求时间
   
   // Actions
   fetchTemplates: () => Promise<void>;
@@ -28,6 +29,7 @@ interface AgentTemplatesState {
   updateTemplate: (id: number, template: AgentTemplateDTO) => Promise<void>;
   deleteTemplate: (id: number) => Promise<void>;
   applyTemplate: (templateId: number, botId: number) => Promise<void>;
+  fetchTemplateProfiles: (templateId: number) => Promise<Record<string, string>>;
 }
 
 const API_BASE_URL = 'https://im.shadanai.com/api';
@@ -36,19 +38,36 @@ export const useAgentTemplatesStore = create<AgentTemplatesState>((set, get) => 
   templates: [],
   loading: false,
   error: null,
+  lastFetchTime: 0,
 
   /**
    * 获取所有模板列表（需要认证）
    */
   fetchTemplates: async () => {
-    set({ loading: true, error: null });
+    // 防止重复请求
+    const state = get();
+    const now = Date.now();
+    
+    // 如果正在加载，直接返回
+    if (state.loading) {
+      console.log('[agent-templates] Already loading, skipping...');
+      return;
+    }
+    
+    // 如果5秒内已经请求过，直接返回（防止无限循环）
+    if (now - state.lastFetchTime < 5000) {
+      console.log('[agent-templates] Requested too recently, skipping...');
+      return;
+    }
+    
+    set({ loading: true, error: null, lastFetchTime: now });
     try {
       console.log('[agent-templates] Fetching templates...');
       
       const tokenKey = await getTokenKey();
       if (!tokenKey) {
         console.warn('[agent-templates] No tokenKey, cannot fetch templates');
-        set({ templates: [], loading: false });
+        set({ templates: [], loading: false, error: '未登录', lastFetchTime: now });
         return;
       }
       
@@ -58,6 +77,7 @@ export const useAgentTemplatesStore = create<AgentTemplatesState>((set, get) => 
           'Content-Type': 'application/json',
           'Token-Key': tokenKey,
         },
+        signal: AbortSignal.timeout(10000), // 10秒超时
       });
       
       if (!response.ok) {
@@ -68,14 +88,16 @@ export const useAgentTemplatesStore = create<AgentTemplatesState>((set, get) => 
       
       if (result.code === 200 || result.code === 0) {
         console.log('[agent-templates] Fetched templates:', result.data?.length || 0);
-        set({ templates: result.data || [], loading: false });
+        set({ templates: result.data || [], loading: false, error: null, lastFetchTime: now });
       } else {
-        console.warn('[agent-templates] API returned error:', result.message);
-        set({ templates: [], loading: false });
+        const errorMsg = result.message || 'API返回错误';
+        console.warn('[agent-templates] API returned error:', errorMsg);
+        set({ templates: [], loading: false, error: errorMsg, lastFetchTime: now });
       }
     } catch (error) {
-      console.error('[agent-templates] Failed to fetch templates:', error);
-      set({ templates: [], loading: false });
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      console.error('[agent-templates] Failed to fetch templates:', errorMsg);
+      set({ templates: [], loading: false, error: errorMsg, lastFetchTime: now });
     }
   },
 
@@ -236,6 +258,44 @@ export const useAgentTemplatesStore = create<AgentTemplatesState>((set, get) => 
     } catch (error) {
       console.error('[agent-templates] Failed to apply template:', error);
       toast.error('应用模板失败: ' + String(error));
+      throw error;
+    }
+  },
+
+  /**
+   * 获取模板的所有profile文件内容
+   */
+  fetchTemplateProfiles: async (templateId: number) => {
+    try {
+      console.log('[agent-templates] Fetching template profiles:', templateId);
+      
+      const tokenKey = await getTokenKey();
+      if (!tokenKey) {
+        throw new Error('未登录，请先登录 Box-IM');
+      }
+      
+      const response = await fetch(`${API_BASE_URL}/agent/template/${templateId}/profiles`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          'Token-Key': tokenKey,
+        },
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      
+      const result = await response.json();
+      
+      if (result.code === 200 || result.code === 0) {
+        console.log('[agent-templates] Fetched profiles:', Object.keys(result.data || {}).length, 'files');
+        return result.data || {};
+      } else {
+        throw new Error(result.message || '获取模板文件失败');
+      }
+    } catch (error) {
+      console.error('[agent-templates] Failed to fetch template profiles:', error);
       throw error;
     }
   },

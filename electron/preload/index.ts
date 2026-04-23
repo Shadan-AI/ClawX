@@ -154,6 +154,7 @@ const electronAPI = {
         'agent-profile:read',
         'agent-profile:save',
         'agent-profile:getDir',
+        'agent-profile:sync',
       ];
 
       if (validChannels.includes(channel)) {

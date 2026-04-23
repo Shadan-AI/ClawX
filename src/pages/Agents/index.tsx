@@ -179,7 +179,8 @@ export function Agents() {
     return () => {
       mounted = false;
     };
-  }, [fetchAgents, fetchChannelAccounts, refreshProviderSnapshot, fetchDigitalEmployees, fetchTemplates, fetchSkills]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // 只在组件挂载时执行一次
 
   useEffect(() => {
     const unsubscribe = subscribeHostEvent('gateway:channel-status', () => {
@@ -907,19 +908,21 @@ function AddAgentDialog({
   const { fetchAgents } = useAgentsStore();
   const { templates, fetchTemplates } = useAgentTemplatesStore();
   
-  // 加载模板列表
+  // 加载模板列表（只加载一次，避免无限循环）
   useEffect(() => {
-    if (templates.length === 0) {
+    if (templates.length === 0 && !templatesLoading) {
       fetchTemplates();
     }
-  }, [templates.length, fetchTemplates]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [templates.length, templatesLoading]);
   
   // 加载模型列表
   useEffect(() => {
     if (models.length === 0) {
       fetchModels();
     }
-  }, [models.length, fetchModels]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [models.length]);
   
   // 设置默认模型
   useEffect(() => {
@@ -940,7 +943,7 @@ function AddAgentDialog({
       // 创建数字员工
       const employee = await createDigitalEmployee(name.trim(), headImage, selectedModel);
       
-      // 如果选择了模板，应用模板的技能
+      // 如果选择了模板，应用模板的技能和profile文件
       if (selectedTemplateId) {
         const template = templates.find(t => t.id === selectedTemplateId);
         if (template && template.skills && template.skills.length > 0) {
@@ -981,6 +984,32 @@ function AddAgentDialog({
             // 等待模板状态更新完成
             await new Promise(resolve => setTimeout(resolve, 100));
           }
+        }
+        
+        // 加载并应用模板的profile文件
+        try {
+          console.log('[AddAgentDialog] Loading template profile files...');
+          const { fetchTemplateProfiles } = useAgentTemplatesStore.getState();
+          const profileFiles = await fetchTemplateProfiles(selectedTemplateId);
+          
+          if (profileFiles && Object.keys(profileFiles).length > 0) {
+            console.log('[AddAgentDialog] Applying profile files:', Object.keys(profileFiles));
+            
+            // 写入每个profile文件
+            for (const [filename, content] of Object.entries(profileFiles)) {
+              await invokeIpc('agent-profile:save', { 
+                agentId: employee.openclawAgentId, 
+                filename, 
+                content 
+              });
+            }
+            
+            console.log('[AddAgentDialog] Profile files applied successfully');
+            toast.success(`已应用模板 "${template.nameZh}" 的配置文件`);
+          }
+        } catch (profileErr) {
+          console.error('[AddAgentDialog] Failed to apply profile files:', profileErr);
+          toast.warning('技能已应用，但配置文件加载失败');
         }
       }
       

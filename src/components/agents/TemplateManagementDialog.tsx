@@ -52,7 +52,8 @@ export function TemplateManagementDialog({ isOpen, onClose }: TemplateManagement
     if (isOpen) {
       fetchTemplates();
     }
-  }, [isOpen, fetchTemplates]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen]);
 
   const handleEdit = (template: AgentTemplate) => {
     setEditingTemplate(template);

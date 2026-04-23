@@ -188,6 +188,23 @@ export interface BoxImSyncResult {
   error?: string;
 }
 
+export interface ProfileFileInfo {
+  filename: string;
+  content: string;
+  hash: string;
+  source: 'USER' | 'TEMPLATE' | 'DEFAULT';
+  isModified: boolean;
+  templateId?: number | null;
+}
+
+export interface ProfileSyncStatus {
+  filename: string;
+  localHash: string | null;
+  remoteHash: string | null;
+  needsSync: boolean;
+  direction: 'download' | 'upload' | 'none';
+}
+
 interface BoxImOwnerAuth {
   tokenKey?: string;
   [key: string]: unknown;
@@ -549,6 +566,14 @@ async function syncBotsInternal(): Promise<BoxImSyncResult> {
       
       // Copy auth-profiles.json from main agent
       await copyAuthProfiles(agentId);
+      
+      // Sync Profile files (AGENTS.md, SOUL.md, TOOLS.md, etc.)
+      try {
+        const profileResult = await syncProfileFiles(agentId);
+        logger.info(`[box-im] Profile sync for ${agentId}: ${profileResult.synced} synced, ${profileResult.errors} errors`);
+      } catch (err) {
+        logger.warn(`[box-im] Profile sync failed for ${agentId}:`, err);
+      }
     }
 
     try {
@@ -607,3 +632,268 @@ export async function writeBoxImTokenKey(tokenKey: string, userId?: number): Pro
   await writeOpenClawConfig(cfg);
   logger.info('[box-im] Persisted tokenKey to openclaw.json');
 }
+
+// ── Profile Sync ─────────────────────────────────────────────────
+
+const PROFILE_FILES = ['AGENTS.md', 'SOUL.md', 'TOOLS.md', 'IDENTITY.md', 'USER.md', 'HEARTBEAT.md'];
+
+/**
+ * Calculate SHA-256 hash of file content
+ */
+async function calculateFileHash(content: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(content);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Get workspace directory for an agent
+ */
+function getAgentWorkspace(agentId: string): string {
+  const home = process.env.HOME || process.env.USERPROFILE || homedir();
+  return join(home, `.openclaw/workspace-${agentId}`);
+}
+
+/**
+ * Read profile file from local workspace
+ */
+async function readLocalProfileFile(agentId: string, filename: string): Promise<{ content: string; hash: string } | null> {
+  try {
+    const workspace = getAgentWorkspace(agentId);
+    const filePath = join(workspace, filename);
+    const content = await readFile(filePath, 'utf-8');
+    const hash = await calculateFileHash(content);
+    return { content, hash };
+  } catch (err: any) {
+    if (err.code === 'ENOENT') {
+      return null; // File doesn't exist
+    }
+    throw err;
+  }
+}
+
+/**
+ * Write profile file to local workspace
+ */
+async function writeLocalProfileFile(agentId: string, filename: string, content: string): Promise<void> {
+  const workspace = getAgentWorkspace(agentId);
+  await mkdir(workspace, { recursive: true });
+  const filePath = join(workspace, filename);
+  await writeFile(filePath, content, 'utf-8');
+  logger.info(`[box-im] Wrote profile file: ${agentId}/${filename}`);
+}
+
+/**
+ * Fetch profile file from API
+ */
+async function fetchProfileFile(apiUrl: string, tokenKey: string, userId: number, filename: string): Promise<ProfileFileInfo | null> {
+  try {
+    const resp = await fetch(`${apiUrl}/employee/profile/${filename}`, {
+      method: 'GET',
+      headers: { 'Token-Key': tokenKey },
+      signal: AbortSignal.timeout(10000),
+    });
+    
+    if (!resp.ok) {
+      logger.warn(`[box-im] Failed to fetch profile ${filename}: ${resp.status}`);
+      return null;
+    }
+    
+    const result = await resp.json() as { code?: number; data?: any; message?: string };
+    if (result.code !== 200 || !result.data) {
+      logger.warn(`[box-im] Profile API error for ${filename}: ${result.message}`);
+      return null;
+    }
+    
+    const data = result.data;
+    return {
+      filename,
+      content: data.content || '',
+      hash: data.hash || '',
+      source: data.source || 'DEFAULT',
+      isModified: data.isModified || false,
+      templateId: data.templateId,
+    };
+  } catch (err) {
+    logger.error(`[box-im] Error fetching profile ${filename}:`, err);
+    return null;
+  }
+}
+
+/**
+ * Upload profile file to API
+ */
+async function uploadProfileFile(apiUrl: string, tokenKey: string, userId: number, filename: string, content: string): Promise<boolean> {
+  try {
+    const resp = await fetch(`${apiUrl}/employee/profile/${filename}`, {
+      method: 'POST',
+      headers: {
+        'Token-Key': tokenKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ content }),
+      signal: AbortSignal.timeout(10000),
+    });
+    
+    if (!resp.ok) {
+      logger.warn(`[box-im] Failed to upload profile ${filename}: ${resp.status}`);
+      return false;
+    }
+    
+    const result = await resp.json() as { code?: number; message?: string };
+    if (result.code !== 200) {
+      logger.warn(`[box-im] Profile upload error for ${filename}: ${result.message}`);
+      return false;
+    }
+    
+    logger.info(`[box-im] Uploaded profile file: ${filename}`);
+    return true;
+  } catch (err) {
+    logger.error(`[box-im] Error uploading profile ${filename}:`, err);
+    return false;
+  }
+}
+
+/**
+ * Check sync status for all profile files
+ */
+export async function checkProfileSync(agentId: string): Promise<ProfileSyncStatus[]> {
+  const { tokenKey, apiUrl, ownerUserId } = await getBoxImConfig();
+  
+  if (!tokenKey || !ownerUserId) {
+    throw new Error('Not logged in');
+  }
+  
+  const statuses: ProfileSyncStatus[] = [];
+  
+  for (const filename of PROFILE_FILES) {
+    // Read local file
+    const local = await readLocalProfileFile(agentId, filename);
+    
+    // Fetch remote file info
+    const remote = await fetchProfileFile(apiUrl, tokenKey, ownerUserId, filename);
+    
+    const status: ProfileSyncStatus = {
+      filename,
+      localHash: local?.hash || null,
+      remoteHash: remote?.hash || null,
+      needsSync: false,
+      direction: 'none',
+    };
+    
+    if (!local && !remote) {
+      // Both don't exist - no sync needed
+      status.needsSync = false;
+    } else if (!local && remote) {
+      // Remote exists, local doesn't - download
+      status.needsSync = true;
+      status.direction = 'download';
+    } else if (local && !remote) {
+      // Local exists, remote doesn't - upload
+      status.needsSync = true;
+      status.direction = 'upload';
+    } else if (local && remote && local.hash !== remote.hash) {
+      // Both exist but different - prefer remote (cloud wins)
+      status.needsSync = true;
+      status.direction = 'download';
+    }
+    
+    statuses.push(status);
+  }
+  
+  return statuses;
+}
+
+/**
+ * Sync all profile files for an agent
+ */
+export async function syncProfileFiles(agentId: string): Promise<{ synced: number; errors: number }> {
+  const { tokenKey, apiUrl, ownerUserId } = await getBoxImConfig();
+  
+  if (!tokenKey || !ownerUserId) {
+    throw new Error('Not logged in');
+  }
+  
+  logger.info(`[box-im] Starting profile sync for agent: ${agentId}`);
+  
+  const statuses = await checkProfileSync(agentId);
+  let synced = 0;
+  let errors = 0;
+  
+  for (const status of statuses) {
+    if (!status.needsSync) {
+      continue;
+    }
+    
+    try {
+      if (status.direction === 'download') {
+        // Download from cloud
+        const remote = await fetchProfileFile(apiUrl, tokenKey, ownerUserId, status.filename);
+        if (remote && remote.content) {
+          await writeLocalProfileFile(agentId, status.filename, remote.content);
+          synced++;
+          logger.info(`[box-im] Downloaded profile: ${agentId}/${status.filename} (source: ${remote.source})`);
+        }
+      } else if (status.direction === 'upload') {
+        // Upload to cloud
+        const local = await readLocalProfileFile(agentId, status.filename);
+        if (local) {
+          const success = await uploadProfileFile(apiUrl, tokenKey, ownerUserId, status.filename, local.content);
+          if (success) {
+            synced++;
+            logger.info(`[box-im] Uploaded profile: ${agentId}/${status.filename}`);
+          } else {
+            errors++;
+          }
+        }
+      }
+    } catch (err) {
+      logger.error(`[box-im] Error syncing profile ${status.filename}:`, err);
+      errors++;
+    }
+  }
+  
+  logger.info(`[box-im] Profile sync complete for ${agentId}: ${synced} synced, ${errors} errors`);
+  return { synced, errors };
+}
+
+/**
+ * Download a single profile file
+ */
+export async function downloadProfileFile(agentId: string, filename: string): Promise<boolean> {
+  const { tokenKey, apiUrl, ownerUserId } = await getBoxImConfig();
+  
+  if (!tokenKey || !ownerUserId) {
+    throw new Error('Not logged in');
+  }
+  
+  const remote = await fetchProfileFile(apiUrl, tokenKey, ownerUserId, filename);
+  if (!remote || !remote.content) {
+    return false;
+  }
+  
+  await writeLocalProfileFile(agentId, filename, remote.content);
+  logger.info(`[box-im] Downloaded profile: ${agentId}/${filename} (source: ${remote.source})`);
+  return true;
+}
+
+/**
+ * Upload a single profile file
+ */
+export async function uploadProfileFile_Single(agentId: string, filename: string): Promise<boolean> {
+  const { tokenKey, apiUrl, ownerUserId } = await getBoxImConfig();
+  
+  if (!tokenKey || !ownerUserId) {
+    throw new Error('Not logged in');
+  }
+  
+  const local = await readLocalProfileFile(agentId, filename);
+  if (!local) {
+    return false;
+  }
+  
+  return await uploadProfileFile(apiUrl, tokenKey, ownerUserId, filename, local.content);
+}
+
