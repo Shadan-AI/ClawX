@@ -617,10 +617,8 @@ This file contains periodic tasks and reminders for the agent.
             });
           }
           
-          // 如果当前正在查看profile，刷新显示
-          if (viewMode === 'profile') {
-            await loadMdFile(selectedMdFile);
-          }
+          // 强制刷新当前显示的MD文件
+          await loadMdFile(selectedMdFile);
           
           console.log('[SkillsConfigurationView] Profile files applied:', Object.keys(profileFiles));
         }
