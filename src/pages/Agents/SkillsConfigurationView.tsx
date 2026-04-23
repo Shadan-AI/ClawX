@@ -52,6 +52,7 @@ export function SkillsConfigurationView({
   const [mdSyncing, setMdSyncing] = useState(false);
   const [mdSource, setMdSource] = useState<'LOCAL' | 'TEMPLATE' | 'USER' | 'DEFAULT'>('LOCAL');
   const [previewHtml, setPreviewHtml] = useState({ __html: '' });
+  const [templateProfileCache, setTemplateProfileCache] = useState<Record<string, string>>({});
 
   // 获取本地已安装的技能和模板
   useEffect(() => {
@@ -179,6 +180,15 @@ This file contains periodic tasks and reminders for the agent.
 
   const loadMdFile = useCallback(async (filename: string) => {
     if (!selectedEmployeeId) return;
+    
+    // 优先从模板缓存加载
+    if (templateProfileCache[filename]) {
+      setMdContent(templateProfileCache[filename]);
+      setOriginalMdContent(templateProfileCache[filename]);
+      setMdSource('TEMPLATE');
+      return;
+    }
+    
     setMdLoading(true);
     try {
       const result = await window.electron.ipcRenderer.invoke('agent-profile:read', {
@@ -198,7 +208,7 @@ This file contains periodic tasks and reminders for the agent.
     } finally {
       setMdLoading(false);
     }
-  }, [selectedEmployeeId]);
+  }, [selectedEmployeeId, templateProfileCache]);
 
   // Load MD file when switching files or agents
   useEffect(() => {
@@ -225,23 +235,49 @@ This file contains periodic tasks and reminders for the agent.
     const savingToast = toast.loading('💾 正在保存到本地...');
     
     try {
-      const result = await window.electron.ipcRenderer.invoke('agent-profile:save', {
-        agentId: selectedEmployeeId,
-        filename: selectedMdFile,
-        content: mdContent,
-      }) as { success: boolean; isCustomized?: boolean; error?: string };
-      
-      if (result.success) {
-        setOriginalMdContent(mdContent);
-        setMdSource('USER'); // 保存后变为自定义
+      // 如果有模板缓存，保存所有模板文件
+      if (Object.keys(templateProfileCache).length > 0) {
+        let savedCount = 0;
+        for (const [filename, content] of Object.entries(templateProfileCache)) {
+          const result = await window.electron.ipcRenderer.invoke('agent-profile:save', {
+            agentId: selectedEmployeeId,
+            filename,
+            content,
+          }) as { success: boolean; error?: string };
+          
+          if (result.success) {
+            savedCount++;
+          }
+        }
         
-        // 更新提示信息
+        // 清空缓存
+        setTemplateProfileCache({});
+        setOriginalMdContent(mdContent);
+        setMdSource('USER');
+        
         toast.success(
-          `✅ 保存成功！\n💾 已保存到本地\n☁️ 已上传到云端${result.isCustomized ? '\n✏️ 文件已标记为自定义' : ''}`,
+          `✅ 保存成功！\n💾 已保存 ${savedCount} 个文件到本地\n☁️ 已上传到云端`,
           { id: savingToast, duration: 3000 }
         );
       } else {
-        toast.error(`❌ 保存失败\n${result.error || '未知错误'}`, { id: savingToast, duration: 4000 });
+        // 只保存当前文件
+        const result = await window.electron.ipcRenderer.invoke('agent-profile:save', {
+          agentId: selectedEmployeeId,
+          filename: selectedMdFile,
+          content: mdContent,
+        }) as { success: boolean; isCustomized?: boolean; error?: string };
+        
+        if (result.success) {
+          setOriginalMdContent(mdContent);
+          setMdSource('USER');
+          
+          toast.success(
+            `✅ 保存成功！\n💾 已保存到本地\n☁️ 已上传到云端${result.isCustomized ? '\n✏️ 文件已标记为自定义' : ''}`,
+            { id: savingToast, duration: 3000 }
+          );
+        } else {
+          toast.error(`❌ 保存失败\n${result.error || '未知错误'}`, { id: savingToast, duration: 4000 });
+        }
       }
     } catch (error) {
       toast.error(`❌ 保存失败\n${String(error)}`, { id: savingToast, duration: 4000 });
@@ -601,29 +637,27 @@ This file contains periodic tasks and reminders for the agent.
       const { updateAgentTemplate } = useAgentsStore.getState();
       await updateAgentTemplate(selectedEmployeeId, template.id);
       
-      // 加载并应用模板的profile文件
+      // 加载并预览模板的profile文件（不保存到本地）
       try {
         toast.loading('正在加载模板配置文件...', { id: toastId, duration: Infinity });
         const { fetchTemplateProfiles } = useAgentTemplatesStore.getState();
         const profileFiles = await fetchTemplateProfiles(template.id);
         
         if (profileFiles && Object.keys(profileFiles).length > 0) {
-          // 写入每个profile文件
-          for (const [filename, content] of Object.entries(profileFiles)) {
-            await window.electron.ipcRenderer.invoke('agent-profile:save', {
-              agentId: selectedEmployeeId,
-              filename,
-              content,
-            });
+          // 缓存所有模板文件
+          setTemplateProfileCache(profileFiles);
+          
+          // 直接更新当前显示的MD文件内容（预览模式，不保存）
+          if (profileFiles[selectedMdFile]) {
+            setMdContent(profileFiles[selectedMdFile]);
+            setOriginalMdContent(profileFiles[selectedMdFile]);
+            setMdSource('TEMPLATE');
           }
           
-          // 强制刷新当前显示的MD文件
-          await loadMdFile(selectedMdFile);
-          
-          console.log('[SkillsConfigurationView] Profile files applied:', Object.keys(profileFiles));
+          console.log('[SkillsConfigurationView] Template profile files loaded for preview:', Object.keys(profileFiles));
         }
       } catch (profileErr) {
-        console.error('[SkillsConfigurationView] Failed to apply profile files:', profileErr);
+        console.error('[SkillsConfigurationView] Failed to load template profile files:', profileErr);
         // 不影响技能应用，只是警告
       }
       
