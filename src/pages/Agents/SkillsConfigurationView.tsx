@@ -99,8 +99,11 @@ export function SkillsConfigurationView({
   }, [selectedEmployeeId, localSkills, agentSkills]);
   
   const hasChanges = useMemo(
-    () => selectedEmployeeId && JSON.stringify(currentSkills) !== JSON.stringify(agentSkills[selectedEmployeeId] || []),
-    [selectedEmployeeId, currentSkills, agentSkills]
+    () => selectedEmployeeId && (
+      JSON.stringify(currentSkills) !== JSON.stringify(agentSkills[selectedEmployeeId] || []) ||
+      Object.keys(templateProfileCache).length > 0
+    ),
+    [selectedEmployeeId, currentSkills, agentSkills, templateProfileCache]
   );
 
   const MD_FILES = ['AGENTS.md', 'SOUL.md', 'TOOLS.md', 'IDENTITY.md', 'USER.md', 'HEARTBEAT.md'];
@@ -350,7 +353,7 @@ This file contains periodic tasks and reminders for the agent.
     }
   };
 
-  const hasMdChanges = mdContent !== originalMdContent;
+  const hasMdChanges = mdContent !== originalMdContent || Object.keys(templateProfileCache).length > 0;
 
   // 只显示已启用的技能供配置
   const enabledSkills = useMemo(
@@ -488,10 +491,33 @@ This file contains periodic tasks and reminders for the agent.
     try {
       const skillsToSave = localSkills[selectedEmployeeId] || [];
       
-      // 先保存技能
+      // 1. 保存技能
       await updateAgentSkills(selectedEmployeeId, skillsToSave);
       
-      // 保存后检查是否需要更新模板状态
+      // 2. 如果有模板缓存，保存所有模板的MD文件
+      if (Object.keys(templateProfileCache).length > 0) {
+        let savedCount = 0;
+        for (const [filename, content] of Object.entries(templateProfileCache)) {
+          const result = await window.electron.ipcRenderer.invoke('agent-profile:save', {
+            agentId: selectedEmployeeId,
+            filename,
+            content,
+          }) as { success: boolean; error?: string };
+          
+          if (result.success) {
+            savedCount++;
+          }
+        }
+        
+        // 清空缓存
+        setTemplateProfileCache({});
+        setOriginalMdContent(mdContent);
+        setMdSource('USER');
+        
+        console.log(`[SkillsConfigurationView] Saved ${savedCount} profile files`);
+      }
+      
+      // 3. 保存后检查是否需要更新模板状态
       const { agentTemplates, updateAgentTemplate } = useAgentsStore.getState();
       const currentTemplateId = agentTemplates[selectedEmployeeId];
       
@@ -523,7 +549,7 @@ This file contains periodic tasks and reminders for the agent.
         }
       }
       
-      toast.success('技能配置已保存');
+      toast.success('配置已保存（包括技能和文档）');
       onRefresh();
     } catch (err) {
       toast.error('保存失败: ' + String(err));
