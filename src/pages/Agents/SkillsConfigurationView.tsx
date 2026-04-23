@@ -490,12 +490,13 @@ This file contains periodic tasks and reminders for the agent.
     setSaving(true);
     try {
       const skillsToSave = localSkills[selectedEmployeeId] || [];
+      const hasTemplateCache = Object.keys(templateProfileCache).length > 0;
       
       // 1. 保存技能
       await updateAgentSkills(selectedEmployeeId, skillsToSave);
       
       // 2. 如果有模板缓存，保存所有模板的MD文件
-      if (Object.keys(templateProfileCache).length > 0) {
+      if (hasTemplateCache) {
         let savedCount = 0;
         for (const [filename, content] of Object.entries(templateProfileCache)) {
           const result = await window.electron.ipcRenderer.invoke('agent-profile:save', {
@@ -514,7 +515,7 @@ This file contains periodic tasks and reminders for the agent.
         setOriginalMdContent(mdContent);
         setMdSource('USER');
         
-        console.log(`[SkillsConfigurationView] Saved ${savedCount} profile files`);
+        console.log(`[SkillsConfigurationView] Saved ${savedCount} profile files from template`);
       }
       
       // 3. 保存后检查是否需要更新模板状态
@@ -549,7 +550,13 @@ This file contains periodic tasks and reminders for the agent.
         }
       }
       
-      toast.success('配置已保存（包括技能和文档）');
+      // 根据是否保存了模板文档显示不同的提示
+      if (hasTemplateCache) {
+        toast.success('✅ 已保存技能配置和模板文档');
+      } else {
+        toast.success('✅ 已保存技能配置');
+      }
+      
       onRefresh();
     } catch (err) {
       toast.error('保存失败: ' + String(err));
