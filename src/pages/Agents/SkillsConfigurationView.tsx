@@ -601,6 +601,34 @@ This file contains periodic tasks and reminders for the agent.
       const { updateAgentTemplate } = useAgentsStore.getState();
       await updateAgentTemplate(selectedEmployeeId, template.id);
       
+      // 加载并应用模板的profile文件
+      try {
+        toast.loading('正在加载模板配置文件...', { id: toastId, duration: Infinity });
+        const { fetchTemplateProfiles } = useAgentTemplatesStore.getState();
+        const profileFiles = await fetchTemplateProfiles(template.id);
+        
+        if (profileFiles && Object.keys(profileFiles).length > 0) {
+          // 写入每个profile文件
+          for (const [filename, content] of Object.entries(profileFiles)) {
+            await window.electron.ipcRenderer.invoke('agent-profile:save', {
+              agentId: selectedEmployeeId,
+              filename,
+              content,
+            });
+          }
+          
+          // 如果当前正在查看profile，刷新显示
+          if (viewMode === 'profile') {
+            await loadMdFile(selectedMdFile);
+          }
+          
+          console.log('[SkillsConfigurationView] Profile files applied:', Object.keys(profileFiles));
+        }
+      } catch (profileErr) {
+        console.error('[SkillsConfigurationView] Failed to apply profile files:', profileErr);
+        // 不影响技能应用，只是警告
+      }
+      
       if (failedSkills.length > 0) {
         toast.warning(
           `已应用"${template.nameZh}"，但有 ${failedSkills.length} 个技能安装失败。已应用 ${skillsToApply.length} 个可用技能。请点击"保存配置"以保存更改`,
