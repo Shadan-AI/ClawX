@@ -1,11 +1,15 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { Department, Assignment, OrgData, NodeRelation } from '../types/organization';
+import { getOrganization, saveOrganization } from '../api/organization';
+import { toast } from 'sonner';
 
 interface OrganizationState {
   departments: Department[];
   assignments: Assignment;
   relations: NodeRelation[]; // 新增：节点关系
+  isLoading: boolean;
+  isSaving: boolean;
   
   // 部门操作
   addDepartment: (name: string, parentId: string | null, parentType?: 'dept' | 'bot') => string;
@@ -20,6 +24,10 @@ interface OrganizationState {
   // 批量操作
   loadOrgData: (data: OrgData) => void;
   clearAll: () => void;
+  
+  // 服务器同步
+  loadFromServer: () => Promise<void>;
+  saveToServer: () => Promise<void>;
 }
 
 export const useOrganizationStore = create<OrganizationState>()(
@@ -28,6 +36,8 @@ export const useOrganizationStore = create<OrganizationState>()(
       departments: [],
       assignments: {},
       relations: [],
+      isLoading: false,
+      isSaving: false,
       
       addDepartment: (name: string, parentId: string | null, parentType: 'dept' | 'bot' = 'dept') => {
         const id = `dept-${Date.now()}`;
@@ -189,6 +199,51 @@ export const useOrganizationStore = create<OrganizationState>()(
       
       clearAll: () => {
         set({ departments: [], assignments: {}, relations: [] });
+      },
+      
+      // 从服务器加载
+      loadFromServer: async () => {
+        set({ isLoading: true });
+        try {
+          const response = await getOrganization();
+          if (response.code === 200 && response.data) {
+            const canvasData = response.data.canvasData;
+            if (canvasData && canvasData !== '{}') {
+              const data: OrgData = JSON.parse(canvasData);
+              set({
+                departments: data.departments || [],
+                assignments: data.assignments || {},
+                relations: data.relations || [],
+              });
+            }
+          }
+        } catch (error) {
+          console.error('加载组织架构失败:', error);
+          toast.error('加载组织架构失败');
+        } finally {
+          set({ isLoading: false });
+        }
+      },
+      
+      // 保存到服务器
+      saveToServer: async () => {
+        const { departments, assignments, relations } = get();
+        set({ isSaving: true });
+        try {
+          const data: OrgData = { departments, assignments, relations };
+          const canvasData = JSON.stringify(data);
+          const response = await saveOrganization(canvasData);
+          if (response.code === 200) {
+            toast.success('保存成功');
+          } else {
+            toast.error('保存失败');
+          }
+        } catch (error) {
+          console.error('保存组织架构失败:', error);
+          toast.error('保存失败');
+        } finally {
+          set({ isSaving: false });
+        }
       },
     }),
     {

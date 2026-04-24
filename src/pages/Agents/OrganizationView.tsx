@@ -54,8 +54,13 @@ export function OrganizationView() {
   } | null>(null);
   const hasInitialLayoutRef = useRef(false);
   
-  const { departments, assignments, addDepartment, updateDepartment, deleteDepartment, assignAgent, unassignAgent } = useOrganizationStore();
+  const { departments, assignments, addDepartment, updateDepartment, deleteDepartment, assignAgent, unassignAgent, loadFromServer, saveToServer, isLoading, isSaving } = useOrganizationStore();
   const { agents } = useAgentsStore();
+  
+  // 组件加载时从服务器加载数据
+  useEffect(() => {
+    loadFromServer();
+  }, [loadFromServer]);
   
   // 获取未分配的员工
   const unassignedAgents = useMemo(
@@ -788,9 +793,19 @@ export function OrganizationView() {
       >
         {/* 部门管理 */}
         <div className="rounded-2xl bg-black/[0.02] dark:bg-white/[0.02] border border-black/5 dark:border-white/5 p-5">
-          <div className="flex items-center gap-2 mb-4">
-            <Building2 className="w-5 h-5 text-blue-600 dark:text-blue-400" />
-            <h3 className="text-[15px] font-semibold text-foreground">组织架构</h3>
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <Building2 className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+              <h3 className="text-[15px] font-semibold text-foreground">组织架构</h3>
+            </div>
+            <Button
+              onClick={saveToServer}
+              disabled={isSaving}
+              size="sm"
+              className="h-8 text-[12px] rounded-lg px-3"
+            >
+              {isSaving ? '保存中...' : '保存'}
+            </Button>
           </div>
           
           <div className="space-y-3">
@@ -947,78 +962,7 @@ export function OrganizationView() {
               </div>
             )}
             
-            {/* 已分配员工 */}
-            {departments.map((dept) => {
-              const deptAgents = agents.filter((agent) => assignments[agent.id] === dept.id);
-              if (deptAgents.length === 0) return null;
-              
-              return (
-                <div key={dept.id}>
-                  <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-2 flex items-center gap-2">
-                    <span>{dept.name}</span>
-                    <span className="text-[10px] bg-black/5 dark:bg-white/5 px-1.5 py-0.5 rounded">
-                      {deptAgents.length}
-                    </span>
-                  </div>
-                  <div className="space-y-2">
-                    <AnimatePresence>
-                      {deptAgents.map((agent) => (
-                        <motion.div
-                          key={agent.id}
-                          initial={{ opacity: 0, y: 10 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          exit={{ opacity: 0, y: -10 }}
-                          className="group relative"
-                        >
-                          <div
-                            draggable
-                            onDragStart={(e) => handleDragStart(e, agent.id)}
-                            onDragEnd={handleDragEnd}
-                            className={cn(
-                              'p-3 rounded-xl border cursor-grab active:cursor-grabbing transition-all',
-                              'bg-[#f8f6f0] dark:bg-white/[0.02] border-black/5 dark:border-white/5',
-                              'hover:border-primary/40 hover:bg-[#f3f1e9] dark:hover:bg-white/[0.06] hover:shadow-lg',
-                              draggingBot === agent.id && 'opacity-30 scale-95'
-                            )}
-                          >
-                            <div className="flex items-center gap-3">
-                              <div className="w-9 h-9 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white text-[15px] font-bold shrink-0">
-                                {getEmoji(agent.id)}
-                              </div>
-                              <div className="flex-1 min-w-0">
-                                <div className="text-[13px] font-semibold text-foreground truncate">
-                                  {agent.name}
-                                </div>
-                                <div className="text-[11px] text-muted-foreground truncate">
-                                  {agent.id.slice(0, 12)}
-                                </div>
-                              </div>
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleChatWithAgent(agent.id);
-                                }}
-                                className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg hover:bg-primary/10 text-primary transition-all"
-                                title="开始对话"
-                              >
-                                <MessageCircle className="w-4 h-4" />
-                              </button>
-                              <button
-                                onClick={() => handleUnassignAgent(agent.id)}
-                                className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg hover:bg-red-500/10 text-red-500 transition-all"
-                                title="移除分配"
-                              >
-                                <X className="w-4 h-4" />
-                              </button>
-                            </div>
-                          </div>
-                        </motion.div>
-                      ))}
-                    </AnimatePresence>
-                  </div>
-                </div>
-              );
-            })}
+
             
             {unassignedAgents.length === 0 && agents.length === 0 && (
               <motion.div
