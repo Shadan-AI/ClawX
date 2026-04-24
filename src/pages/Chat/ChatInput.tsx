@@ -128,7 +128,7 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
   useEffect(() => {
     if (quickUseSkill) {
       setActiveSkill(quickUseSkill);
-      // 不填充文本,只设置技能标签
+      // 不填充文本,只设置技能状态
       setInput('');
       // 聚焦输入框
       if (textareaRef.current) {
@@ -142,14 +142,14 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
   // 清除技能标签
   const handleClearSkill = useCallback(() => {
     setActiveSkill(null);
-    setInput('');
     textareaRef.current?.focus();
   }, []);
 
   // 选择技能
   const handleSelectSkill = useCallback((skill: { name: string; slug: string; description: string }) => {
     setActiveSkill(skill);
-    setInput(''); // 清空输入框,只显示技能标签
+    // 不填充文本,只设置技能状态
+    setInput('');
     setSkillPickerOpen(false);
     setSkillSearchQuery('');
     textareaRef.current?.focus();
@@ -401,9 +401,9 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
     // but keep attachments available for the async send
     let textToSend = input.trim();
     
-    // 如果有选中的技能,在消息前添加技能提示
-    if (activeSkill && textToSend) {
-      textToSend = `使用 ${activeSkill.name} 技能: ${textToSend}`;
+    // 如果有选中的技能,在消息前添加技能命令
+    if (activeSkill) {
+      textToSend = `/${activeSkill.slug} ${textToSend}`;
     }
     
     const attachmentsToSend = readyAttachments.length > 0 ? readyAttachments : undefined;
@@ -432,6 +432,12 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
+      // 当输入框为空且按 Backspace 时,删除技能标签
+      if (e.key === 'Backspace' && !input && activeSkill) {
+        e.preventDefault();
+        setActiveSkill(null);
+        return;
+      }
       if (e.key === 'Backspace' && !input && targetAgentId) {
         setTargetAgentId(null);
         return;
@@ -445,7 +451,7 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
         handleSend();
       }
     },
-    [handleSend, input, targetAgentId],
+    [handleSend, input, targetAgentId, activeSkill],
   );
 
   // Handle paste (Ctrl/Cmd+V with files)
@@ -549,7 +555,7 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
     <div
       className={cn(
         "w-full mx-auto transition-all duration-300 ease-out bg-transparent",
-        isExpanded ? "max-w-3xl p-4 pb-4" : "max-w-2xl px-4 py-2"
+        isExpanded ? "max-w-3xl p-1 pb-1" : "max-w-2xl px-1 py-0.5"
       )}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
@@ -652,7 +658,13 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                     }, 50);
                   }}
                   onBlur={() => onFocusChange?.(false)}
-                  placeholder={disabled ? t('composer.gatewayDisconnectedPlaceholder') : ''}
+                  placeholder={
+                    disabled 
+                      ? t('composer.gatewayDisconnectedPlaceholder') 
+                      : activeSkill 
+                        ? `使用 ${activeSkill.name} - ${activeSkill.description}` 
+                        : ''
+                  }
                   disabled={disabled}
                   className="resize-none border-0 focus-visible:ring-0 focus-visible:ring-offset-0 shadow-none bg-transparent px-1 placeholder:text-muted-foreground/60 !min-h-[44px] h-[44px] overflow-hidden !py-[11px] text-base leading-normal"
                   rows={1}
@@ -689,7 +701,7 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
           {isExpanded && (
             <div className="flex flex-col relative">
               {/* Textarea - full width, taller */}
-              <div className="relative px-2 pt-2">
+              <div className="relative px-1 pt-1">
                 <Textarea
                   ref={textareaRef}
                   value={input}
@@ -716,36 +728,28 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                     }
                     onFocusChange?.(false);
                   }}
-                  placeholder={disabled ? t('composer.gatewayDisconnectedPlaceholder') : ''}
+                  placeholder={
+                    disabled 
+                      ? t('composer.gatewayDisconnectedPlaceholder') 
+                      : activeSkill 
+                        ? activeSkill.description
+                        : ''
+                  }
                   disabled={disabled}
-                  className="resize-none border-0 focus-visible:ring-0 focus-visible:ring-offset-0 shadow-none bg-transparent px-1 placeholder:text-muted-foreground/60 min-h-[36px] max-h-[200px] py-1.5 text-base leading-relaxed w-full"
+                  className="resize-none border-0 focus-visible:ring-0 focus-visible:ring-offset-0 shadow-none bg-transparent px-0.5 placeholder:text-muted-foreground/60 min-h-[32px] max-h-[200px] py-0.5 text-base leading-relaxed w-full"
                   rows={1}
                 />
               </div>
 
               {/* Bottom row: left buttons + right send/model */}
-              <div className="flex items-center justify-between px-1 pb-1">
-                {/* Left: current agent + skill tag + attach + @ */}
+              <div className="flex items-center justify-between px-0.5 pb-0">
+                {/* Left: current agent + attach + @ */}
                 <div className="flex items-center gap-1">
                   {/* 当前对话对象 */}
                   <div className="flex items-center gap-1.5 rounded-full border border-black/5 bg-white/70 dark:bg-white/5 px-2.5 py-1 text-[11px] font-medium text-foreground/70 dark:border-white/10">
                     <Bot className="h-3 w-3 text-primary" />
                     <span>{currentAgentName}</span>
                   </div>
-                  
-                  {/* Skill Tag */}
-                  {activeSkill && (
-                    <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-primary/10 border border-primary/20 text-primary text-[11px] font-medium">
-                      <span>🎯 {activeSkill.name}</span>
-                      <button
-                        onClick={handleClearSkill}
-                        className="hover:bg-primary/20 rounded-full p-0.5 transition-colors"
-                        title="取消使用技能"
-                      >
-                        <X className="h-2.5 w-2.5" />
-                      </button>
-                    </div>
-                  )}
                   
                   <Button
                     variant="ghost"
@@ -762,10 +766,10 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                   <div ref={skillPickerRef} className="relative">
                       <Button
                         variant="ghost"
-                        size="icon"
                         className={cn(
-                          'h-9 w-9 rounded-full text-muted-foreground hover:bg-black/5 dark:hover:bg-white/10 hover:text-foreground transition-colors',
-                          (skillPickerOpen || activeSkill) && 'bg-primary/10 text-primary hover:bg-primary/20'
+                          'h-9 rounded-full text-muted-foreground hover:bg-black/5 dark:hover:bg-white/10 hover:text-foreground transition-all duration-300',
+                          (skillPickerOpen || activeSkill) && 'bg-primary/10 text-primary hover:bg-primary/20',
+                          activeSkill ? 'px-3 min-w-[120px]' : 'w-9 px-0' // 有技能时变宽
                         )}
                         onClick={() => {
                           if (activeSkill) {
@@ -777,7 +781,30 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                         disabled={disabled || sending}
                         title={activeSkill ? `当前技能: ${activeSkill.name}` : '选择技能'}
                       >
-                        <Puzzle className="h-4 w-4" />
+                        <AnimatePresence mode="wait">
+                          {activeSkill ? (
+                            <motion.span
+                              key="skill-text"
+                              initial={{ opacity: 0, scale: 0.8 }}
+                              animate={{ opacity: 1, scale: 1 }}
+                              exit={{ opacity: 0, scale: 0.8 }}
+                              transition={{ duration: 0.2, ease: 'easeOut' }}
+                              className="text-[11px] font-mono font-medium whitespace-nowrap"
+                            >
+                              {activeSkill.slug}
+                            </motion.span>
+                          ) : (
+                            <motion.div
+                              key="skill-icon"
+                              initial={{ opacity: 0, scale: 0.8, rotate: -90 }}
+                              animate={{ opacity: 1, scale: 1, rotate: 0 }}
+                              exit={{ opacity: 0, scale: 0.8, rotate: 90 }}
+                              transition={{ duration: 0.2, ease: 'easeOut' }}
+                            >
+                              <Puzzle className="h-4 w-4" />
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
                       </Button>
                       <AnimatePresence>
                         {skillPickerOpen && (

@@ -249,11 +249,11 @@ export function Chat() {
   }, [isInputFocused]);
 
   return (
-    <div className={cn("relative flex flex-col -m-6 transition-colors duration-500 dark:bg-background")} style={{ height: 'calc(100vh - 2.5rem)' }}>
+    <div className={cn("relative flex flex-col transition-colors duration-500 dark:bg-background")} style={{ height: 'calc(100vh - 2.5rem)' }}>
       {/* Messages Area */}
       <div 
         ref={scrollRef} 
-        className="flex-1 overflow-y-auto px-4 py-4 pb-40"
+        className="flex-1 overflow-y-auto px-0 py-0 pb-20"
         onClick={handleMessagesAreaClick}
       >
         <div ref={contentRef} className="max-w-4xl mx-auto space-y-5 relative">
