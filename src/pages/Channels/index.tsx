@@ -9,6 +9,7 @@ import { hostApiFetch } from '@/lib/host-api';
 import { subscribeHostEvent } from '@/lib/host-events';
 import { ChannelConfigModal } from '@/components/channels/ChannelConfigModal';
 import { cn } from '@/lib/utils';
+import { invokeIpc } from '@/lib/api-client';
 import {
   CHANNEL_ICONS,
   CHANNEL_NAMES,
@@ -198,7 +199,17 @@ export function Channels() {
 
   const unsupportedGroups = displayedChannelTypes.filter((type) => !configuredTypes.includes(type));
 
-  const handleRefresh = () => {
+  const handleRefresh = async () => {
+    // 1. 先同步 bots（从 IM 平台同步到本地配置）
+    try {
+      console.log('[Channels/handleRefresh] Calling syncBots...');
+      const result = await invokeIpc('box-im:syncBots');
+      console.log('[Channels/handleRefresh] syncBots result:', result);
+    } catch (syncErr) {
+      console.error('[Channels/handleRefresh] syncBots failed:', syncErr);
+    }
+    
+    // 2. 刷新页面数据
     void fetchPageData();
   };
 

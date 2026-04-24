@@ -38,8 +38,23 @@ export function Chat() {
   useEffect(() => {
     const state = location.state as { createNewSessionFor?: string; quickUseSkill?: { name: string; slug: string; description: string } } | null;
     
+    // 处理URL参数中的技能调用
+    const searchParams = new URLSearchParams(location.search);
+    const skillSlug = searchParams.get('skill');
+    
+    if (skillSlug) {
+      console.log('[Chat] Skill from URL:', skillSlug);
+      // 从技能slug创建快速使用对象
+      setQuickUseSkill({ 
+        name: skillSlug, 
+        slug: skillSlug, 
+        description: `使用 ${skillSlug} 技能` 
+      });
+      // 清除URL参数
+      window.history.replaceState({}, document.title, location.pathname);
+    }
     // 处理技能快速使用
-    if (state?.quickUseSkill) {
+    else if (state?.quickUseSkill) {
       console.log('[Chat] Quick use skill:', state.quickUseSkill);
       setQuickUseSkill(state.quickUseSkill);
       // 清除 location state，避免重复触发

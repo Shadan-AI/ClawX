@@ -227,6 +227,8 @@ interface AgentEntry {
   identity?: unknown;
   workspace?: string;
   agentDir?: string;
+  model?: { primary?: string; fallbacks?: string[] };
+  skills?: string[];
   [key: string]: unknown;
 }
 
@@ -331,18 +333,26 @@ export async function fetchBotsFromApi(apiUrl: string, tokenKey: string): Promis
   if (!resp.ok) throw new Error(`bot list error: ${resp.status}`);
   const result = await resp.json() as { code?: number; data?: any[]; message?: string };
   if (result.code !== 200) throw new Error(`bot list failed: ${result.message}`);
-  return (result.data ?? []).map((b: any) => ({
-    id: b.id,
-    userName: b.userName ?? '',
-    nickName: b.nickName ?? '',
-    headImage: b.headImage ?? '',
-    openclawAgentId: b.openclawAgentId ?? b.agentId ?? b.userName ?? '',
-    accessToken: b.accessToken ?? null,
-    model: b.model ?? undefined,
-    deviceNodeId: b.deviceNodeId ?? b.nodeId ?? undefined,
-    skills: b.skills ? (typeof b.skills === 'string' ? JSON.parse(b.skills) : b.skills) : undefined,
-    templateId: b.templateId ?? null, // 添加 templateId
-  }));
+  
+  // 详细日志:打印 API 返回的原始数据
+  logger.info('[box-im] API 返回的原始数据:', JSON.stringify(result.data, null, 2));
+  
+  return (result.data ?? []).map((b: any) => {
+    const botInfo = {
+      id: b.id,
+      userName: b.userName ?? '',
+      nickName: b.nickName ?? '',
+      headImage: b.headImage ?? '',
+      openclawAgentId: b.openclawAgentId ?? b.agentId ?? b.userName ?? '',
+      accessToken: b.accessToken ?? null,
+      model: b.model ?? undefined,
+      deviceNodeId: b.deviceNodeId ?? b.nodeId ?? undefined,
+      skills: b.skills ? (typeof b.skills === 'string' ? JSON.parse(b.skills) : b.skills) : undefined,
+      templateId: b.templateId ?? null,
+    };
+    logger.info(`[box-im] 解析 bot ${b.id}: model="${b.model}" -> "${botInfo.model}"`);
+    return botInfo;
+  });
 }
 
 // ── Reconciliation ───────────────────────────────────────────────
@@ -354,23 +364,27 @@ function buildAccountsFromBots(
   const accounts: Record<string, BoxImAccount> = {};
   for (const bot of bots) {
     const agentId = bot.openclawAgentId || bot.userName || `bot-${bot.id}`;
+    const modelValue = bot.model && bot.model.length > 0 ? `shadan/${bot.model}` : '';
+    
+    logger.info(`[box-im-sync] Building account for ${agentId}: bot.model="${bot.model}", final model="${modelValue}"`);
+    
     accounts[agentId] = {
       enabled: true,
       accessToken: bot.accessToken || existing[agentId]?.accessToken || '',
       userId: bot.id,
       botName: bot.nickName,
       headImage: bot.headImage ?? '',
-      model: bot.model && bot.model.length > 0 ? `shadan/${bot.model}` : '',
+      model: modelValue,
       skills: bot.skills ?? existing[agentId]?.skills ?? undefined,
     };
   }
   return accounts;
 }
 
-function reconcileAgents(
+async function reconcileAgents(
   oldList: AgentEntry[],
   accounts: Record<string, BoxImAccount>,
-): AgentEntry[] {
+): Promise<AgentEntry[]> {
   const keep = new Map<string, AgentEntry>();
   for (const a of oldList) keep.set(a.id, a);
 
@@ -380,6 +394,10 @@ function reconcileAgents(
     const existing = keep.get(id);
     if (existing) result.push(existing);
   }
+
+  // 读取默认模型配置
+  const cfg = await readOpenClawConfig();
+  const defaultModel = ((cfg as any).agents?.defaults?.model?.primary) as string | undefined;
 
   for (const [agentId, acct] of Object.entries(accounts)) {
     if (agentId !== 'main' && SYSTEM_AGENTS.has(agentId)) continue;
@@ -396,6 +414,11 @@ function reconcileAgents(
         // 从数据库同步 model（数据库优先）
         if (acct.model && acct.model.length > 0) {
           existing.model = { primary: acct.model };
+          logger.info(`[box-im] Set model for ${agentId}: ${acct.model} (from database)`);
+        } else if (defaultModel) {
+          // 数据库中没有 model,使用默认模型
+          existing.model = { primary: defaultModel };
+          logger.info(`[box-im] Set model for ${agentId}: ${defaultModel} (default)`);
         }
         result.push(existing);
       }
@@ -411,6 +434,11 @@ function reconcileAgents(
       // 从数据库同步 model（如果有）
       if (acct.model && acct.model.length > 0) {
         agentConfig.model = { primary: acct.model };
+        logger.info(`[box-im] Set model for new agent ${agentId}: ${acct.model} (from database)`);
+      } else if (defaultModel) {
+        // 数据库中没有 model,使用默认模型
+        agentConfig.model = { primary: defaultModel };
+        logger.info(`[box-im] Set model for new agent ${agentId}: ${defaultModel} (default)`);
       }
       result.push(agentConfig);
     }
@@ -447,7 +475,7 @@ export async function saveBoxImAccounts(accounts: Record<string, BoxImAccount>):
 
   const agents = (cfg as any).agents ?? {};
   const oldList = (agents.list ?? []) as AgentEntry[];
-  const newList = reconcileAgents(oldList, accounts);
+  const newList = await reconcileAgents(oldList, accounts);
   (cfg as any).agents = { ...agents, list: newList };
 
   const oldBindings = ((cfg as any).bindings ?? []) as Binding[];
@@ -480,11 +508,79 @@ export async function saveBoxImAccounts(accounts: Record<string, BoxImAccount>):
 
 // ── Public entry point ───────────────────────────────────────────
 
+/**
+ * 迁移函数：修复缺失的 model 配置
+ * 检查所有 agent,如果 model 为空但数据库中有值,则从 API 重新获取并更新
+ * 如果数据库中也是空的,则使用默认模型(从 agents.defaults.model 获取)
+ */
+async function migrateAgentModels(): Promise<void> {
+  try {
+    const { tokenKey, apiUrl } = await getBoxImConfig();
+    if (!tokenKey) return;
+
+    const cfg = await readOpenClawConfig();
+    const agentsList = ((cfg as any).agents?.list ?? []) as AgentEntry[];
+    const defaultModel = ((cfg as any).agents?.defaults?.model?.primary) as string | undefined;
+    
+    // 检查是否有 agent 缺少 model 配置
+    const needsMigration = agentsList.some(agent => {
+      if (SYSTEM_AGENTS.has(agent.id)) return false;
+      return !agent.model || !agent.model.primary;
+    });
+
+    if (!needsMigration) {
+      logger.info('[box-im] All agents have model configured, skipping migration');
+      return;
+    }
+
+    logger.info('[box-im] Detected agents with missing model, fetching from API...');
+    
+    // 从 API 获取最新的 bot 列表
+    const bots = await fetchBotsFromApi(apiUrl, tokenKey);
+    const botMap = new Map(bots.map(b => [b.openclawAgentId || `bot-${b.id}`, b]));
+    
+    let updated = false;
+    for (const agent of agentsList) {
+      if (SYSTEM_AGENTS.has(agent.id)) continue;
+      
+      // 如果 agent 已经有 model 配置,跳过
+      if (agent.model && agent.model.primary) continue;
+      
+      const bot = botMap.get(agent.id);
+      if (bot && bot.model && bot.model.length > 0) {
+        // 数据库中有 model,使用数据库的值
+        const modelValue = `shadan/${bot.model}`;
+        agent.model = { primary: modelValue };
+        updated = true;
+        logger.info(`[box-im] Migrated model for ${agent.id}: ${modelValue} (from database)`);
+      } else if (defaultModel) {
+        // 数据库中没有 model,使用默认模型
+        agent.model = { primary: defaultModel };
+        updated = true;
+        logger.info(`[box-im] Migrated model for ${agent.id}: ${defaultModel} (default)`);
+      } else {
+        logger.warn(`[box-im] No model found for ${agent.id}, and no default model configured`);
+      }
+    }
+
+    if (updated) {
+      (cfg as any).agents = { ...((cfg as any).agents ?? {}), list: agentsList };
+      await writeOpenClawConfig(cfg);
+      logger.info('[box-im] Agent model migration completed');
+    }
+  } catch (err) {
+    logger.warn('[box-im] Agent model migration failed (non-fatal):', err);
+  }
+}
+
 // Mutex to prevent concurrent syncBots() calls from corrupting openclaw.json
 let syncBotsInProgress = false;
 let syncBotsQueue: Array<{ resolve: (result: BoxImSyncResult) => void; reject: (error: Error) => void }> = [];
 
 export async function syncBots(): Promise<BoxImSyncResult> {
+  // 先执行迁移,修复缺失的 model 配置
+  await migrateAgentModels();
+  
   // If sync is already in progress, queue this call and wait for the current sync to complete
   if (syncBotsInProgress) {
     logger.info('[box-im] Sync already in progress, queuing this request...');
@@ -523,16 +619,24 @@ export async function syncBots(): Promise<BoxImSyncResult> {
 async function syncBotsInternal(): Promise<BoxImSyncResult> {
   const { tokenKey, apiUrl, accounts } = await getBoxImConfig();
 
+  console.log('[box-im-sync] ========== syncBotsInternal START ==========');
+  console.log('[box-im-sync] tokenKey:', tokenKey ? 'exists' : 'missing');
+  console.log('[box-im-sync] apiUrl:', apiUrl);
+
   if (!tokenKey) {
+    console.log('[box-im-sync] No tokenKey, returning empty result');
     return { bots: [], error: '未绑定用户' };
   }
 
   try {
     logger.info('[box-im] Starting bot sync...');
+    console.log('[box-im-sync] Fetching bots from API...');
     const bots = await fetchBotsFromApi(apiUrl, tokenKey);
+    console.log('[box-im-sync] Fetched bots:', bots.length);
     logger.info(`[box-im] Fetched ${bots.length} bots from API:`, bots.map(b => ({ id: b.id, agentId: b.openclawAgentId, nickName: b.nickName })));
     
     const newAccounts = buildAccountsFromBots(bots, accounts);
+    console.log('[box-im-sync] Built accounts:', Object.keys(newAccounts).length);
     logger.info(`[box-im] Built ${Object.keys(newAccounts).length} accounts:`, Object.keys(newAccounts));
 
     for (const [agentId, acct] of Object.entries(newAccounts)) {
@@ -807,7 +911,8 @@ export async function checkProfileSync(agentId: string): Promise<ProfileSyncStat
 }
 
 /**
- * Sync all profile files for an agent
+ * Sync all profile files for an agent (download only)
+ * Note: Upload is handled automatically when saving files
  */
 export async function syncProfileFiles(agentId: string): Promise<{ synced: number; errors: number }> {
   const { tokenKey, apiUrl, ownerUserId } = await getBoxImConfig();
@@ -816,46 +921,35 @@ export async function syncProfileFiles(agentId: string): Promise<{ synced: numbe
     throw new Error('Not logged in');
   }
   
-  logger.info(`[box-im] Starting profile sync for agent: ${agentId}`);
+  logger.info(`[box-im] Starting profile sync (download) for agent: ${agentId}`);
   
-  const statuses = await checkProfileSync(agentId);
   let synced = 0;
   let errors = 0;
   
-  for (const status of statuses) {
-    if (!status.needsSync) {
-      continue;
-    }
-    
+  // Download all profile files from cloud
+  for (const filename of PROFILE_FILES) {
     try {
-      if (status.direction === 'download') {
-        // Download from cloud
-        const remote = await fetchProfileFile(apiUrl, tokenKey, ownerUserId, status.filename);
-        if (remote && remote.content) {
-          await writeLocalProfileFile(agentId, status.filename, remote.content);
+      // Fetch remote file
+      const remote = await fetchProfileFile(apiUrl, tokenKey, ownerUserId, filename);
+      
+      if (remote && remote.content) {
+        // Read local file to compare
+        const local = await readLocalProfileFile(agentId, filename);
+        
+        // Only download if different or doesn't exist locally
+        if (!local || local.hash !== remote.hash) {
+          await writeLocalProfileFile(agentId, filename, remote.content);
           synced++;
-          logger.info(`[box-im] Downloaded profile: ${agentId}/${status.filename} (source: ${remote.source})`);
-        }
-      } else if (status.direction === 'upload') {
-        // Upload to cloud
-        const local = await readLocalProfileFile(agentId, status.filename);
-        if (local) {
-          const success = await uploadProfileFile(apiUrl, tokenKey, ownerUserId, status.filename, local.content);
-          if (success) {
-            synced++;
-            logger.info(`[box-im] Uploaded profile: ${agentId}/${status.filename}`);
-          } else {
-            errors++;
-          }
+          logger.info(`[box-im] Downloaded profile: ${agentId}/${filename} (source: ${remote.source})`);
         }
       }
     } catch (err) {
-      logger.error(`[box-im] Error syncing profile ${status.filename}:`, err);
+      logger.error(`[box-im] Error syncing profile ${filename}:`, err);
       errors++;
     }
   }
   
-  logger.info(`[box-im] Profile sync complete for ${agentId}: ${synced} synced, ${errors} errors`);
+  logger.info(`[box-im] Profile sync complete for ${agentId}: ${synced} downloaded, ${errors} errors`);
   return { synced, errors };
 }
 

@@ -15,6 +15,7 @@ export interface Skill {
   icon?: string;
   version?: string;
   author?: string;
+  category?: string;
   configurable?: boolean;
   config?: Record<string, unknown>;
   isCore?: boolean;

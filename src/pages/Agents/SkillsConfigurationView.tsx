@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
-import { Bot, Check, Puzzle, RefreshCw, Search, X, Sparkles, ChevronDown, Loader2, FileText, Eye, Edit3, Save, RotateCcw, FolderOpen, FileCode } from 'lucide-react';
+import { Bot, Check, Puzzle, RefreshCw, Search, X, Sparkles, ChevronDown, Loader2, FileText, Eye, Edit3, Save, RotateCcw, FolderOpen, FileCode, HelpCircle, Info, MessageSquare } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 import { useAgentsStore } from '@/stores/agents';
+import { useNavigate } from 'react-router-dom';
 import { useSkillsStore } from '@/stores/skills';
 import { useAgentTemplatesStore } from '@/stores/agent-templates';
 import type { AgentSummary } from '@/types/agent';
@@ -30,6 +31,7 @@ export function SkillsConfigurationView({
   const { skills: allSkills, loading: skillsLoading, fetchSkills } = useSkillsStore();
   const { agentSkills, updateAgentSkills } = useAgentsStore();
   const { templates, loading: templatesLoading, fetchTemplates } = useAgentTemplatesStore();
+  const navigate = useNavigate();
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<string | null>(null);
   const [localSkills, setLocalSkills] = useState<Record<string, string[]>>({});
   const [saving, setSaving] = useState(false);
@@ -41,6 +43,7 @@ export function SkillsConfigurationView({
   const [showEmployeeDropdown, setShowEmployeeDropdown] = useState(false);
   const [applyingTemplate, setApplyingTemplate] = useState(false);
   const [viewMode, setViewMode] = useState<'skills' | 'profile'>('skills');
+  const [skillDetailDialog, setSkillDetailDialog] = useState<{ open: boolean; skill: any | null }>({ open: false, skill: null });
   
   // Profile editor states
   const [selectedMdFile, setSelectedMdFile] = useState('AGENTS.md');
@@ -53,6 +56,7 @@ export function SkillsConfigurationView({
   const [mdSource, setMdSource] = useState<'LOCAL' | 'TEMPLATE' | 'USER' | 'DEFAULT'>('LOCAL');
   const [previewHtml, setPreviewHtml] = useState({ __html: '' });
   const [templateProfileCache, setTemplateProfileCache] = useState<Record<string, string>>({});
+  const [showHelpPopover, setShowHelpPopover] = useState(false);
 
   // 获取本地已安装的技能和模板
   useEffect(() => {
@@ -81,6 +85,11 @@ export function SkillsConfigurationView({
       setSelectedEmployeeId(employees[0].id);
     }
   }, [agentSkills, employees.length, selectedEmployeeId]); // 优化依赖项
+
+  // 切换员工时清空模板缓存
+  useEffect(() => {
+    setTemplateProfileCache({});
+  }, [selectedEmployeeId]);
 
   const selectedEmployee = useMemo(
     () => employees.find((e) => e.id === selectedEmployeeId),
@@ -200,18 +209,68 @@ This file contains periodic tasks and reminders for the agent.
       }) as { success: boolean; content?: string; source?: string; error?: string };
       
       if (result.success) {
-        setMdContent(result.content || '');
-        setOriginalMdContent(result.content || '');
-        setMdSource((result.source as any) || 'LOCAL');
+        const content = result.content || '';
+        const source = (result.source as any) || 'LOCAL';
+        
+        // 如果读取到的内容为空，检查用户是否使用了模板
+        if (!content) {
+          const { agentTemplates } = useAgentsStore.getState();
+          const currentTemplateId = agentTemplates[selectedEmployeeId];
+          
+          // 如果用户使用了模板，尝试从模板加载
+          if (currentTemplateId) {
+            try {
+              const { fetchTemplateProfiles } = useAgentTemplatesStore.getState();
+              const profileFiles = await fetchTemplateProfiles(currentTemplateId);
+              
+              if (profileFiles && profileFiles[filename]) {
+                // 找到模板文件，加载到缓存
+                setTemplateProfileCache(prev => ({ ...prev, ...profileFiles }));
+                setMdContent(profileFiles[filename]);
+                setOriginalMdContent(profileFiles[filename]);
+                setMdSource('TEMPLATE');
+                
+                // 显示明显提示
+                const template = templates.find(t => t.id === currentTemplateId);
+                toast.info(
+                  `📦 已从"${template?.nameZh || '模板'}"加载内容\n💡 点击"保存"可将模板内容保存到本地`,
+                  { duration: 5000 }
+                );
+                return;
+              }
+            } catch (err) {
+              console.error('[loadMdFile] Failed to load template profile:', err);
+            }
+          }
+          
+          // 如果没有模板或模板中没有这个文件，使用默认内容
+          const defaultContent = DEFAULT_TEMPLATES[filename] || '';
+          setMdContent(defaultContent);
+          setOriginalMdContent(defaultContent);
+          setMdSource('DEFAULT');
+        } else {
+          setMdContent(content);
+          setOriginalMdContent(content);
+          setMdSource(source);
+        }
       } else {
-        toast.error(`加载失败: ${result.error}`);
+        // 读取失败，使用默认内容
+        const defaultContent = DEFAULT_TEMPLATES[filename] || '';
+        setMdContent(defaultContent);
+        setOriginalMdContent(defaultContent);
+        setMdSource('DEFAULT');
       }
     } catch (error) {
       toast.error(`加载失败: ${String(error)}`);
+      // 出错时使用默认内容
+      const defaultContent = DEFAULT_TEMPLATES[filename] || '';
+      setMdContent(defaultContent);
+      setOriginalMdContent(defaultContent);
+      setMdSource('DEFAULT');
     } finally {
       setMdLoading(false);
     }
-  }, [selectedEmployeeId, templateProfileCache]);
+  }, [selectedEmployeeId, templateProfileCache, templates]);
 
   // Load MD file when switching files or agents
   useEffect(() => {
@@ -223,15 +282,26 @@ This file contains periodic tasks and reminders for the agent.
   // Update preview when content changes
   useEffect(() => {
     if (isMdPreview && mdContent) {
-      marked(mdContent).then((html) => {
+      try {
+        const html = marked(mdContent);
         const sanitized = DOMPurify.sanitize(html);
         setPreviewHtml({ __html: sanitized });
-      });
+      } catch (error) {
+        console.error('[SkillsConfigurationView] Failed to render markdown:', error);
+        setPreviewHtml({ __html: '<p class="text-destructive">预览渲染失败</p>' });
+      }
     }
   }, [isMdPreview, mdContent]);
 
   const handleMdSave = async () => {
     if (!selectedEmployeeId) return;
+    
+    // 防止并发保存
+    if (mdSaving || saving) {
+      toast.warning('正在保存中，请稍候...');
+      return;
+    }
+    
     setMdSaving(true);
     
     // 显示保存中的提示
@@ -240,30 +310,41 @@ This file contains periodic tasks and reminders for the agent.
     try {
       // 如果有模板缓存，保存所有模板文件
       if (Object.keys(templateProfileCache).length > 0) {
+        const fileCount = Object.keys(templateProfileCache).length;
+        toast.loading(`💾 正在保存 ${fileCount} 个模板文件...`, { id: savingToast });
+        
         let savedCount = 0;
+        let uploadedCount = 0;
+        const fileNames: string[] = [];
+        
         for (const [filename, content] of Object.entries(templateProfileCache)) {
           const result = await window.electron.ipcRenderer.invoke('agent-profile:save', {
             agentId: selectedEmployeeId,
             filename,
             content,
-          }) as { success: boolean; error?: string };
+          }) as { success: boolean; isCustomized?: boolean; error?: string };
           
           if (result.success) {
             savedCount++;
+            uploadedCount++;
+            fileNames.push(filename.replace('.md', ''));
           }
         }
         
-        // 清空缓存
+        // 清空缓存并更新状态
         setTemplateProfileCache({});
         setOriginalMdContent(mdContent);
-        setMdSource('USER');
+        setMdSource('USER'); // 保存后标记为用户自定义
         
+        const fileList = fileNames.join(', ');
         toast.success(
-          `✅ 保存成功！\n💾 已保存 ${savedCount} 个文件到本地\n☁️ 已上传到云端`,
-          { id: savingToast, duration: 3000 }
+          `✅ 批量保存成功！\n📁 文件: ${fileList}\n💾 已保存 ${savedCount} 个文件到本地\n☁️ 已上传 ${uploadedCount} 个文件到云端\n✏️ 状态已更新为"已自定义"`,
+          { id: savingToast, duration: 4000 }
         );
       } else {
         // 只保存当前文件
+        toast.loading(`💾 正在保存 ${selectedMdFile}...`, { id: savingToast });
+        
         const result = await window.electron.ipcRenderer.invoke('agent-profile:save', {
           agentId: selectedEmployeeId,
           filename: selectedMdFile,
@@ -272,26 +353,88 @@ This file contains periodic tasks and reminders for the agent.
         
         if (result.success) {
           setOriginalMdContent(mdContent);
-          setMdSource('USER');
+          
+          // 根据 isCustomized 更新状态
+          if (result.isCustomized) {
+            setMdSource('USER');
+          } else {
+            setMdSource('TEMPLATE');
+          }
+          
+          const statusText = result.isCustomized 
+            ? '✏️ 状态: 已自定义（与模板不同）' 
+            : '📦 状态: 使用模板（与模板一致）';
           
           toast.success(
-            `✅ 保存成功！\n💾 已保存到本地\n☁️ 已上传到云端${result.isCustomized ? '\n✏️ 文件已标记为自定义' : ''}`,
-            { id: savingToast, duration: 3000 }
+            `✅ 保存成功！\n📄 文件: ${selectedMdFile}\n💾 已保存到本地\n☁️ 已上传到云端\n${statusText}`,
+            { id: savingToast, duration: 4000 }
           );
         } else {
-          toast.error(`❌ 保存失败\n${result.error || '未知错误'}`, { id: savingToast, duration: 4000 });
+          toast.error(`❌ 保存失败\n📄 文件: ${selectedMdFile}\n${result.error || '未知错误'}`, { id: savingToast, duration: 4000 });
         }
       }
     } catch (error) {
-      toast.error(`❌ 保存失败\n${String(error)}`, { id: savingToast, duration: 4000 });
+      const errorMsg = String(error);
+      let friendlyMsg = '保存失败';
+      
+      if (errorMsg.includes('timeout') || errorMsg.includes('ETIMEDOUT')) {
+        friendlyMsg = '⏱️ 网络超时\n💡 建议: 检查网络连接后重试';
+      } else if (errorMsg.includes('401') || errorMsg.includes('Unauthorized')) {
+        friendlyMsg = '🔒 登录已过期\n💡 建议: 请重新登录 Box-IM';
+      } else if (errorMsg.includes('403') || errorMsg.includes('Forbidden')) {
+        friendlyMsg = '🚫 没有权限\n💡 建议: 请联系管理员';
+      } else if (errorMsg.includes('500') || errorMsg.includes('Internal Server Error')) {
+        friendlyMsg = '🔧 服务器错误\n💡 建议: 请稍后重试';
+      } else {
+        friendlyMsg = `保存失败\n📋 详情: ${errorMsg}`;
+      }
+      
+      toast.error(`❌ ${friendlyMsg}`, { id: savingToast, duration: 5000 });
     } finally {
       setMdSaving(false);
     }
   };
 
-  const handleMdReset = () => {
-    setMdContent(originalMdContent);
-    toast.info('已重置');
+  const handleMdReset = async () => {
+    if (!selectedEmployeeId) return;
+    
+    // 根据来源决定重置逻辑
+    if (mdSource === 'TEMPLATE' && templateProfileCache[selectedMdFile]) {
+      // 如果是模板内容（还未保存），重置到模板的原始内容
+      setMdContent(templateProfileCache[selectedMdFile]);
+      setOriginalMdContent(templateProfileCache[selectedMdFile]);
+      toast.info('📦 已重置到模板原始内容');
+    } else if (mdSource === 'DEFAULT') {
+      // 如果是默认内容（还未保存），重置到默认模板
+      const defaultContent = DEFAULT_TEMPLATES[selectedMdFile] || '';
+      setMdContent(defaultContent);
+      setOriginalMdContent(defaultContent);
+      toast.info('🔄 已重置到系统默认内容');
+    } else {
+      // 如果是用户自定义或本地内容（已保存），从本地文件重新读取
+      try {
+        const result = await window.electron.ipcRenderer.invoke('agent-profile:read', {
+          agentId: selectedEmployeeId,
+          filename: selectedMdFile,
+        }) as { success: boolean; content?: string; source?: string; error?: string };
+        
+        if (result.success) {
+          setMdContent(result.content || '');
+          setOriginalMdContent(result.content || '');
+          setMdSource((result.source as any) || 'LOCAL');
+          toast.info('💾 已重置到上次保存的版本（本地+云端）');
+        } else {
+          // 如果读取失败，使用默认内容
+          const defaultContent = DEFAULT_TEMPLATES[selectedMdFile] || '';
+          setMdContent(defaultContent);
+          setOriginalMdContent(defaultContent);
+          setMdSource('DEFAULT');
+          toast.info('🔄 本地文件不存在，已重置到系统默认内容');
+        }
+      } catch (error) {
+        toast.error(`❌ 重置失败: ${String(error)}`);
+      }
+    }
   };
 
   const handleOpenMdFolder = async () => {
@@ -321,8 +464,11 @@ This file contains periodic tasks and reminders for the agent.
   const handleSyncProfile = async () => {
     if (!selectedEmployeeId) return;
     setMdSyncing(true);
+    
+    const syncToast = toast.loading('☁️ 正在连接云端...');
+    
     try {
-      toast.info('正在同步岗位定义文件...', { duration: 1000 });
+      toast.loading('📥 正在从云端下载岗位定义文件...', { id: syncToast });
       
       const result = await window.electron.ipcRenderer.invoke('agent-profile:sync', {
         agentId: selectedEmployeeId,
@@ -333,21 +479,48 @@ This file contains periodic tasks and reminders for the agent.
         const errors = result.errors || 0;
         
         if (synced > 0) {
-          toast.success(
-            `✅ 同步完成！\n📥 已同步 ${synced} 个文件${errors > 0 ? `\n⚠️ ${errors} 个文件失败` : ''}`,
-            { duration: 3000 }
-          );
+          let successMsg = '✅ 同步完成！\n';
+          successMsg += `📥 已从云端下载 ${synced} 个文件\n`;
+          successMsg += `💾 已更新到本地\n`;
+          successMsg += `📄 当前文件已刷新`;
+          
+          if (errors > 0) {
+            successMsg += `\n⚠️ ${errors} 个文件同步失败`;
+          }
+          
+          toast.success(successMsg, { id: syncToast, duration: 4000 });
         } else {
-          toast.info('所有文件已是最新，无需同步', { duration: 2000 });
+          toast.info(
+            '✅ 同步检查完成\n📋 所有文件已是最新版本\n💡 无需更新',
+            { id: syncToast, duration: 3000 }
+          );
         }
         
         // Reload current file to show updated content
         await loadMdFile(selectedMdFile);
       } else {
-        toast.error(`❌ 同步失败\n${result.error || '未知错误'}`, { duration: 4000 });
+        toast.error(
+          `❌ 同步失败\n📋 详情: ${result.error || '未知错误'}`,
+          { id: syncToast, duration: 4000 }
+        );
       }
     } catch (error) {
-      toast.error(`❌ 同步失败\n${String(error)}`, { duration: 4000 });
+      const errorMsg = String(error);
+      let friendlyMsg = '同步失败';
+      
+      if (errorMsg.includes('timeout') || errorMsg.includes('ETIMEDOUT')) {
+        friendlyMsg = '⏱️ 网络超时\n💡 建议: 检查网络连接后重试';
+      } else if (errorMsg.includes('401') || errorMsg.includes('Unauthorized')) {
+        friendlyMsg = '🔒 登录已过期\n💡 建议: 请重新登录 Box-IM';
+      } else if (errorMsg.includes('Not logged in')) {
+        friendlyMsg = '🔒 未登录\n💡 建议: 请先登录 Box-IM';
+      } else if (errorMsg.includes('500') || errorMsg.includes('Internal Server Error')) {
+        friendlyMsg = '🔧 服务器错误\n💡 建议: 请稍后重试';
+      } else {
+        friendlyMsg = `同步失败\n📋 详情: ${errorMsg}`;
+      }
+      
+      toast.error(`❌ ${friendlyMsg}`, { id: syncToast, duration: 5000 });
     } finally {
       setMdSyncing(false);
     }
@@ -468,6 +641,19 @@ This file contains periodic tasks and reminders for the agent.
     });
   }, [selectedEmployeeId]);
 
+  // 显示技能详情
+  const handleShowSkillDetail = useCallback((skill: any, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setSkillDetailDialog({ open: true, skill });
+  }, []);
+
+  // 跳转到对话页面并调用技能
+  const handleInvokeSkill = useCallback((skill: any, e: React.MouseEvent) => {
+    e.stopPropagation();
+    // 跳转到对话页面，并通过URL参数传递技能信息
+    navigate(`/?skill=${encodeURIComponent(skill.slug || skill.id)}`);
+  }, [navigate]);
+
   const handleAddSkill = useCallback((skillId: string) => {
     if (!selectedEmployeeId) return;
     setLocalSkills((prev) => {
@@ -487,17 +673,34 @@ This file contains periodic tasks and reminders for the agent.
 
   const handleSave = async () => {
     if (!selectedEmployeeId) return;
+    
+    // 防止并发保存
+    if (saving) {
+      toast.warning('⏳ 正在保存中，请稍候...');
+      return;
+    }
+    
     setSaving(true);
+    const savingToast = toast.loading('💾 正在保存配置...');
+    
     try {
       const skillsToSave = localSkills[selectedEmployeeId] || [];
       const hasTemplateCache = Object.keys(templateProfileCache).length > 0;
+      const skillCount = skillsToSave.length;
       
       // 1. 保存技能
+      toast.loading(`🔧 正在保存 ${skillCount} 个技能...`, { id: savingToast });
       await updateAgentSkills(selectedEmployeeId, skillsToSave);
       
       // 2. 如果有模板缓存，保存所有模板的MD文件
+      let profileFileCount = 0;
       if (hasTemplateCache) {
+        const fileCount = Object.keys(templateProfileCache).length;
+        toast.loading(`📄 正在保存 ${fileCount} 个岗位定义文件...`, { id: savingToast });
+        
         let savedCount = 0;
+        const fileNames: string[] = [];
+        
         for (const [filename, content] of Object.entries(templateProfileCache)) {
           const result = await window.electron.ipcRenderer.invoke('agent-profile:save', {
             agentId: selectedEmployeeId,
@@ -507,21 +710,25 @@ This file contains periodic tasks and reminders for the agent.
           
           if (result.success) {
             savedCount++;
+            fileNames.push(filename.replace('.md', ''));
           }
         }
         
-        // 清空缓存
+        profileFileCount = savedCount;
+        
+        // 清空缓存并更新状态
         setTemplateProfileCache({});
         setOriginalMdContent(mdContent);
-        setMdSource('USER');
+        setMdSource('USER'); // 保存后标记为用户自定义
         
-        console.log(`[SkillsConfigurationView] Saved ${savedCount} profile files from template`);
+        console.log(`[SkillsConfigurationView] Saved ${savedCount} profile files from template: ${fileNames.join(', ')}`);
       }
       
       // 3. 保存后检查是否需要更新模板状态
       const { agentTemplates, updateAgentTemplate } = useAgentsStore.getState();
       const currentTemplateId = agentTemplates[selectedEmployeeId];
       
+      let templateStatusChanged = false;
       if (currentTemplateId) {
         // 如果当前使用了模板，检查技能是否与模板一致
         const template = templates.find(t => t.id === currentTemplateId);
@@ -544,22 +751,49 @@ This file contains periodic tasks and reminders for the agent.
             // 技能被修改，将模板改为 null（表示"自定义"）
             console.log('[SkillsConfigurationView] Skills modified, setting template to custom');
             await updateAgentTemplate(selectedEmployeeId, null);
+            templateStatusChanged = true;
           } else {
             console.log('[SkillsConfigurationView] Skills match template, keeping templateId');
           }
         }
       }
       
-      // 根据是否保存了模板文档显示不同的提示
+      // 显示详细的成功提示
+      let successMsg = '✅ 保存成功！\n';
+      successMsg += `🔧 技能: 已保存 ${skillCount} 个技能\n`;
+      
       if (hasTemplateCache) {
-        toast.success('✅ 已保存技能配置和模板文档');
+        successMsg += `📄 岗位定义: 已保存 ${profileFileCount} 个文件\n`;
+        successMsg += `☁️ 云端: 已同步到云端\n`;
+        successMsg += `✏️ 状态: 已更新为"已自定义"`;
       } else {
-        toast.success('✅ 已保存技能配置');
+        successMsg += `💾 状态: 配置已保存`;
       }
+      
+      if (templateStatusChanged) {
+        successMsg += `\n🔄 模板状态: 已切换为"自定义"`;
+      }
+      
+      toast.success(successMsg, { id: savingToast, duration: 4000 });
       
       onRefresh();
     } catch (err) {
-      toast.error('保存失败: ' + String(err));
+      const errorMsg = String(err);
+      let friendlyMsg = '保存失败';
+      
+      if (errorMsg.includes('timeout') || errorMsg.includes('ETIMEDOUT')) {
+        friendlyMsg = '网络超时，请检查网络连接后重试';
+      } else if (errorMsg.includes('401') || errorMsg.includes('Unauthorized')) {
+        friendlyMsg = '登录已过期，请重新登录';
+      } else if (errorMsg.includes('403') || errorMsg.includes('Forbidden')) {
+        friendlyMsg = '没有权限，请联系管理员';
+      } else if (errorMsg.includes('500') || errorMsg.includes('Internal Server Error')) {
+        friendlyMsg = '服务器错误，请稍后重试';
+      } else {
+        friendlyMsg = `保存失败: ${errorMsg}`;
+      }
+      
+      toast.error(`❌ ${friendlyMsg}`);
     } finally {
       setSaving(false);
     }
@@ -685,9 +919,23 @@ This file contains periodic tasks and reminders for the agent.
             setMdContent(profileFiles[selectedMdFile]);
             setOriginalMdContent(profileFiles[selectedMdFile]);
             setMdSource('TEMPLATE');
+          } else {
+            // 如果模板没有当前文件，使用默认内容
+            const defaultContent = DEFAULT_TEMPLATES[selectedMdFile] || '';
+            setMdContent(defaultContent);
+            setOriginalMdContent(defaultContent);
+            setMdSource('DEFAULT');
+            console.log(`[SkillsConfigurationView] Template does not have ${selectedMdFile}, using default`);
           }
           
           console.log('[SkillsConfigurationView] Template profile files loaded for preview:', Object.keys(profileFiles));
+        } else {
+          // 如果模板没有任何profile文件，使用默认内容
+          const defaultContent = DEFAULT_TEMPLATES[selectedMdFile] || '';
+          setMdContent(defaultContent);
+          setOriginalMdContent(defaultContent);
+          setMdSource('DEFAULT');
+          console.log('[SkillsConfigurationView] Template has no profile files, using default');
         }
       } catch (profileErr) {
         console.error('[SkillsConfigurationView] Failed to load template profile files:', profileErr);
@@ -765,10 +1013,15 @@ This file contains periodic tasks and reminders for the agent.
 
   // 关闭下拉菜单
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const helpPopoverRef = useRef<HTMLDivElement>(null);
+  
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
         setShowEmployeeDropdown(false);
+      }
+      if (helpPopoverRef.current && !helpPopoverRef.current.contains(event.target as Node)) {
+        setShowHelpPopover(false);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -833,19 +1086,20 @@ This file contains periodic tasks and reminders for the agent.
   }
 
   return (
-    <div className="flex flex-col gap-5 h-full">
-      {/* 顶部：当前配置员工选择器 */}
-      <div className="shrink-0 p-5 rounded-xl border border-black/10 dark:border-white/10 bg-[#f3f1e9] dark:bg-white/[0.06] overflow-visible relative z-50">
+    <div className="flex flex-col gap-4 h-full">
+      {/* 顶部：当前配置员工选择器 - 紧凑设计 */}
+      <div className="shrink-0 p-4 rounded-xl border border-black/10 dark:border-white/10 bg-transparent overflow-visible relative z-50">
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-3 flex-1 overflow-visible">
-            <div className="h-11 w-11 shrink-0 flex items-center justify-center text-primary bg-primary/10 rounded-lg">
+            {/* 图标 */}
+            <div className="h-10 w-10 shrink-0 flex items-center justify-center text-primary bg-primary/10 rounded-lg">
               <Bot className="h-5 w-5" />
             </div>
             <div className="flex-1 relative overflow-visible" ref={dropdownRef}>
-              <p className="text-[11px] text-muted-foreground mb-1 font-medium uppercase tracking-wide">当前配置员工</p>
+              <p className="text-[10px] text-muted-foreground mb-0.5 font-semibold uppercase tracking-wide">当前配置员工</p>
               <button
                 onClick={() => setShowEmployeeDropdown(!showEmployeeDropdown)}
-                className="w-full text-left text-[16px] font-semibold bg-transparent border-none outline-none cursor-pointer text-foreground hover:text-primary transition-colors duration-150 flex items-center justify-between gap-2"
+                className="w-full text-left text-base font-bold bg-transparent border-none outline-none cursor-pointer text-foreground hover:text-primary transition-colors duration-150 flex items-center justify-between gap-2"
               >
                 <span className="truncate">{selectedEmployee?.name || '选择员工'}</span>
                 <ChevronDown className={cn(
@@ -854,7 +1108,7 @@ This file contains periodic tasks and reminders for the agent.
                 )} />
               </button>
               
-              {/* 下拉菜单 */}
+              {/* 下拉菜单 - 增大字号 */}
               <AnimatePresence>
                 {showEmployeeDropdown && (
                   <motion.div
@@ -862,7 +1116,7 @@ This file contains periodic tasks and reminders for the agent.
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: -10 }}
                     transition={{ duration: 0.15, ease: 'easeOut' }}
-                    className="absolute top-full left-0 right-0 mt-2 bg-background border border-border rounded-lg shadow-lg overflow-hidden z-[100] max-h-64 overflow-y-auto"
+                    className="absolute top-full left-0 right-0 mt-2 bg-background border-2 border-border rounded-xl shadow-lg overflow-hidden z-[100] max-h-64 overflow-y-auto"
                   >
                     {employees.map((emp, index) => {
                       const empSkillsCount = (localSkills[emp.id] || []).length;
@@ -874,19 +1128,19 @@ This file contains periodic tasks and reminders for the agent.
                             setShowEmployeeDropdown(false);
                           }}
                           className={cn(
-                            "w-full text-left px-3 py-2.5 text-[14px] transition-colors duration-100 flex items-center justify-between gap-2",
+                            "w-full text-left px-4 py-3.5 text-base font-medium transition-colors duration-100 flex items-center justify-between gap-3",
                             selectedEmployeeId === emp.id
-                              ? "bg-primary/10 text-primary font-medium"
+                              ? "bg-primary/10 text-primary font-bold"
                               : "text-foreground hover:bg-muted/50",
                             index !== 0 && "border-t border-border/40"
                           )}
                         >
                           <span className="truncate flex-1">{emp.name}</span>
-                          <span className="text-[11px] text-muted-foreground font-normal shrink-0">
+                          <span className="text-xs text-muted-foreground font-semibold shrink-0 px-2.5 py-1 rounded-md bg-muted">
                             {empSkillsCount}
                           </span>
                           {selectedEmployeeId === emp.id && (
-                            <Check className="h-3.5 w-3.5 shrink-0" />
+                            <Check className="h-4 w-4 shrink-0" />
                           )}
                         </button>
                       );
@@ -897,6 +1151,7 @@ This file contains periodic tasks and reminders for the agent.
             </div>
           </div>
           
+          {/* 按钮 - 紧凑设计 */}
           <div className="flex items-center gap-2 shrink-0">
             <AnimatePresence mode="wait">
               {hasChanges && (
@@ -910,7 +1165,7 @@ This file contains periodic tasks and reminders for the agent.
                     variant="outline"
                     onClick={handleReset}
                     disabled={saving}
-                    className="h-9 text-[13px] font-medium rounded-lg px-4"
+                    className="h-9 text-xs font-bold rounded-lg px-4"
                   >
                     重置
                   </Button>
@@ -920,7 +1175,7 @@ This file contains periodic tasks and reminders for the agent.
             <Button
               onClick={handleSave}
               disabled={saving || !hasChanges}
-              className="h-9 text-[13px] font-medium rounded-lg px-5"
+              className="h-9 text-xs font-bold rounded-lg px-5"
             >
               {saving ? (
                 <>
@@ -935,21 +1190,21 @@ This file contains periodic tasks and reminders for the agent.
         </div>
       </div>
 
-      {/* 底部：左右分栏 */}
-      <div className="flex gap-5 flex-1 min-h-0 relative z-10">
+      {/* 底部：左右分栏 - 紧凑布局 */}
+      <div className="flex gap-4 flex-1 min-h-0 relative z-10">
         {/* 左侧：模板选择面板 */}
       <div className="w-80 shrink-0 flex flex-col overflow-y-auto pr-2 -mr-2">
         {/* 整个模板区域的大框 */}
-        <div className="p-4 rounded-xl border border-black/10 dark:border-white/10 bg-[#f3f1e9] dark:bg-white/[0.06]">
+        <div className="p-4 rounded-xl border border-black/10 dark:border-white/10 bg-transparent">
           {/* 标题 */}
           <div className="mb-4 pb-3 border-b border-black/10 dark:border-white/10">
-            <div className="flex items-center gap-2 mb-1.5">
+            <div className="flex items-center gap-2 mb-1">
               <Sparkles className="h-4 w-4 text-primary" />
-              <h3 className="text-[16px] font-bold text-foreground">
+              <h3 className="text-base font-bold text-foreground">
                 岗位模板
               </h3>
             </div>
-            <p className="text-[12px] text-muted-foreground leading-relaxed">
+            <p className="text-xs text-muted-foreground leading-relaxed">
               选择模板快速配置技能
             </p>
           </div>
@@ -971,6 +1226,9 @@ This file contains periodic tasks and reminders for the agent.
               const { agentTemplates } = useAgentsStore.getState();
               const currentTemplateId = selectedEmployeeId ? agentTemplates[selectedEmployeeId] : undefined;
               const isCurrentTemplate = currentTemplateId === template.id;
+              
+              // 检查是否已自定义（如果mdSource是LOCAL或USER，说明用户有自己的内容）
+              const isCustomized = isCurrentTemplate && (mdSource === 'LOCAL' || mdSource === 'USER');
               
               const enabledSkillIds = allSkills.filter(s => s.enabled).map(s => s.id);
               const installedSkillSlugs = allSkills.map(s => s.slug || s.id);
@@ -1010,55 +1268,55 @@ This file contains periodic tasks and reminders for the agent.
                   onClick={() => handleApplyTemplate(template)}
                   disabled={applyingTemplate || !selectedEmployeeId || allSkillsMissing}
                   className={cn(
-                    'w-full text-left p-3.5 rounded-lg border transition-all duration-200',
+                    'w-full text-left p-4 rounded-xl border transition-all duration-200',
                     isCurrentTemplate
-                      ? 'border-primary bg-primary/5 shadow-sm'
+                      ? 'border-primary bg-primary/5'
                       : allSkillsMissing
-                      ? 'border-black/5 dark:border-white/5 bg-black/5 dark:bg-white/[0.02] opacity-60 cursor-not-allowed'
-                      : 'border-black/5 dark:border-white/5 bg-[#f8f6f0] dark:bg-white/[0.02] hover:border-primary/50 hover:bg-[#f3f1e9] dark:hover:bg-white/[0.06]',
+                      ? 'border-black/10 dark:border-white/10 bg-transparent opacity-60 cursor-not-allowed'
+                      : 'border-black/10 dark:border-white/10 bg-transparent hover:bg-black/5 dark:hover:bg-white/5 hover:border-black/15 dark:hover:border-white/15',
                     !selectedEmployeeId && 'opacity-50 cursor-not-allowed'
                   )}
                 >
-                  <div className="flex items-start gap-2.5">
+                  <div className="flex items-start gap-3">
                     {/* 图标 */}
-                    <div className="text-2xl shrink-0">{template.icon}</div>
+                    <div className="text-3xl shrink-0">{template.icon}</div>
 
                     {/* 内容 */}
                     <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-1">
-                        <h4 className="font-semibold text-[14px] text-foreground">
+                      <div className="flex items-center gap-2 mb-1.5">
+                        <h4 className="font-bold text-base text-foreground">
                           {template.nameZh}
                         </h4>
                         {isCurrentTemplate && (
-                          <Badge variant="default" className="text-[10px] px-1.5 py-0">
-                            使用中
+                          <Badge variant={isCustomized ? "secondary" : "default"} className="text-[10px] px-2 py-0.5 font-bold shadow-sm">
+                            {isCustomized ? "已自定义" : "使用中"}
                           </Badge>
                         )}
                         {template.recommended && !allSkillsMissing && !isCurrentTemplate && (
-                          <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
+                          <Badge variant="secondary" className="text-[10px] px-2 py-0.5 font-bold">
                             推荐
                           </Badge>
                         )}
                       </div>
-                      <p className="text-[11px] text-muted-foreground mb-2 line-clamp-2 leading-relaxed">
+                      <p className="text-xs text-muted-foreground mb-3 line-clamp-2 leading-relaxed">
                         {template.descriptionZh || template.description}
                       </p>
                       
                       {/* 技能统计 */}
                       {allSkillsMissing ? (
-                        <div className="flex items-center gap-1.5 text-[11px] font-medium text-destructive bg-destructive/10 px-2 py-1 rounded-md w-fit">
-                          <span>⚠️</span>
+                        <div className="flex items-center gap-1.5 text-xs font-bold text-destructive bg-destructive/10 px-3 py-1.5 rounded-lg w-fit border border-destructive/30">
+                          <span className="text-sm">⚠️</span>
                           <span>所有技能不可用</span>
                         </div>
                       ) : (
-                        <div className="flex items-center gap-2 text-[11px] font-medium">
-                          <span className="flex items-center gap-1 text-green-600 dark:text-green-400 bg-green-500/10 px-2 py-1 rounded-md">
-                            <span>✓</span>
+                        <div className="flex items-center gap-2 text-xs font-bold flex-wrap">
+                          <span className="flex items-center gap-1.5 text-green-600 dark:text-green-400 bg-green-500/10 px-3 py-1.5 rounded-lg border border-green-500/30">
+                            <span className="text-sm">✓</span>
                             <span>{availableSkills.length} 可用</span>
                           </span>
                           {missingSkills.length > 0 && (
-                            <span className="flex items-center gap-1 text-orange-600 dark:text-orange-400 bg-orange-500/10 px-2 py-1 rounded-md">
-                              <span>•</span>
+                            <span className="flex items-center gap-1.5 text-orange-600 dark:text-orange-400 bg-orange-500/10 px-3 py-1.5 rounded-lg border border-orange-500/30">
+                              <span className="text-sm">•</span>
                               <span>{missingSkills.length} 需安装</span>
                             </span>
                           )}
@@ -1068,8 +1326,8 @@ This file contains periodic tasks and reminders for the agent.
                   </div>
                   
                   {applyingTemplate && isCurrentTemplate && (
-                    <div className="mt-3 pt-3 border-t border-border/50 flex items-center gap-2 text-[12px] text-primary font-medium">
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    <div className="mt-3 pt-3 border-t border-border/50 flex items-center gap-2 text-xs text-primary font-bold">
+                      <Loader2 className="h-4 w-4 animate-spin" />
                       <span>应用中...</span>
                     </div>
                   )}
@@ -1082,38 +1340,39 @@ This file contains periodic tasks and reminders for the agent.
       </div>
 
       {/* 右侧：已选技能 / 岗位定义 */}
-      <div className="flex-1 min-w-0 space-y-6 overflow-y-auto pr-2 -mr-2">
-        {/* 已选技能区域 - 第二层容器 */}
+      <div className="flex-1 min-w-0 space-y-4 overflow-y-auto pr-2 -mr-2">
+        {/* 已选技能区域 */}
         <div
           className={cn(
-            'p-6 rounded-2xl border transition-all duration-200',
+            'p-5 rounded-2xl border-2 transition-all duration-200',
             isDropZoneActive
-              ? 'border-primary bg-primary/5 shadow-lg shadow-primary/10'
-              : 'border-black/10 dark:border-white/10 bg-[#f3f1e9] dark:bg-white/[0.06]'
+              ? 'border-primary/60 bg-primary/5 shadow-lg shadow-primary/20'
+              : 'border-black/10 dark:border-white/10 bg-transparent hover:border-black/15 dark:hover:border-white/15'
           )}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
         >
           <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2">
+            {/* 视图切换按钮 */}
+            <div className="flex items-center gap-1.5 p-1 bg-black/5 dark:bg-white/5 rounded-lg border border-black/10 dark:border-white/10">
               <Button
-                variant={viewMode === 'skills' ? 'default' : 'outline'}
+                variant={viewMode === 'skills' ? 'default' : 'ghost'}
                 size="sm"
                 onClick={() => setViewMode('skills')}
-                className="h-8 text-[12px] font-medium rounded-lg px-3"
+                className="h-8 text-xs font-bold rounded-md px-4"
               >
-                <Puzzle className="h-3.5 w-3.5 mr-1.5" />
+                <Puzzle className="h-4 w-4 mr-1.5" />
                 已选技能
               </Button>
               <Button
-                variant={viewMode === 'profile' ? 'default' : 'outline'}
+                variant={viewMode === 'profile' ? 'default' : 'ghost'}
                 size="sm"
                 onClick={() => setViewMode('profile')}
                 disabled={!selectedEmployeeId}
-                className="h-8 text-[12px] font-medium rounded-lg px-3"
+                className="h-8 text-xs font-bold rounded-md px-4"
               >
-                <FileText className="h-3.5 w-3.5 mr-1.5" />
+                <FileText className="h-4 w-4 mr-1.5" />
                 岗位定义
               </Button>
             </div>
@@ -1124,7 +1383,7 @@ This file contains periodic tasks and reminders for the agent.
                   initial={{ scale: 1.2, opacity: 0 }}
                   animate={{ scale: 1, opacity: 1 }}
                   transition={{ type: 'spring', stiffness: 500, damping: 25 }}
-                  className="text-[12px] font-medium text-foreground/70 bg-black/5 dark:bg-white/5 px-3 py-1 rounded-full"
+                  className="text-sm font-bold text-foreground/80 bg-black/5 dark:bg-white/5 px-3 py-1.5 rounded-lg border border-black/10 dark:border-white/10"
                 >
                   {currentSkills.length} 个
                 </motion.span>
@@ -1140,37 +1399,21 @@ This file contains periodic tasks and reminders for the agent.
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: -20 }}
                 transition={{ duration: 0.3 }}
-                className="flex flex-col h-[600px]"
+                className="flex flex-col h-[calc(100vh-320px)]"
               >
                 {selectedEmployeeId ? (
                   <>
-                    {/* 说明区域 */}
-                    <div className="mb-3 p-3 rounded-lg bg-blue-500/5 border border-blue-500/20">
-                      <div className="flex items-start gap-2">
-                        <div className="text-blue-500 mt-0.5">ℹ️</div>
-                        <div className="flex-1 text-xs text-foreground/70 space-y-1">
-                          <p className="font-medium text-foreground/90">岗位定义文件说明：</p>
-                          <ul className="space-y-0.5 ml-3 list-disc">
-                            <li><strong>📦 使用模板</strong>：从模板继承，未自定义</li>
-                            <li><strong>✏️ 已自定义</strong>：已修改并保存到云端</li>
-                            <li><strong>💾 本地文件</strong>：仅保存在本地，未同步</li>
-                            <li><strong>☁️ 云端同步</strong>：保存时自动上传，点击"同步"可下载最新版本</li>
-                          </ul>
-                        </div>
-                      </div>
-                    </div>
-                    
                     {/* MD File tabs */}
-                    <div className="flex items-center gap-1 mb-3 border-b border-border pb-2">
+                    <div className="flex items-center gap-1.5 mb-3 pb-2 border-b border-black/10 dark:border-white/10">
                       {MD_FILES.map((file) => (
                         <button
                           key={file}
                           onClick={() => setSelectedMdFile(file)}
                           className={cn(
-                            'px-3 py-1.5 text-xs font-medium rounded transition-colors',
+                            'px-3 py-1.5 text-xs font-bold rounded-lg transition-all duration-200 border',
                             selectedMdFile === file
-                              ? 'bg-primary text-primary-foreground'
-                              : 'bg-muted hover:bg-muted/80 text-muted-foreground'
+                              ? 'bg-primary text-primary-foreground border-primary'
+                              : 'bg-transparent hover:bg-black/5 dark:hover:bg-white/5 border-black/10 dark:border-white/10 text-muted-foreground hover:text-foreground'
                           )}
                         >
                           {file.replace('.md', '')}
@@ -1178,94 +1421,127 @@ This file contains periodic tasks and reminders for the agent.
                       ))}
                     </div>
 
-                    {/* Toolbar */}
-                    <div className="flex items-center justify-between mb-3">
-                      <div className="flex items-center gap-2">
+                    {/* Toolbar - 单行设计 */}
+                    <div className="flex items-center justify-between mb-3 gap-3">
+                      <div className="flex items-center gap-2 flex-wrap">
                         {/* 文件来源标识 */}
-                        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-muted/50 border border-border/50">
-                          <span className="text-[10px] font-medium text-muted-foreground">来源:</span>
+                        <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10">
+                          <span className="text-[10px] font-bold text-muted-foreground">来源:</span>
                           {mdSource === 'TEMPLATE' && (
-                            <Badge variant="outline" className="h-5 text-[10px] px-1.5 bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/30">
-                              📦 使用模板
-                            </Badge>
+                            <span className="text-[10px] font-bold text-blue-600 dark:text-blue-400">📦 模板</span>
                           )}
-                          {mdSource === 'USER' && (
-                            <Badge variant="outline" className="h-5 text-[10px] px-1.5 bg-green-500/10 text-green-600 dark:text-green-400 border-green-500/30">
-                              ✏️ 已自定义
-                            </Badge>
-                          )}
-                          {mdSource === 'LOCAL' && (
-                            <Badge variant="outline" className="h-5 text-[10px] px-1.5 bg-gray-500/10 text-gray-600 dark:text-gray-400 border-gray-500/30">
-                              💾 本地文件
-                            </Badge>
+                          {(mdSource === 'USER' || mdSource === 'LOCAL') && (
+                            <span className="text-[10px] font-bold text-green-600 dark:text-green-400">✏️ 自定义</span>
                           )}
                           {mdSource === 'DEFAULT' && (
-                            <Badge variant="outline" className="h-5 text-[10px] px-1.5 bg-orange-500/10 text-orange-600 dark:text-orange-400 border-orange-500/30">
-                              📄 默认内容
-                            </Badge>
+                            <span className="text-[10px] font-bold text-orange-600 dark:text-orange-400">� 默认</span>
                           )}
                         </div>
                         
-                        <div className="h-4 w-px bg-border" />
+                        {/* 帮助按钮 */}
+                        <div className="relative" ref={helpPopoverRef}>
+                          <button
+                            onClick={() => setShowHelpPopover(!showHelpPopover)}
+                            className="p-1 rounded-md hover:bg-muted/50 transition-colors"
+                            title="查看说明"
+                          >
+                            <HelpCircle className="h-4 w-4 text-muted-foreground hover:text-foreground" />
+                          </button>
+                          
+                          {/* 帮助弹出框 */}
+                          <AnimatePresence>
+                            {showHelpPopover && (
+                              <motion.div
+                                initial={{ opacity: 0, scale: 0.95, y: -10 }}
+                                animate={{ opacity: 1, scale: 1, y: 0 }}
+                                exit={{ opacity: 0, scale: 0.95, y: -10 }}
+                                transition={{ duration: 0.15 }}
+                                className="absolute left-0 top-full mt-2 w-80 p-3 rounded-lg bg-popover border-2 border-border shadow-lg z-50"
+                              >
+                                <div className="text-xs text-foreground/70 space-y-1">
+                                  <p className="font-bold text-sm text-foreground mb-1.5">岗位定义文件说明</p>
+                                  <ul className="space-y-1 ml-3 list-disc text-[11px]">
+                                    <li><strong>📦 模板</strong>：从模板继承，未自定义</li>
+                                    <li><strong>✏️ 自定义</strong>：已修改并保存到云端</li>
+                                    <li><strong>💾 本地</strong>：仅保存在本地，未同步</li>
+                                    <li><strong>💾 保存</strong>：保存到本地并自动上传到云端</li>
+                                    <li><strong>☁️ 同步</strong>：从云端下载最新版本</li>
+                                  </ul>
+                                </div>
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
+                        </div>
                         
-                        <Button
-                          variant={isMdPreview ? 'outline' : 'default'}
-                          size="sm"
-                          onClick={() => setIsMdPreview(false)}
-                          className="h-8 text-xs"
-                        >
-                          <Edit3 className="h-3 w-3 mr-1" />
-                          编辑
-                        </Button>
-                        <Button
-                          variant={isMdPreview ? 'default' : 'outline'}
-                          size="sm"
-                          onClick={() => setIsMdPreview(true)}
-                          className="h-8 text-xs"
-                        >
-                          <Eye className="h-3 w-3 mr-1" />
-                          预览
-                        </Button>
+                        <div className="h-4 w-px bg-border/50" />
+                        
+                        {/* 编辑/预览按钮组 */}
+                        <div className="flex items-center gap-1 p-0.5 bg-black/5 dark:bg-white/5 rounded-md border border-black/10 dark:border-white/10">
+                          <Button
+                            variant={isMdPreview ? 'outline' : 'default'}
+                            size="sm"
+                            onClick={() => setIsMdPreview(false)}
+                            className="h-7 text-xs font-bold px-3"
+                          >
+                            <Edit3 className="h-3 w-3 mr-1" />
+                            编辑
+                          </Button>
+                          <Button
+                            variant={isMdPreview ? 'default' : 'outline'}
+                            size="sm"
+                            onClick={() => setIsMdPreview(true)}
+                            className="h-7 text-xs font-bold px-3"
+                          >
+                            <Eye className="h-3 w-3 mr-1" />
+                            预览
+                          </Button>
+                        </div>
+                        
+                        <div className="h-4 w-px bg-border/50" />
+                        
+                        {/* 操作按钮组 - 紧凑 */}
                         <Button
                           variant="outline"
                           size="sm"
                           onClick={handleSyncProfile}
                           disabled={mdSyncing}
-                          className="h-8 text-xs"
-                          title="同步所有岗位定义文件"
+                          className="h-7 text-xs font-bold px-3"
+                          title="从云端下载最新版本"
                         >
                           <RefreshCw className={cn("h-3 w-3 mr-1", mdSyncing && "animate-spin")} />
-                          {mdSyncing ? '同步中...' : '同步'}
+                          同步
                         </Button>
                         <Button
                           variant="outline"
                           size="sm"
                           onClick={handleLoadDefaultTemplate}
-                          className="h-8 text-xs"
+                          className="h-7 text-xs font-bold px-3"
                           title="加载默认模板"
                         >
                           <FileCode className="h-3 w-3 mr-1" />
-                          默认模板
+                          默认
                         </Button>
                         <Button
                           variant="outline"
                           size="sm"
                           onClick={handleOpenMdFolder}
-                          className="h-8 text-xs"
+                          className="h-7 text-xs font-bold px-3"
                           title="在文件管理器中打开"
                         >
                           <FolderOpen className="h-3 w-3 mr-1" />
-                          打开文件夹
+                          文件夹
                         </Button>
                       </div>
-                      <div className="flex items-center gap-2">
+                      
+                      {/* 右侧保存按钮组 - 紧凑 */}
+                      <div className="flex items-center gap-2 shrink-0">
                         {hasMdChanges && (
                           <Button
                             variant="outline"
                             size="sm"
                             onClick={handleMdReset}
                             disabled={mdSaving}
-                            className="h-8 text-xs"
+                            className="h-7 text-xs font-bold px-3"
                           >
                             <RotateCcw className="h-3 w-3 mr-1" />
                             重置
@@ -1276,7 +1552,7 @@ This file contains periodic tasks and reminders for the agent.
                           size="sm"
                           onClick={handleMdSave}
                           disabled={!hasMdChanges || mdSaving}
-                          className="h-8 text-xs"
+                          className="h-7 text-xs font-bold px-4 shadow-sm"
                         >
                           <Save className="h-3 w-3 mr-1" />
                           {mdSaving ? '保存中...' : '保存'}
@@ -1284,23 +1560,28 @@ This file contains periodic tasks and reminders for the agent.
                       </div>
                     </div>
 
-                    {/* Content area */}
-                    <div className="flex-1 border border-border rounded-lg overflow-hidden">
+                    {/* Content area - 增强可读性 */}
+                    <div className="flex-1 border-2 border-black/10 dark:border-white/10 rounded-xl overflow-hidden bg-black/[0.03] dark:bg-white/[0.03]">
                       {mdLoading ? (
                         <div className="flex items-center justify-center h-full">
-                          <div className="text-sm text-muted-foreground">加载中...</div>
+                          <div className="text-base text-muted-foreground">加载中...</div>
                         </div>
                       ) : isMdPreview ? (
                         <div
-                          className="prose prose-sm max-w-none p-4 overflow-auto h-full bg-background"
+                          className="prose prose-base dark:prose-invert max-w-none p-8 overflow-auto h-full bg-transparent"
                           dangerouslySetInnerHTML={previewHtml}
                         />
                       ) : (
                         <textarea
                           value={mdContent}
                           onChange={(e) => setMdContent(e.target.value)}
-                          className="w-full h-full p-4 bg-background text-foreground font-mono text-sm resize-none focus:outline-none"
+                          className="w-full h-full p-8 bg-transparent text-foreground font-mono text-[15px] leading-relaxed resize-none focus:outline-none focus:ring-0 border-0 placeholder:text-muted-foreground/50"
                           placeholder="在此编辑 Markdown 内容..."
+                          style={{ 
+                            fontFamily: '"JetBrains Mono", "Fira Code", "Consolas", "Monaco", monospace',
+                            lineHeight: '1.7',
+                            fontWeight: '400'
+                          }}
                         />
                       )}
                     </div>
@@ -1364,14 +1645,14 @@ This file contains periodic tasks and reminders for the agent.
                           mass: 0.8
                         }}
                         onClick={() => handleRemoveSkill(skillId)}
-                        className="group inline-flex items-center gap-2 px-3.5 py-2.5 rounded-lg bg-primary/5 hover:bg-primary/8 border border-primary/20 hover:border-primary/30 transition-all duration-200 text-[13px] font-medium"
+                        className="group inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-black/5 dark:bg-white/5 hover:bg-black/8 dark:hover:bg-white/8 border border-black/10 dark:border-white/10 hover:border-black/15 dark:hover:border-white/15 transition-all duration-200 text-xs font-medium"
                       >
-                        <span className="text-[16px]">{skill.icon || '🔧'}</span>
-                        <span className="text-foreground/90 font-bold">{skill.name}</span>
+                        <span className="text-base">{skill.icon || '🔧'}</span>
+                        <span className="text-foreground font-bold">{skill.name}</span>
                         {!skill.enabled && (
-                          <span className="text-[10px] text-orange-600 dark:text-orange-400 font-semibold">未启用</span>
+                          <span className="text-[10px] text-orange-600 dark:text-orange-400 font-bold px-1.5 py-0.5 bg-orange-500/10 rounded">未启用</span>
                         )}
-                        <X className="h-3.5 w-3.5 text-foreground/70 group-hover:text-foreground transition-colors duration-200" />
+                        <X className="h-3.5 w-3.5 text-foreground/60 group-hover:text-foreground transition-all duration-200" />
                       </motion.button>
                     );
                   })}
@@ -1390,7 +1671,7 @@ This file contains periodic tasks and reminders for the agent.
             placeholder="搜索技能..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="pl-11 pr-10 h-11 rounded-xl border-border bg-muted/50 focus:bg-background focus-visible:ring-2 focus-visible:ring-primary/50 focus-visible:ring-offset-0 focus-visible:border-primary transition-colors duration-150 text-[13px]"
+            className="pl-11 pr-11 h-10 rounded-xl border border-black/10 dark:border-white/10 bg-transparent focus:bg-transparent focus-visible:ring-2 focus-visible:ring-primary/50 focus-visible:ring-offset-0 focus-visible:border-primary transition-all duration-200 text-sm font-medium"
           />
           <AnimatePresence>
             {searchQuery && (
@@ -1400,9 +1681,8 @@ This file contains periodic tasks and reminders for the agent.
                 exit={{ opacity: 0, scale: 0.9 }}
                 transition={{ duration: 0.1 }}
                 onClick={() => setSearchQuery('')}
-                className="absolute right-3 text-muted-foreground hover:text-foreground transition-colors duration-150 z-10 h-4 w-4 flex items-center justify-center"
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors duration-150 z-10 h-5 w-5 flex items-center justify-center rounded-md hover:bg-muted/50"
                 aria-label="清除搜索"
-                style={{ top: '14px' }}
               >
                 <X className="h-4 w-4" />
               </motion.button>
@@ -1432,15 +1712,15 @@ This file contains periodic tasks and reminders for the agent.
                 key={cat}
                 onClick={() => setSelectedCategory(cat)}
                 className={cn(
-                  'px-3.5 py-1.5 rounded-full text-[12px] font-medium transition-all duration-150 flex items-center gap-1.5 whitespace-nowrap',
+                  'px-3 py-1.5 rounded-lg text-xs font-bold transition-all duration-200 flex items-center gap-1.5 whitespace-nowrap border',
                   selectedCategory === cat
-                    ? 'bg-primary text-primary-foreground shadow-sm'
-                    : 'bg-muted/50 hover:bg-accent text-muted-foreground hover:text-foreground border border-border'
+                    ? 'bg-primary text-primary-foreground border-primary'
+                    : 'bg-transparent hover:bg-black/5 dark:hover:bg-white/5 text-muted-foreground hover:text-foreground border-black/10 dark:border-white/10'
                 )}
               >
-                <span>{categoryIcon}</span>
+                <span className="text-sm">{categoryIcon}</span>
                 <span>{cat === 'all' ? '全部' : cat}</span>
-                <span className="opacity-70 text-[11px]">({count})</span>
+                <span className="opacity-70 text-[10px] font-semibold">({count})</span>
               </button>
             );
           })}
@@ -1470,8 +1750,8 @@ This file contains periodic tasks and reminders for the agent.
               transition={{ duration: 0.15 }}
               className="text-center py-16"
             >
-              <Puzzle className="h-12 w-12 mx-auto mb-3 text-muted-foreground opacity-50" />
-              <p className="text-[14px] text-muted-foreground">没有找到匹配的技能</p>
+              <Puzzle className="h-12 w-12 mx-auto mb-3 text-muted-foreground opacity-40" />
+              <p className="text-sm font-medium text-muted-foreground">没有找到匹配的技能</p>
             </motion.div>
           ) : (
             <div
@@ -1489,26 +1769,49 @@ This file contains periodic tasks and reminders for the agent.
                     onDragEnd={handleDragEnd}
                     onClick={() => handleToggleSkill(skill.id)}
                     className={cn(
-                      'group relative flex flex-col items-center gap-3 p-4 rounded-xl border text-center select-none',
-                      'transition-all duration-200 ease-out',
+                      'group relative flex flex-col items-center gap-2.5 p-4 rounded-xl border text-center select-none transition-all duration-200 ease-out',
                       isSelected
                         ? 'border-primary bg-primary/5'
                         : isDragging
-                        ? 'border-primary/30 bg-black/5 dark:bg-white/[0.02] cursor-grabbing opacity-50'
-                        : 'border-black/5 dark:border-white/5 bg-[#f8f6f0] dark:bg-white/[0.02] hover:border-primary/40 hover:bg-[#f3f1e9] dark:hover:bg-white/[0.06] cursor-grab'
+                        ? 'border-primary/40 bg-black/5 dark:bg-white/5 cursor-grabbing opacity-50'
+                        : 'border-black/10 dark:border-white/10 bg-transparent hover:bg-black/5 dark:hover:bg-white/5 hover:border-black/15 dark:hover:border-white/15 cursor-grab'
                     )}
                   >
-                    <div className="text-[32px] pointer-events-none">
+                    <div className="text-4xl pointer-events-none">
                       {skill.icon || '🔧'}
                     </div>
-                    <div className="w-full pointer-events-none">
-                      <div className="font-medium text-[13px] truncate text-foreground">{skill.name}</div>
+                    <div className="w-full pointer-events-none space-y-1.5">
+                      <div className="font-bold text-sm text-foreground leading-tight">{skill.name}</div>
+                      {skill.description && (
+                        <div className="text-[11px] text-muted-foreground/70 line-clamp-2 leading-relaxed">
+                          {skill.description}
+                        </div>
+                      )}
                       {skill.category && (
-                        <div className="text-[11px] text-muted-foreground truncate mt-1">
+                        <div className="text-[10px] text-muted-foreground/60 font-medium pt-0.5">
                           {skill.category}
                         </div>
                       )}
                     </div>
+                    
+                    {/* 操作按钮 */}
+                    <div className="flex items-center gap-1.5 w-full mt-1 pointer-events-auto">
+                      <button
+                        onClick={(e) => handleShowSkillDetail(skill, e)}
+                        className="flex-1 h-7 px-2 text-[11px] font-medium rounded-lg border border-black/10 dark:border-white/10 bg-transparent hover:bg-black/5 dark:hover:bg-white/5 text-foreground/70 hover:text-foreground transition-colors flex items-center justify-center gap-1"
+                      >
+                        <Info className="h-3 w-3" />
+                        详情
+                      </button>
+                      <button
+                        onClick={(e) => handleInvokeSkill(skill, e)}
+                        className="flex-1 h-7 px-2 text-[11px] font-medium rounded-lg border border-primary/20 bg-primary/5 hover:bg-primary/10 text-primary hover:text-primary transition-colors flex items-center justify-center gap-1"
+                      >
+                        <MessageSquare className="h-3 w-3" />
+                        调用
+                      </button>
+                    </div>
+
                     <AnimatePresence>
                       {isSelected && (
                         <motion.div
@@ -1516,9 +1819,9 @@ This file contains periodic tasks and reminders for the agent.
                           animate={{ scale: 1 }}
                           exit={{ scale: 0 }}
                           transition={{ duration: 0.15 }}
-                          className="absolute top-2 right-2 w-5 h-5 rounded-full bg-primary flex items-center justify-center shadow-sm pointer-events-none"
+                          className="absolute top-2 right-2 w-5 h-5 rounded-full bg-primary flex items-center justify-center shadow-sm pointer-events-none border-2 border-background"
                         >
-                          <Check className="h-3 w-3 text-primary-foreground" />
+                          <Check className="h-3 w-3 text-primary-foreground font-bold" />
                         </motion.div>
                       )}
                     </AnimatePresence>
@@ -1530,6 +1833,104 @@ This file contains periodic tasks and reminders for the agent.
         </AnimatePresence>
       </div>
       )}
+
+      {/* Skill Detail Dialog */}
+      <AnimatePresence>
+        {skillDetailDialog.open && skillDetailDialog.skill && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50"
+            onClick={() => setSkillDetailDialog({ open: false, skill: null })}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              transition={{ duration: 0.2 }}
+              className="bg-background border border-black/10 dark:border-white/10 rounded-2xl shadow-2xl max-w-2xl w-full max-h-[80vh] overflow-hidden"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Header */}
+              <div className="flex items-start gap-4 p-6 border-b border-black/10 dark:border-white/10">
+                <div className="text-5xl">{skillDetailDialog.skill.icon || '🔧'}</div>
+                <div className="flex-1 min-w-0">
+                  <h2 className="text-2xl font-bold text-foreground mb-2">{skillDetailDialog.skill.name}</h2>
+                  {skillDetailDialog.skill.category && (
+                    <Badge variant="secondary" className="text-xs">
+                      {skillDetailDialog.skill.category}
+                    </Badge>
+                  )}
+                </div>
+                <button
+                  onClick={() => setSkillDetailDialog({ open: false, skill: null })}
+                  className="p-2 rounded-lg hover:bg-black/5 dark:hover:bg-white/5 transition-colors"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+
+              {/* Content */}
+              <div className="p-6 overflow-y-auto max-h-[calc(80vh-180px)]">
+                <div className="space-y-4">
+                  {skillDetailDialog.skill.description && (
+                    <div>
+                      <h3 className="text-sm font-semibold text-foreground/70 mb-2">描述</h3>
+                      <p className="text-sm text-foreground/80 leading-relaxed">
+                        {skillDetailDialog.skill.description}
+                      </p>
+                    </div>
+                  )}
+                  
+                  {skillDetailDialog.skill.version && (
+                    <div>
+                      <h3 className="text-sm font-semibold text-foreground/70 mb-2">版本</h3>
+                      <p className="text-sm text-foreground/80">{skillDetailDialog.skill.version}</p>
+                    </div>
+                  )}
+                  
+                  {skillDetailDialog.skill.author && (
+                    <div>
+                      <h3 className="text-sm font-semibold text-foreground/70 mb-2">作者</h3>
+                      <p className="text-sm text-foreground/80">{skillDetailDialog.skill.author}</p>
+                    </div>
+                  )}
+                  
+                  {skillDetailDialog.skill.slug && (
+                    <div>
+                      <h3 className="text-sm font-semibold text-foreground/70 mb-2">标识符</h3>
+                      <code className="text-xs bg-black/5 dark:bg-white/5 px-2 py-1 rounded">
+                        {skillDetailDialog.skill.slug}
+                      </code>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Footer */}
+              <div className="flex items-center gap-3 p-6 border-t border-black/10 dark:border-white/10">
+                <Button
+                  onClick={(e) => {
+                    handleInvokeSkill(skillDetailDialog.skill, e as any);
+                    setSkillDetailDialog({ open: false, skill: null });
+                  }}
+                  className="flex-1"
+                >
+                  <MessageSquare className="h-4 w-4 mr-2" />
+                  立即调用
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => setSkillDetailDialog({ open: false, skill: null })}
+                >
+                  关闭
+                </Button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Template Selection Dialog */}
       </div>
