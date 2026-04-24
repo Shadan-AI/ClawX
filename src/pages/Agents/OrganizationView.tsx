@@ -54,13 +54,20 @@ export function OrganizationView() {
   } | null>(null);
   const hasInitialLayoutRef = useRef(false);
   
-  const { departments, assignments, addDepartment, updateDepartment, deleteDepartment, assignAgent, unassignAgent, loadFromServer, saveToServer, isLoading, isSaving } = useOrganizationStore();
+  const { departments, assignments, addDepartment, updateDepartment, deleteDepartment, assignAgent, unassignAgent, loadFromServer, saveToServer, startSync, stopSync, startAutoSave, stopAutoSave, syncStatus, lastSyncTime, hasLocalChanges, isLoading, isSaving } = useOrganizationStore();
   const { agents } = useAgentsStore();
   
-  // 组件加载时从服务器加载数据
+  // 组件加载时从服务器加载数据并开始同步
   useEffect(() => {
     loadFromServer();
-  }, [loadFromServer]);
+    startSync();
+    startAutoSave();
+    
+    return () => {
+      stopSync();
+      stopAutoSave();
+    };
+  }, [loadFromServer, startSync, stopSync, startAutoSave, stopAutoSave]);
   
   // 获取未分配的员工
   const unassignedAgents = useMemo(
@@ -798,14 +805,67 @@ export function OrganizationView() {
               <Building2 className="w-5 h-5 text-blue-600 dark:text-blue-400" />
               <h3 className="text-[15px] font-semibold text-foreground">组织架构</h3>
             </div>
-            <Button
-              onClick={saveToServer}
-              disabled={isSaving}
-              size="sm"
-              className="h-8 text-[12px] rounded-lg px-3"
-            >
-              {isSaving ? '保存中...' : '保存'}
-            </Button>
+            <div className="flex items-center gap-2">
+              {/* 同步状态指示器 */}
+              <div className="flex items-center gap-1.5 text-[11px]">
+                {syncStatus === 'syncing' && (
+                  <>
+                    <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+                    <span className="text-muted-foreground">同步中</span>
+                  </>
+                )}
+                {syncStatus === 'saved' && (
+                  <>
+                    <div className="w-2 h-2 rounded-full bg-green-500" />
+                    <span className="text-muted-foreground">已保存</span>
+                  </>
+                )}
+                {syncStatus === 'error' && (
+                  <>
+                    <div className="w-2 h-2 rounded-full bg-red-500" />
+                    <span className="text-red-500">错误</span>
+                  </>
+                )}
+                {syncStatus === 'conflict' && (
+                  <>
+                    <div className="w-2 h-2 rounded-full bg-yellow-500" />
+                    <span className="text-yellow-600">冲突</span>
+                  </>
+                )}
+                {hasLocalChanges && syncStatus === 'idle' && (
+                  <>
+                    <div className="w-2 h-2 rounded-full bg-orange-500" />
+                    <span className="text-muted-foreground">未保存</span>
+                  </>
+                )}
+              </div>
+              
+              {/* 手动刷新按钮 */}
+              <Button
+                onClick={() => loadFromServer()}
+                disabled={isLoading}
+                size="sm"
+                variant="ghost"
+                className="h-7 w-7 p-0"
+                title="刷新数据"
+              >
+                <svg 
+                  xmlns="http://www.w3.org/2000/svg" 
+                  width="14" 
+                  height="14" 
+                  viewBox="0 0 24 24" 
+                  fill="none" 
+                  stroke="currentColor" 
+                  strokeWidth="2" 
+                  strokeLinecap="round" 
+                  strokeLinejoin="round"
+                  className={isLoading ? 'animate-spin' : ''}
+                >
+                  <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"></path>
+                  <path d="M21 3v5h-5"></path>
+                </svg>
+              </Button>
+            </div>
           </div>
           
           <div className="space-y-3">

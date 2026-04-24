@@ -1,15 +1,21 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { Department, Assignment, OrgData, NodeRelation } from '../types/organization';
-import { getOrganization, saveOrganization } from '../api/organization';
+import { getOrganization, saveOrganization, checkOrganizationUpdate } from '../api/organization';
 import { toast } from 'sonner';
 
 interface OrganizationState {
   departments: Department[];
   assignments: Assignment;
-  relations: NodeRelation[]; // 新增：节点关系
+  relations: NodeRelation[];
+  version: number;
+  lastSyncTime: number;
+  hasLocalChanges: boolean;
   isLoading: boolean;
   isSaving: boolean;
+  isSyncing: boolean;
+  syncStatus: 'idle' | 'syncing' | 'saved' | 'error' | 'conflict';
+  lastSyncError: string | null;
   
   // 部门操作
   addDepartment: (name: string, parentId: string | null, parentType?: 'dept' | 'bot') => string;
@@ -27,7 +33,13 @@ interface OrganizationState {
   
   // 服务器同步
   loadFromServer: () => Promise<void>;
-  saveToServer: () => Promise<void>;
+  saveToServer: (force?: boolean) => Promise<void>;
+  checkUpdate: () => Promise<void>;
+  startSync: () => void;
+  stopSync: () => void;
+  markDirty: () => void;
+  startAutoSave: () => void;
+  stopAutoSave: () => void;
 }
 
 export const useOrganizationStore = create<OrganizationState>()(
@@ -36,8 +48,14 @@ export const useOrganizationStore = create<OrganizationState>()(
       departments: [],
       assignments: {},
       relations: [],
+      version: 0,
+      lastSyncTime: 0,
+      hasLocalChanges: false,
       isLoading: false,
       isSaving: false,
+      isSyncing: false,
+      syncStatus: 'idle',
+      lastSyncError: null,
       
       addDepartment: (name: string, parentId: string | null, parentType: 'dept' | 'bot' = 'dept') => {
         const id = `dept-${Date.now()}`;
@@ -56,8 +74,14 @@ export const useOrganizationStore = create<OrganizationState>()(
           return {
             departments: [...state.departments, newDept],
             relations: newRelations,
+            hasLocalChanges: true,
           };
         });
+        
+        // 触发自动保存
+        const schedule = (window as any).__orgScheduleAutoSave;
+        if (schedule) schedule();
+        
         return id;
       },
       
@@ -66,7 +90,10 @@ export const useOrganizationStore = create<OrganizationState>()(
           departments: state.departments.map((dept) =>
             dept.id === id ? { ...dept, name } : dept
           ),
+          hasLocalChanges: true,
         }));
+        const schedule = (window as any).__orgScheduleAutoSave;
+        if (schedule) schedule();
       },
       
       moveDepartment: (deptId: string, newParentId: string | null, newParentType: 'dept' | 'bot' = 'dept') => {
@@ -107,8 +134,11 @@ export const useOrganizationStore = create<OrganizationState>()(
           return {
             departments: newDepartments,
             relations: newRelations,
+            hasLocalChanges: true,
           };
         });
+        const schedule = (window as any).__orgScheduleAutoSave;
+        if (schedule) schedule();
       },
       
       deleteDepartment: (id: string) => {
@@ -151,7 +181,9 @@ export const useOrganizationStore = create<OrganizationState>()(
           (rel) => !idsToDelete.has(rel.parentId) && !idsToDelete.has(rel.childId)
         );
         
-        set({ departments: newDepartments, assignments: newAssignments, relations: newRelations });
+        set({ departments: newDepartments, assignments: newAssignments, relations: newRelations, hasLocalChanges: true });
+        const schedule = (window as any).__orgScheduleAutoSave;
+        if (schedule) schedule();
       },
       
       assignAgent: (botId: string, parentId: string, parentType: 'dept' | 'bot' = 'dept') => {
@@ -170,8 +202,11 @@ export const useOrganizationStore = create<OrganizationState>()(
           return {
             assignments: { ...state.assignments, [botId]: parentId },
             relations: newRelations,
+            hasLocalChanges: true,
           };
         });
+        const schedule = (window as any).__orgScheduleAutoSave;
+        if (schedule) schedule();
       },
       
       unassignAgent: (botId: string) => {
@@ -185,8 +220,11 @@ export const useOrganizationStore = create<OrganizationState>()(
           return { 
             assignments: newAssignments,
             relations: newRelations,
+            hasLocalChanges: true,
           };
         });
+        const schedule = (window as any).__orgScheduleAutoSave;
+        if (schedule) schedule();
       },
       
       loadOrgData: (data: OrgData) => {
@@ -203,7 +241,7 @@ export const useOrganizationStore = create<OrganizationState>()(
       
       // 从服务器加载
       loadFromServer: async () => {
-        set({ isLoading: true });
+        set({ isLoading: true, syncStatus: 'syncing' });
         try {
           const response = await getOrganization();
           if (response.code === 200 && response.data) {
@@ -214,11 +252,17 @@ export const useOrganizationStore = create<OrganizationState>()(
                 departments: data.departments || [],
                 assignments: data.assignments || {},
                 relations: data.relations || [],
+                version: response.data.version,
+                lastSyncTime: Date.now(),
+                hasLocalChanges: false,
+                syncStatus: 'saved',
+                lastSyncError: null,
               });
             }
           }
         } catch (error) {
           console.error('加载组织架构失败:', error);
+          set({ syncStatus: 'error', lastSyncError: '加载失败' });
           toast.error('加载组织架构失败');
         } finally {
           set({ isLoading: false });
@@ -226,24 +270,186 @@ export const useOrganizationStore = create<OrganizationState>()(
       },
       
       // 保存到服务器
-      saveToServer: async () => {
-        const { departments, assignments, relations } = get();
-        set({ isSaving: true });
+      saveToServer: async (force = false) => {
+        const { departments, assignments, relations, version } = get();
+        set({ isSaving: true, syncStatus: 'syncing' });
         try {
           const data: OrgData = { departments, assignments, relations };
           const canvasData = JSON.stringify(data);
-          const response = await saveOrganization(canvasData);
+          
+          // 如果是强制保存,先获取最新版本号
+          let saveVersion = version;
+          if (force) {
+            const latest = await getOrganization();
+            if (latest.code === 200 && latest.data) {
+              saveVersion = latest.data.version;
+            }
+          }
+          
+          const response = await saveOrganization(canvasData, saveVersion);
+          
           if (response.code === 200) {
-            toast.success('保存成功');
+            set({ 
+              version: response.data.version,
+              lastSyncTime: Date.now(),
+              hasLocalChanges: false,
+              syncStatus: 'saved',
+              lastSyncError: null,
+            });
+            // 不显示 toast,用状态指示器就够了
+          } else if (response.code === 409) {
+            // 版本冲突
+            set({ syncStatus: 'conflict', lastSyncError: '数据已被其他端修改' });
+            toast.error('数据已被其他端修改', {
+              duration: 5000,
+              action: {
+                label: '强制保存',
+                onClick: () => {
+                  get().saveToServer(true);
+                },
+              },
+            });
           } else {
-            toast.error('保存失败');
+            set({ syncStatus: 'error', lastSyncError: response.message || '保存失败' });
+            toast.error(response.message || '保存失败');
           }
         } catch (error) {
           console.error('保存组织架构失败:', error);
+          set({ syncStatus: 'error', lastSyncError: '网络错误' });
           toast.error('保存失败');
         } finally {
           set({ isSaving: false });
         }
+      },
+      
+      // 检查更新
+      checkUpdate: async () => {
+        const { version, hasLocalChanges } = get();
+        if (get().isSyncing) return;
+        
+        set({ isSyncing: true });
+        try {
+          const response = await checkOrganizationUpdate(version);
+          if (response.code === 200 && response.data.hasUpdate) {
+            if (hasLocalChanges) {
+              // 有冲突,提示用户
+              toast.warning('服务器数据已更新,但你有未保存的本地修改', {
+                action: {
+                  label: '查看',
+                  onClick: () => {
+                    // TODO: 显示冲突对话框
+                    console.log('显示冲突对话框');
+                  },
+                },
+              });
+            } else {
+              // 无冲突,自动更新
+              await get().loadFromServer();
+              toast.info('已同步最新数据');
+            }
+          }
+        } catch (error) {
+          console.error('检查更新失败:', error);
+        } finally {
+          set({ isSyncing: false });
+        }
+      },
+      
+      // 开始自动同步
+      startSync: () => {
+        // 清理旧的定时器
+        const oldInterval = (window as any).__orgSyncInterval;
+        if (oldInterval) {
+          clearInterval(oldInterval);
+        }
+        
+        let lastActivityTime = Date.now();
+        
+        // 监听用户活动
+        const updateActivity = () => {
+          lastActivityTime = Date.now();
+        };
+        
+        // 监听鼠标和键盘活动
+        document.addEventListener('mousedown', updateActivity);
+        document.addEventListener('keydown', updateActivity);
+        
+        const syncInterval = setInterval(() => {
+          // 只在以下条件都满足时才同步:
+          // 1. 页面可见
+          // 2. 用户至少 5 秒没有操作
+          // 3. 没有正在保存
+          const idleTime = Date.now() - lastActivityTime;
+          const shouldSync = !document.hidden && idleTime > 5000 && !get().isSaving;
+          
+          if (shouldSync) {
+            get().checkUpdate();
+          }
+        }, 10000); // 10秒检查一次
+        
+        // 保存到 window 对象
+        (window as any).__orgSyncInterval = syncInterval;
+        (window as any).__orgSyncCleanup = () => {
+          document.removeEventListener('mousedown', updateActivity);
+          document.removeEventListener('keydown', updateActivity);
+        };
+      },
+      
+      // 停止自动同步
+      stopSync: () => {
+        const syncInterval = (window as any).__orgSyncInterval;
+        if (syncInterval) {
+          clearInterval(syncInterval);
+          delete (window as any).__orgSyncInterval;
+        }
+        
+        const cleanup = (window as any).__orgSyncCleanup;
+        if (cleanup) {
+          cleanup();
+          delete (window as any).__orgSyncCleanup;
+        }
+      },
+      
+      // 标记有本地修改
+      markDirty: () => {
+        set({ hasLocalChanges: true });
+      },
+      
+      // 开始自动保存(2秒防抖)
+      startAutoSave: () => {
+        // 清理旧的定时器
+        const oldTimer = (window as any).__orgAutoSaveTimer;
+        if (oldTimer) {
+          clearTimeout(oldTimer);
+        }
+        
+        // 监听数据变化,自动保存
+        const scheduleAutoSave = () => {
+          const timer = (window as any).__orgAutoSaveTimer;
+          if (timer) {
+            clearTimeout(timer);
+          }
+          
+          (window as any).__orgAutoSaveTimer = setTimeout(() => {
+            const { hasLocalChanges, isSaving } = get();
+            if (hasLocalChanges && !isSaving) {
+              get().saveToServer();
+            }
+          }, 2000); // 2秒后自动保存
+        };
+        
+        // 保存调度函数
+        (window as any).__orgScheduleAutoSave = scheduleAutoSave;
+      },
+      
+      // 停止自动保存
+      stopAutoSave: () => {
+        const timer = (window as any).__orgAutoSaveTimer;
+        if (timer) {
+          clearTimeout(timer);
+          delete (window as any).__orgAutoSaveTimer;
+        }
+        delete (window as any).__orgScheduleAutoSave;
       },
     }),
     {
