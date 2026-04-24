@@ -512,6 +512,16 @@ async function initialize(): Promise<void> {
   if (!isE2EMode && gatewayAutoStart) {
     try {
       await syncAllProviderAuthToRuntime();
+      
+      // Sync digital employee models before gateway starts
+      try {
+        const { syncAllDigitalEmployeeModels } = await import('../utils/agent-config');
+        await syncAllDigitalEmployeeModels();
+        logger.info('Digital employee models synced before gateway start');
+      } catch (syncError) {
+        logger.warn('Failed to sync digital employee models:', syncError);
+      }
+      
       logger.debug('Auto-starting Gateway...');
       await gatewayManager.start();
       logger.info('Gateway auto-start succeeded');

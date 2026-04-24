@@ -1385,6 +1385,15 @@ function registerGatewayHandlers(
   // Start Gateway
   ipcMain.handle('gateway:start', async () => {
     try {
+      // Sync digital employee models before starting
+      try {
+        const { syncAllDigitalEmployeeModels } = await import('../utils/agent-config');
+        await syncAllDigitalEmployeeModels();
+        logger.info('Digital employee models synced before gateway start');
+      } catch (syncError) {
+        logger.warn('Failed to sync digital employee models:', syncError);
+      }
+      
       await gatewayManager.start();
       return { success: true };
     } catch (error) {
@@ -1405,6 +1414,15 @@ function registerGatewayHandlers(
   // Restart Gateway
   ipcMain.handle('gateway:restart', async () => {
     try {
+      // Sync digital employee models before restarting
+      try {
+        const { syncAllDigitalEmployeeModels } = await import('../utils/agent-config');
+        await syncAllDigitalEmployeeModels();
+        logger.info('Digital employee models synced before gateway restart');
+      } catch (syncError) {
+        logger.warn('Failed to sync digital employee models:', syncError);
+      }
+      
       await gatewayManager.restart();
       return { success: true };
     } catch (error) {

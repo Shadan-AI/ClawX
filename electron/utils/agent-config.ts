@@ -739,8 +739,9 @@ export async function assignChannelAccountToAgent(
 ): Promise<AgentsSnapshot> {
   return withConfigLock(async () => {
     const config = await readOpenClawConfig() as AgentConfigDocument;
-    const { entries } = normalizeAgentsConfig(config);
-    if (!entries.some((entry) => entry.id === agentId)) {
+    const { agentsConfig, entries } = normalizeAgentsConfig(config);
+    const agentIndex = entries.findIndex((entry) => entry.id === agentId);
+    if (agentIndex === -1) {
       throw new Error(`Agent "${agentId}" not found`);
     }
     if (!accountId.trim()) {
@@ -748,9 +749,91 @@ export async function assignChannelAccountToAgent(
     }
 
     config.bindings = upsertBindingsForChannel(config.bindings, channelType, agentId, accountId.trim());
+
+    // If this agent is a digital employee (box-im bot), sync its model from box-im accounts
+    const boxImAccounts = (config.channels?.['box-im'] as ChannelSectionConfig)?.accounts;
+    if (boxImAccounts && boxImAccounts[agentId]) {
+      const botAccount = boxImAccounts[agentId] as Record<string, unknown>;
+      const botModel = botAccount.model;
+      if (typeof botModel === 'string' && botModel.trim()) {
+        // Update agent model in agents.list
+        const currentAgent = entries[agentIndex];
+        const currentModel = typeof currentAgent.model === 'object' && currentAgent.model !== null
+          ? (currentAgent.model as AgentModelConfig).primary
+          : typeof currentAgent.model === 'string'
+          ? currentAgent.model
+          : undefined;
+
+        if (currentModel !== botModel) {
+          entries[agentIndex] = {
+            ...currentAgent,
+            model: { primary: botModel },
+          };
+          config.agents = {
+            ...agentsConfig,
+            list: entries,
+          };
+          logger.info('Synced digital employee model to agent', { agentId, model: botModel });
+        }
+      }
+    }
+
     await writeOpenClawConfig(config);
     logger.info('Assigned channel account to agent', { agentId, channelType, accountId: accountId.trim() });
     return buildSnapshotFromConfig(config);
+  });
+}
+
+/**
+ * Sync all digital employee models from box-im accounts to agents.list
+ * This should be called on gateway startup to ensure all agents have the correct model
+ */
+export async function syncAllDigitalEmployeeModels(): Promise<void> {
+  return withConfigLock(async () => {
+    const config = await readOpenClawConfig() as AgentConfigDocument;
+    const { agentsConfig, entries } = normalizeAgentsConfig(config);
+    const boxImAccounts = (config.channels?.['box-im'] as ChannelSectionConfig)?.accounts;
+
+    if (!boxImAccounts) {
+      logger.debug('No box-im accounts found, skipping digital employee model sync');
+      return;
+    }
+
+    let updated = false;
+    for (const [agentId, accountData] of Object.entries(boxImAccounts)) {
+      const botAccount = accountData as Record<string, unknown>;
+      const botModel = botAccount.model;
+      
+      if (typeof botModel === 'string' && botModel.trim()) {
+        const agentIndex = entries.findIndex((entry) => entry.id === agentId);
+        if (agentIndex !== -1) {
+          const currentAgent = entries[agentIndex];
+          const currentModel = typeof currentAgent.model === 'object' && currentAgent.model !== null
+            ? (currentAgent.model as AgentModelConfig).primary
+            : typeof currentAgent.model === 'string'
+            ? currentAgent.model
+            : undefined;
+
+          if (currentModel !== botModel) {
+            entries[agentIndex] = {
+              ...currentAgent,
+              model: { primary: botModel },
+            };
+            updated = true;
+            logger.info('Synced digital employee model to agent on startup', { agentId, model: botModel });
+          }
+        }
+      }
+    }
+
+    if (updated) {
+      config.agents = {
+        ...agentsConfig,
+        list: entries,
+      };
+      await writeOpenClawConfig(config);
+      logger.info('Digital employee models synced to agents.list');
+    }
   });
 }
 
