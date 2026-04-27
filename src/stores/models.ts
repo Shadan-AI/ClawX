@@ -149,8 +149,8 @@ export const useModelsStore = create<ModelState>((set, get) => ({
     try {
       const models = await fetchModelsFromOneApi(tokenKey);
       const currentModelId = get().currentModelId;
-      const defaultModelId = models.find(m => m.id === 'step-3.5-flash')?.id || models[0]?.id || null;
-      set({ models, loading: false, currentModelId: currentModelId || defaultModelId, isLoggedIn: true, error: null });
+      // 不再设置默认模型,让每个智能体使用自己配置的模型
+      set({ models, loading: false, currentModelId: currentModelId || null, isLoggedIn: true, error: null });
     } catch (err) {
       set({ models: [], loading: false, error: err instanceof Error ? err.message : '获取模型列表失败' });
     }
@@ -176,6 +176,16 @@ export const useModelsStore = create<ModelState>((set, get) => ({
           key: sessionKey,
           model: `shadan/${modelId}`,
         });
+        
+        // Also update the agent's main session to set default for future sessions
+        const agentId = sessionKey.split(':')[1];
+        if (agentId && agentId !== 'main') {
+          const mainSessionKey = `agent:${agentId}:main`;
+          await invokeIpc('gateway:rpc', 'sessions.patch', {
+            key: mainSessionKey,
+            model: `shadan/${modelId}`,
+          });
+        }
       }
     } catch (err) {
       console.error('Failed to update session model:', err);
@@ -189,12 +199,20 @@ export const useModelsStore = create<ModelState>((set, get) => ({
     const agentId = getAgentIdFromSessionKey(sessionKey);
     let modelId = sessionModels[sessionKey];
 
+    // 如果会话没有配置模型,使用智能体的默认模型
     if (!modelId) {
       const employee = digitalEmployees.find(e => e.openclawAgentId === agentId);
-      if (employee?.model) modelId = employee.model;
+      if (employee?.model) {
+        modelId = employee.model;
+        console.log(`[ensureSessionModel] Using agent default model: ${modelId} for agent ${agentId}`);
+      }
     }
+    
+    // 不再使用硬编码的默认模型,如果智能体没有配置模型,就不设置
+    // 让 Gateway 使用 gateway.json 中配置的模型
     if (!modelId) {
-      modelId = models.find(m => m.id === 'step-3.5-flash')?.id || models[0]?.id;
+      console.log(`[ensureSessionModel] No model configured for session ${sessionKey}, using gateway config`);
+      return;
     }
 
     if (modelId && models.some(m => m.id === modelId)) {
@@ -204,6 +222,7 @@ export const useModelsStore = create<ModelState>((set, get) => ({
           key: sessionKey,
           model: `shadan/${modelId}`,
         });
+        console.log(`[ensureSessionModel] Set session model to ${modelId} for ${sessionKey}`);
       } catch (err) {
         console.error('Failed to ensure session model:', err);
       }

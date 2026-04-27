@@ -307,6 +307,43 @@ export function OrganizationView() {
     return () => document.removeEventListener('click', handleClick);
   }, []);
   
+  // 递归计算部门总人数(包括所有子孙节点)
+  const getDepartmentTotalCount = useCallback((deptId: string): number => {
+    let total = 0;
+    
+    // 1. 找到所有直接分配给该部门的员工
+    const directAgents = Object.entries(assignments)
+      .filter(([_, assignedTo]) => assignedTo === deptId)
+      .map(([botId]) => botId);
+    
+    total += directAgents.length;
+    
+    // 2. 递归计算分配给这些员工的下级员工
+    const countAgentSubordinates = (botId: string): number => {
+      const subordinates = Object.entries(assignments)
+        .filter(([_, assignedTo]) => assignedTo === botId)
+        .map(([subBotId]) => subBotId);
+      
+      let count = subordinates.length;
+      subordinates.forEach(subBotId => {
+        count += countAgentSubordinates(subBotId);
+      });
+      return count;
+    };
+    
+    directAgents.forEach(botId => {
+      total += countAgentSubordinates(botId);
+    });
+    
+    // 3. 递归计算子部门的人数
+    const childDepts = departments.filter(d => d.parentId === deptId);
+    childDepts.forEach(child => {
+      total += getDepartmentTotalCount(child.id);
+    });
+    
+    return total;
+  }, [assignments, departments]);
+
   // 渲染组织架构图
   const renderGraph = useCallback(() => {
     if (!graphRef.current) return;
@@ -330,7 +367,7 @@ export function OrganizationView() {
       const nodeId = `dept-${dept.id}`;
       newNodeIds.add(nodeId);
       
-      const assignedCount = Object.values(assignments).filter((deptId) => deptId === dept.id).length;
+      const assignedCount = getDepartmentTotalCount(dept.id);
       const color = getColor(dept.id);
       const isDropTarget = dropTarget === dept.id;
       
@@ -640,7 +677,7 @@ export function OrganizationView() {
       // 如果没有节点了，重置标记
       hasInitialLayoutRef.current = false;
     }
-  }, [departments, assignments, agents, dropTarget]);
+  }, [departments, assignments, agents, dropTarget, getDepartmentTotalCount]);
   
   useEffect(() => {
     renderGraph();

@@ -79,8 +79,10 @@ export const useOrganizationStore = create<OrganizationState>()(
         });
         
         // 触发自动保存
-        const schedule = (window as any).__orgScheduleAutoSave;
-        if (schedule) schedule();
+        setTimeout(() => {
+          const schedule = (window as any).__orgScheduleAutoSave;
+          if (schedule) schedule();
+        }, 0);
         
         return id;
       },
@@ -92,8 +94,10 @@ export const useOrganizationStore = create<OrganizationState>()(
           ),
           hasLocalChanges: true,
         }));
-        const schedule = (window as any).__orgScheduleAutoSave;
-        if (schedule) schedule();
+        setTimeout(() => {
+          const schedule = (window as any).__orgScheduleAutoSave;
+          if (schedule) schedule();
+        }, 0);
       },
       
       moveDepartment: (deptId: string, newParentId: string | null, newParentType: 'dept' | 'bot' = 'dept') => {
@@ -137,8 +141,10 @@ export const useOrganizationStore = create<OrganizationState>()(
             hasLocalChanges: true,
           };
         });
-        const schedule = (window as any).__orgScheduleAutoSave;
-        if (schedule) schedule();
+        setTimeout(() => {
+          const schedule = (window as any).__orgScheduleAutoSave;
+          if (schedule) schedule();
+        }, 0);
       },
       
       deleteDepartment: (id: string) => {
@@ -182,8 +188,10 @@ export const useOrganizationStore = create<OrganizationState>()(
         );
         
         set({ departments: newDepartments, assignments: newAssignments, relations: newRelations, hasLocalChanges: true });
-        const schedule = (window as any).__orgScheduleAutoSave;
-        if (schedule) schedule();
+        setTimeout(() => {
+          const schedule = (window as any).__orgScheduleAutoSave;
+          if (schedule) schedule();
+        }, 0);
       },
       
       assignAgent: (botId: string, parentId: string, parentType: 'dept' | 'bot' = 'dept') => {
@@ -205,8 +213,10 @@ export const useOrganizationStore = create<OrganizationState>()(
             hasLocalChanges: true,
           };
         });
-        const schedule = (window as any).__orgScheduleAutoSave;
-        if (schedule) schedule();
+        setTimeout(() => {
+          const schedule = (window as any).__orgScheduleAutoSave;
+          if (schedule) schedule();
+        }, 0);
       },
       
       unassignAgent: (botId: string) => {
@@ -223,8 +233,10 @@ export const useOrganizationStore = create<OrganizationState>()(
             hasLocalChanges: true,
           };
         });
-        const schedule = (window as any).__orgScheduleAutoSave;
-        if (schedule) schedule();
+        setTimeout(() => {
+          const schedule = (window as any).__orgScheduleAutoSave;
+          if (schedule) schedule();
+        }, 0);
       },
       
       loadOrgData: (data: OrgData) => {
@@ -244,7 +256,26 @@ export const useOrganizationStore = create<OrganizationState>()(
         set({ isLoading: true, syncStatus: 'syncing' });
         try {
           const response = await getOrganization();
-          if (response.code === 200 && response.data) {
+          
+          // 处理错误响应
+          if (response.code !== 200) {
+            const errorMsg = response.message || '加载失败';
+            console.error('加载组织架构失败:', errorMsg);
+            set({ 
+              syncStatus: 'error', 
+              lastSyncError: errorMsg,
+              isLoading: false 
+            });
+            
+            // 如果是未登录错误,不显示 toast
+            if (response.code !== 400) {
+              toast.error(errorMsg);
+            }
+            return;
+          }
+          
+          // 处理成功响应
+          if (response.data) {
             const canvasData = response.data.canvasData;
             if (canvasData && canvasData !== '{}') {
               const data: OrgData = JSON.parse(canvasData);
@@ -262,7 +293,8 @@ export const useOrganizationStore = create<OrganizationState>()(
           }
         } catch (error) {
           console.error('加载组织架构失败:', error);
-          set({ syncStatus: 'error', lastSyncError: '加载失败' });
+          const errorMsg = error instanceof Error ? error.message : '网络错误';
+          set({ syncStatus: 'error', lastSyncError: errorMsg });
           toast.error('加载组织架构失败');
         } finally {
           set({ isLoading: false });
@@ -417,6 +449,7 @@ export const useOrganizationStore = create<OrganizationState>()(
       
       // 开始自动保存(2秒防抖)
       startAutoSave: () => {
+        console.log('[organization] 启动自动保存');
         // 清理旧的定时器
         const oldTimer = (window as any).__orgAutoSaveTimer;
         if (oldTimer) {
@@ -430,8 +463,10 @@ export const useOrganizationStore = create<OrganizationState>()(
             clearTimeout(timer);
           }
           
+          console.log('[organization] 计划自动保存(2秒后)');
           (window as any).__orgAutoSaveTimer = setTimeout(() => {
             const { hasLocalChanges, isSaving } = get();
+            console.log('[organization] 自动保存触发', { hasLocalChanges, isSaving });
             if (hasLocalChanges && !isSaving) {
               get().saveToServer();
             }
