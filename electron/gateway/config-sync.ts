@@ -322,64 +322,254 @@ export async function syncGatewayConfigBeforeLaunch(
     logger.warn('Failed to auto-upgrade plugins:', err);
   }
 
+  // Batch all config writes into a single atomic operation to avoid conflicts with Gateway
+  // and improve startup performance
   try {
-    await syncGatewayTokenToConfig(appSettings.gatewayToken);
+    await batchSyncGatewayConfig(appSettings);
   } catch (err) {
-    logger.warn('Failed to sync gateway token to openclaw.json:', err);
-  }
-
-  // Windows: ensure gateway.tls is enabled so the gateway starts with HTTPS/WSS.
-  if (process.platform === 'win32') {
-    try {
-      await ensureGatewayTlsEnabledInConfig();
-    } catch (err) {
-      logger.warn('Failed to ensure gateway TLS config:', err);
-    }
-  }
-
-  // Inject current machine's LAN IPs into controlUi.allowedOrigins so LAN devices can access.
-  try {
-    await ensureLanOriginsInConfig(18789);
-  } catch (err) {
-    logger.warn('Failed to inject LAN origins into gateway config:', err);
-  }
-
-  // Ensure static parent-page origins (im.shadanai.com, shadanai.com) are present
-  // so the Gateway accepts iframe WebSocket connections from those pages.
-  try {
-    await ensureStaticOriginsInConfig();
-  } catch (err) {
-    logger.warn('Failed to inject static origins into gateway config:', err);
+    logger.warn('Failed to batch sync gateway config:', err);
   }
 
   // Start watcher to prevent Gateway from overwriting models.providers baseUrl.
   startOpenClawConfigLanReconciliationWatcher();
+}
 
-  try {
-    await syncBrowserConfigToOpenClaw();
-  } catch (err) {
-    logger.warn('Failed to sync browser config to openclaw.json:', err);
-  }
+/**
+ * Batch all gateway config sync operations into a single atomic write.
+ * This prevents file conflicts with Gateway and improves startup performance.
+ */
+async function batchSyncGatewayConfig(appSettings: Awaited<ReturnType<typeof getAllSettings>>): Promise<void> {
+  const { withConfigLock } = await import('../utils/config-mutex');
+  const { readOpenClawJson, writeOpenClawJson } = await import('../utils/openclaw-auth');
+  const { networkInterfaces } = await import('os');
+  const { getTokenKey } = await import('../utils/box-im-sync');
 
-  try {
-    await syncSessionIdleMinutesToOpenClaw();
-  } catch (err) {
-    logger.warn('Failed to sync session idle minutes to openclaw.json:', err);
-  }
+  await withConfigLock(async () => {
+    const config = await readOpenClawJson();
+    let modified = false;
 
-  // Re-apply tokenKey after every Gateway (re)start.
-  // The Gateway may overwrite openclaw.json on restart (config change detection),
-  // which would erase the tokenKey we wrote during login. Re-writing it here
-  // ensures it survives Gateway restarts.
-  try {
-    const tokenKey = await getTokenKey();
-    if (tokenKey) {
-      await writeBoxImTokenKey(tokenKey);
-      logger.debug('[box-im] Re-applied tokenKey to openclaw.json before Gateway launch');
+    // 1. Sync gateway token
+    try {
+      const gateway = (
+        config.gateway && typeof config.gateway === 'object'
+          ? { ...(config.gateway as Record<string, unknown>) }
+          : {}
+      ) as Record<string, unknown>;
+
+      const auth = (
+        gateway.auth && typeof gateway.auth === 'object'
+          ? { ...(gateway.auth as Record<string, unknown>) }
+          : {}
+      ) as Record<string, unknown>;
+
+      auth.mode = 'token';
+      auth.token = appSettings.gatewayToken;
+      gateway.auth = auth;
+
+      const controlUi = (
+        gateway.controlUi && typeof gateway.controlUi === 'object'
+          ? { ...(gateway.controlUi as Record<string, unknown>) }
+          : {}
+      ) as Record<string, unknown>;
+      const allowedOrigins = Array.isArray(controlUi.allowedOrigins)
+        ? (controlUi.allowedOrigins as unknown[]).filter((value): value is string => typeof value === 'string')
+        : [];
+      if (!allowedOrigins.includes('file://')) {
+        controlUi.allowedOrigins = [...allowedOrigins, 'file://'];
+        modified = true;
+      }
+      gateway.controlUi = controlUi;
+
+      if (!gateway.mode) {
+        gateway.mode = 'local';
+        modified = true;
+      }
+      config.gateway = gateway;
+      modified = true;
+    } catch (err) {
+      logger.warn('Failed to sync gateway token in batch:', err);
     }
-  } catch (err) {
-    logger.warn('[box-im] Failed to re-apply tokenKey before Gateway launch:', err);
-  }
+
+    // 2. Windows: ensure gateway.tls is enabled
+    if (process.platform === 'win32') {
+      try {
+        if (!config.gateway || typeof config.gateway !== 'object') {
+          config.gateway = {};
+        }
+        const gw = config.gateway as Record<string, unknown>;
+        const certBase = '~/.openclaw/certs';
+        const tls = (gw.tls && typeof gw.tls === 'object' ? gw.tls : {}) as Record<string, unknown>;
+        let tlsChanged = false;
+        if (tls.enabled !== true) { tls.enabled = true; tlsChanged = true; }
+        if (!tls.certPath) { tls.certPath = `${certBase}/localhost.pem`; tlsChanged = true; }
+        if (!tls.keyPath) { tls.keyPath = `${certBase}/localhost-key.pem`; tlsChanged = true; }
+        if (!tls.autoGenerate) { tls.autoGenerate = true; tlsChanged = true; }
+        if (tlsChanged) {
+          gw.tls = tls;
+          modified = true;
+        }
+        if (!gw.bind) {
+          gw.bind = 'lan';
+          modified = true;
+        }
+        if (!gw.controlUi || typeof gw.controlUi !== 'object') {
+          gw.controlUi = {};
+        }
+        const cui = gw.controlUi as Record<string, unknown>;
+        if (cui.dangerouslyAllowHostHeaderOriginFallback !== true) {
+          cui.dangerouslyAllowHostHeaderOriginFallback = true;
+          modified = true;
+        }
+        if (cui.allowInsecureAuth !== true) {
+          cui.allowInsecureAuth = true;
+          modified = true;
+        }
+        if (cui.dangerouslyDisableDeviceAuth !== true) {
+          cui.dangerouslyDisableDeviceAuth = true;
+          modified = true;
+        }
+      } catch (err) {
+        logger.warn('Failed to ensure gateway TLS in batch:', err);
+      }
+    }
+
+    // 3. Inject LAN IPs into controlUi.allowedOrigins
+    try {
+      const nets = networkInterfaces();
+      const lanIps: string[] = [];
+      const re = /^(192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/;
+      for (const ifaces of Object.values(nets)) {
+        for (const iface of ifaces ?? []) {
+          if (iface.family === 'IPv4' && !iface.internal && re.test(iface.address)) {
+            lanIps.push(iface.address);
+          }
+        }
+      }
+      if (lanIps.length > 0 && config.gateway && typeof config.gateway === 'object') {
+        const gw = config.gateway as Record<string, unknown>;
+        if (!gw.controlUi || typeof gw.controlUi !== 'object') {
+          gw.controlUi = {};
+        }
+        const cui = gw.controlUi as Record<string, unknown>;
+        const existing = Array.isArray(cui.allowedOrigins)
+          ? (cui.allowedOrigins as unknown[]).filter((x): x is string => typeof x === 'string')
+          : [];
+        const toAdd = lanIps.flatMap((ip) => [
+          `https://${ip}:18789`,
+          `http://${ip}:18789`,
+        ]).filter((o) => !existing.includes(o));
+        if (toAdd.length > 0) {
+          cui.allowedOrigins = [...existing, ...toAdd];
+          modified = true;
+        }
+      }
+    } catch (err) {
+      logger.warn('Failed to inject LAN origins in batch:', err);
+    }
+
+    // 4. Ensure static origins
+    try {
+      if (config.gateway && typeof config.gateway === 'object') {
+        const gw = config.gateway as Record<string, unknown>;
+        if (!gw.controlUi || typeof gw.controlUi !== 'object') {
+          gw.controlUi = {};
+        }
+        const cui = gw.controlUi as Record<string, unknown>;
+        const existing = Array.isArray(cui.allowedOrigins)
+          ? (cui.allowedOrigins as unknown[]).filter((x): x is string => typeof x === 'string')
+          : [];
+        const staticOrigins = [
+          'https://im.shadanai.com',
+          'https://shadanai.com',
+        ];
+        const toAdd = staticOrigins.filter((o) => !existing.includes(o));
+        if (toAdd.length > 0) {
+          cui.allowedOrigins = [...existing, ...toAdd];
+          modified = true;
+        }
+      }
+    } catch (err) {
+      logger.warn('Failed to inject static origins in batch:', err);
+    }
+
+    // 5. Sync browser config
+    try {
+      const browser = (
+        config.browser && typeof config.browser === 'object'
+          ? { ...(config.browser as Record<string, unknown>) }
+          : {}
+      ) as Record<string, unknown>;
+
+      if (browser.enabled === undefined) {
+        browser.enabled = true;
+        modified = true;
+      }
+
+      if (browser.defaultProfile === undefined) {
+        browser.defaultProfile = 'openclaw';
+        modified = true;
+      }
+
+      config.browser = browser;
+    } catch (err) {
+      logger.warn('Failed to sync browser config in batch:', err);
+    }
+
+    // 6. Sync session idle minutes
+    try {
+      const DEFAULT_IDLE_MINUTES = 10_080; // 7 days
+      const session = (
+        config.session && typeof config.session === 'object'
+          ? { ...(config.session as Record<string, unknown>) }
+          : {}
+      ) as Record<string, unknown>;
+
+      if (session.idleMinutes === undefined &&
+          session.reset === undefined &&
+          session.resetByType === undefined &&
+          session.resetByChannel === undefined) {
+        session.idleMinutes = DEFAULT_IDLE_MINUTES;
+        config.session = session;
+        modified = true;
+      }
+    } catch (err) {
+      logger.warn('Failed to sync session idle minutes in batch:', err);
+    }
+
+    // 7. Re-apply box-im tokenKey
+    try {
+      const tokenKey = await getTokenKey();
+      if (tokenKey) {
+        const channels = (config.channels && typeof config.channels === 'object'
+          ? config.channels as Record<string, unknown>
+          : {});
+        const boxIm = (channels['box-im'] && typeof channels['box-im'] === 'object'
+          ? channels['box-im'] as Record<string, unknown>
+          : {});
+        const ownerAuth = (boxIm.ownerAuth && typeof boxIm.ownerAuth === 'object'
+          ? boxIm.ownerAuth as Record<string, unknown>
+          : {});
+        
+        if (ownerAuth.tokenKey !== tokenKey) {
+          ownerAuth.tokenKey = tokenKey;
+          boxIm.ownerAuth = ownerAuth;
+          channels['box-im'] = boxIm;
+          config.channels = channels;
+          modified = true;
+        }
+      }
+    } catch (err) {
+      logger.warn('Failed to re-apply tokenKey in batch:', err);
+    }
+
+    // Write once if any changes were made
+    if (modified) {
+      await writeOpenClawJson(config);
+      logger.info('[config-sync] Batch synced gateway config in single write');
+    } else {
+      logger.debug('[config-sync] No config changes needed');
+    }
+  });
 }
 
 async function loadProviderEnv(): Promise<{ providerEnv: Record<string, string>; loadedProviderKeyCount: number }> {

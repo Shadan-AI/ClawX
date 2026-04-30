@@ -23,6 +23,7 @@ type GatewaySkillStatus = {
   source?: string;
   baseDir?: string;
   filePath?: string;
+  eligible?: boolean; // 技能是否可用(满足操作系统、依赖等要求)
 };
 
 type GatewaySkillsStatusResult = {

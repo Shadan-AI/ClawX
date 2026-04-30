@@ -92,14 +92,16 @@ export function Chat() {
   const minLoading = useMinLoading(loading && messages.length > 0);
   const { contentRef, scrollRef } = useStickToBottomInstant(currentSessionKey);
 
-  const [isAtBottom, setIsAtBottom] = useState(true);
   const [isInputFocused, setIsInputFocused] = useState(false);
-  const isInputExpanded = isAtBottom || isInputFocused;
+  const [autoExpandedAtBottom, setAutoExpandedAtBottom] = useState(false);
+  
+  // 输入框展开状态: 焦点 或 自动展开
+  const isInputExpanded = isInputFocused || autoExpandedAtBottom;
 
   // Debug: 监控状态变化
   useEffect(() => {
-    console.log('[Chat] State:', { isAtBottom, isInputFocused, isInputExpanded });
-  }, [isAtBottom, isInputFocused, isInputExpanded]);
+    console.log('[Chat] State:', { isInputFocused, autoExpandedAtBottom, isInputExpanded });
+  }, [isInputFocused, autoExpandedAtBottom, isInputExpanded]);
 
   const scrollToBottom = useCallback(() => {
     if (scrollRef.current) {
@@ -122,66 +124,52 @@ export function Chat() {
       // 延迟滚动，确保消息已完全渲染到 DOM
       const timer = setTimeout(() => {
         scrollToBottom();
+        // 新消息到达时自动展开输入框
+        setAutoExpandedAtBottom(true);
       }, 100);
       return () => clearTimeout(timer);
     }
   }, [messages.length, scrollToBottom]);
 
-  // 检查是否在底部
-  const checkIsAtBottom = useCallback(() => {
-    if (scrollRef.current) {
-      const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
-      // 如果内容高度小于等于容器高度，说明没有滚动条，视为在底部
-      if (scrollHeight <= clientHeight) {
-        console.log('[Chat] No scroll needed, setting isAtBottom=true');
-        setIsAtBottom(true);
-        return true;
-      }
-      const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
-      const isBottom = distanceFromBottom < 50;
-      console.log('[Chat] Scroll check:', { scrollTop, scrollHeight, clientHeight, distanceFromBottom, isBottom });
-      setIsAtBottom(isBottom);
-      return isBottom;
-    }
-    return true;
-  }, [scrollRef]);
-
-  // 当输入框获得焦点时，不自动滚动，只更新展开状态
-  // 用户可能正在查看历史消息，不应该强制滚动到底部
-
-  // 监听滚动事件
-  const handleScroll = useCallback(() => {
-    checkIsAtBottom();
-  }, [checkIsAtBottom]);
-
+  // 监听滚动事件 - 只用于检测用户向上滚动时收起输入框
   useEffect(() => {
     const scrollElement = scrollRef.current;
-    if (scrollElement) {
-      scrollElement.addEventListener('scroll', handleScroll);
-      // 初始化时检查一次
-      checkIsAtBottom();
-      return () => scrollElement.removeEventListener('scroll', handleScroll);
+    if (!scrollElement) return;
+
+    let lastScrollTop = scrollElement.scrollTop;
+
+    const handleScroll = () => {
+      const currentScrollTop = scrollElement.scrollTop;
+      const { scrollHeight, clientHeight } = scrollElement;
+      const distanceFromBottom = scrollHeight - currentScrollTop - clientHeight;
+
+      // 如果用户向上滚动超过 150px，收起自动展开
+      if (currentScrollTop < lastScrollTop - 150) {
+        setAutoExpandedAtBottom(false);
+      }
+      // 如果滚动到底部附近(100px内)，自动展开
+      else if (distanceFromBottom < 100) {
+        setAutoExpandedAtBottom(true);
+      }
+
+      lastScrollTop = currentScrollTop;
+    };
+
+    scrollElement.addEventListener('scroll', handleScroll, { passive: true });
+
+    return () => {
+      scrollElement.removeEventListener('scroll', handleScroll);
+    };
+  }, [scrollRef]);
+
+  // 点击消息区域时，让输入框失去焦点(收起输入框)
+  const handleMessagesAreaClick = useCallback(() => {
+    if (isInputFocused) {
+      setIsInputFocused(false);
     }
-  }, [handleScroll, scrollRef, checkIsAtBottom]);
-
-  // 会话切换或消息变化时，重新检查滚动位置
-  useLayoutEffect(() => {
-    checkIsAtBottom();
-  }, [currentSessionKey, messages.length, checkIsAtBottom]);
-
-  // 监听内容区域的高度变化（例如展开/收起 thinking 卡片）
-  useEffect(() => {
-    const contentElement = contentRef.current;
-    if (!contentElement) return;
-
-    const resizeObserver = new ResizeObserver(() => {
-      // 内容高度变化时，重新检查是否在底部
-      checkIsAtBottom();
-    });
-
-    resizeObserver.observe(contentElement);
-    return () => resizeObserver.disconnect();
-  }, [contentRef, checkIsAtBottom]);
+    // 点击消息区域也收起自动展开
+    setAutoExpandedAtBottom(false);
+  }, [isInputFocused]);
 
   // Load data when gateway is running.
   // When the store already holds messages for this session (i.e. the user
@@ -241,22 +229,15 @@ export function Chat() {
   const isEmpty = messages.length === 0 && !sending && !loading;
   const isLoading = loading && messages.length === 0 && !sending;
 
-  // 点击消息区域时，让输入框失去焦点（收起输入框）
-  const handleMessagesAreaClick = useCallback(() => {
-    if (isInputFocused) {
-      setIsInputFocused(false);
-    }
-  }, [isInputFocused]);
-
   return (
-    <div className={cn("relative flex flex-col transition-colors duration-500 dark:bg-background")} style={{ height: 'calc(100vh - 2.5rem)' }}>
-      {/* Messages Area */}
+    <div className={cn("relative flex flex-col transition-colors duration-500 dark:bg-background h-full")}>
+      {/* Messages Area - 固定 padding,不随输入框变化 */}
       <div 
         ref={scrollRef} 
-        className="flex-1 overflow-y-auto px-0 py-0 pb-20"
+        className="flex-1 overflow-y-auto px-0 py-0 pb-32"
         onClick={handleMessagesAreaClick}
       >
-        <div ref={contentRef} className="max-w-4xl mx-auto space-y-5 relative">
+        <div ref={contentRef} className="max-w-4xl mx-auto space-y-5 relative pt-4">
           <AnimatePresence mode="wait">
             {isLoading ? (
               <motion.div
@@ -359,25 +340,28 @@ export function Chat() {
         </div>
       </div>
 
-      {/* Input Area - Floating */}
-      <div className="absolute bottom-0 left-0 right-0 z-10 pointer-events-none">
-        {/* Error bar — hide "Gateway stopped" since it's a normal shutdown event */}
-        {error && !error.includes('Gateway stopped') && (
-          <div className="pointer-events-auto px-4 py-2 bg-destructive/10 border-y border-destructive/20">
-            <div className="max-w-4xl mx-auto flex items-center justify-between">
-              <p className="text-sm text-destructive flex items-center gap-2">
-                <AlertCircle className="h-4 w-4" />
-                {error}
-              </p>
-              <button
-                onClick={clearError}
-                className="text-xs text-destructive/60 hover:text-destructive underline"
-              >
-                {t('common:actions.dismiss')}
-              </button>
-            </div>
+      {/* Error bar - 在输入框上方显示 */}
+      {error && !error.includes('Gateway stopped') && (
+        <div className="absolute bottom-32 left-0 right-0 z-20 pointer-events-auto px-4 py-2 bg-destructive/10 border-y border-destructive/20 backdrop-blur-sm">
+          <div className="max-w-4xl mx-auto flex items-center justify-between">
+            <p className="text-sm text-destructive flex items-center gap-2">
+              <AlertCircle className="h-4 w-4" />
+              {error}
+            </p>
+            <button
+              onClick={clearError}
+              className="text-xs text-destructive/60 hover:text-destructive underline"
+            >
+              {t('common:actions.dismiss')}
+            </button>
           </div>
-        )}
+        </div>
+      )}
+
+      {/* Input Area - Floating, 往上移一点 */}
+      <div className="absolute bottom-4 left-0 right-0 z-10 pointer-events-none">
+        {/* 轻微渐变遮罩 - 只在输入框正下方提供对比度 */}
+        <div className="pointer-events-none h-20 bg-gradient-to-t from-background/20 to-transparent" />
         <div className="pointer-events-auto">
           <ChatInput
             onSend={sendMessage}

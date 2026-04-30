@@ -582,7 +582,7 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
         <div 
           ref={inputBoxRef}
           className={cn(
-            "relative bg-white dark:bg-card rounded-[28px] shadow-sm border transition-all duration-300 ease-out",
+            "relative backdrop-blur-xl bg-white/60 dark:bg-card/60 rounded-[28px] shadow-sm border transition-all duration-300 ease-out",
             dragOver ? 'border-primary ring-2 ring-primary/30' : 'border-black/8 dark:border-white/10 focus-within:border-black/20 dark:focus-within:border-white/20 focus-within:shadow-lg focus-within:shadow-black/5 dark:focus-within:shadow-white/5',
             isExpanded ? "shadow-md p-2" : "p-1"
           )}
@@ -666,7 +666,7 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                         : ''
                   }
                   disabled={disabled}
-                  className="resize-none border-0 focus-visible:ring-0 focus-visible:ring-offset-0 shadow-none bg-transparent px-1 placeholder:text-muted-foreground/60 !min-h-[44px] h-[44px] overflow-hidden !py-[11px] text-base leading-normal"
+                  className="resize-none border-0 focus-visible:ring-0 focus-visible:ring-offset-0 shadow-none bg-transparent px-2 placeholder:text-muted-foreground/60 !min-h-[44px] h-[44px] overflow-hidden !py-[11px] text-base leading-normal"
                   rows={1}
                 />
               </div>
@@ -736,7 +736,7 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                         : ''
                   }
                   disabled={disabled}
-                  className="resize-none border-0 focus-visible:ring-0 focus-visible:ring-offset-0 shadow-none bg-transparent px-0.5 placeholder:text-muted-foreground/60 min-h-[32px] max-h-[200px] py-0.5 text-base leading-relaxed w-full"
+                  className="resize-none border-0 focus-visible:ring-0 focus-visible:ring-offset-0 shadow-none bg-transparent px-2 placeholder:text-muted-foreground/60 min-h-[32px] max-h-[200px] py-0.5 text-base leading-relaxed w-full"
                   rows={1}
                 />
               </div>

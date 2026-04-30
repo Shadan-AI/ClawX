@@ -171,21 +171,13 @@ export const useModelsStore = create<ModelState>((set, get) => ({
         // Save to localStorage immediately
         get().setSessionModel(sessionKey, modelId);
         
-        // Update gateway session
+        // Update gateway session (只更新当前 session,不更新 main session)
         await invokeIpc('gateway:rpc', 'sessions.patch', {
           key: sessionKey,
           model: `shadan/${modelId}`,
         });
         
-        // Also update the agent's main session to set default for future sessions
-        const agentId = sessionKey.split(':')[1];
-        if (agentId && agentId !== 'main') {
-          const mainSessionKey = `agent:${agentId}:main`;
-          await invokeIpc('gateway:rpc', 'sessions.patch', {
-            key: mainSessionKey,
-            model: `shadan/${modelId}`,
-          });
-        }
+        console.log(`[setCurrentModel] Updated model to ${modelId} for session ${sessionKey}`);
       }
     } catch (err) {
       console.error('Failed to update session model:', err);
@@ -193,26 +185,37 @@ export const useModelsStore = create<ModelState>((set, get) => ({
   },
 
   ensureSessionModel: async (sessionKey: string) => {
-    const { models, digitalEmployees, sessionModels } = get();
+    let { models, digitalEmployees, sessionModels } = get();
     if (models.length === 0) return;
+
+    // 如果 digitalEmployees 为空,先加载
+    if (digitalEmployees.length === 0) {
+      console.log('[ensureSessionModel] digitalEmployees is empty, fetching...');
+      await get().fetchDigitalEmployees();
+      // 重新获取最新的 digitalEmployees
+      digitalEmployees = get().digitalEmployees;
+    }
 
     const agentId = getAgentIdFromSessionKey(sessionKey);
     let modelId = sessionModels[sessionKey];
 
-    // 如果会话没有配置模型,使用智能体的默认模型
+    // 如果会话没有配置模型
     if (!modelId) {
+      // 尝试使用 agent 的默认模型
       const employee = digitalEmployees.find(e => e.openclawAgentId === agentId);
       if (employee?.model) {
         modelId = employee.model;
         console.log(`[ensureSessionModel] Using agent default model: ${modelId} for agent ${agentId}`);
+      } else {
+        // 如果 agent 没有配置模型,使用第一个可用模型作为默认值
+        if (models.length > 0) {
+          modelId = models[0].id;
+          console.log(`[ensureSessionModel] No agent model configured, using first available model: ${modelId}`);
+        } else {
+          console.log(`[ensureSessionModel] No models available`);
+          return;
+        }
       }
-    }
-    
-    // 不再使用硬编码的默认模型,如果智能体没有配置模型,就不设置
-    // 让 Gateway 使用 gateway.json 中配置的模型
-    if (!modelId) {
-      console.log(`[ensureSessionModel] No model configured for session ${sessionKey}, using gateway config`);
-      return;
     }
 
     if (modelId && models.some(m => m.id === modelId)) {

@@ -30,7 +30,7 @@ export function MainLayout() {
                 duration: 0.2,
                 ease: 'easeInOut'
               }}
-              className="absolute inset-0 overflow-auto p-6"
+              className={location.pathname === '/' ? "absolute inset-0" : "absolute inset-0 overflow-auto p-6"}
             >
               {outlet}
             </motion.div>

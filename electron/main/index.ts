@@ -49,6 +49,54 @@ const WINDOWS_APP_USER_MODEL_ID = 'app.clawx.desktop';
 const isE2EMode = process.env.CLAWX_E2E === '1';
 const requestedUserDataDir = process.env.CLAWX_USER_DATA_DIR?.trim();
 
+// Windows: 全局 patch child_process 以隐藏 CMD 窗口
+if (process.platform === 'win32') {
+  try {
+    const cp = require('child_process');
+    if (!cp.__clawxWindowsHidePatched) {
+      cp.__clawxWindowsHidePatched = true;
+      
+      ['spawn', 'exec', 'execFile', 'fork', 'spawnSync', 'execSync', 'execFileSync'].forEach((method) => {
+        const original = cp[method];
+        if (typeof original !== 'function') return;
+        
+        cp[method] = function(...args: any[]) {
+          // 查找 options 参数
+          let optIdx = -1;
+          for (let i = 1; i < args.length; i++) {
+            const a = args[i];
+            if (a && typeof a === 'object' && !Array.isArray(a) && typeof a !== 'function') {
+              optIdx = i;
+              break;
+            }
+          }
+          
+          if (optIdx >= 0) {
+            // 已有 options，添加 windowsHide
+            args[optIdx] = { ...args[optIdx], windowsHide: true };
+          } else {
+            // 没有 options，创建一个
+            const opts = { windowsHide: true };
+            if (typeof args[args.length - 1] === 'function') {
+              // 最后一个参数是回调函数，插入到回调之前
+              args.splice(args.length - 1, 0, opts);
+            } else {
+              // 直接添加到末尾
+              args.push(opts);
+            }
+          }
+          
+          return original.apply(this, args);
+        };
+      });
+      
+      logger.info('Applied global windowsHide patch to child_process');
+    }
+  } catch (err) {
+    logger.warn('Failed to patch child_process:', err);
+  }
+}
+
 if (isE2EMode && requestedUserDataDir) {
   app.setPath('userData', requestedUserDataDir);
 }
@@ -513,18 +561,12 @@ async function initialize(): Promise<void> {
     try {
       await syncAllProviderAuthToRuntime();
       
-      // Sync digital employee models before gateway starts
-      try {
-        const { syncAllDigitalEmployeeModels } = await import('../utils/agent-config');
-        await syncAllDigitalEmployeeModels();
-        logger.info('Digital employee models synced before gateway start');
-      } catch (syncError) {
-        logger.warn('Failed to sync digital employee models:', syncError);
-      }
-      
       logger.debug('Auto-starting Gateway...');
       await gatewayManager.start();
       logger.info('Gateway auto-start succeeded');
+      
+      // Note: Digital employee models will be synced 3 seconds after gateway starts
+      // (see gateway:start handler in ipc-handlers.ts)
     } catch (error) {
       logger.error('Gateway auto-start failed:', error);
       mainWindow?.webContents.send('gateway:error', String(error));

@@ -110,8 +110,21 @@ function handleGatewayNotification(notification: { method?: string; params?: Rec
   const p = payload.params;
   const data = (p.data && typeof p.data === 'object') ? (p.data as Record<string, unknown>) : {};
   const phase = data.phase ?? p.phase;
-  const hasChatData = (p.state ?? data.state) || (p.message ?? data.message);
-  console.log('[DEBUG handleGatewayNotification] Parsed:', { phase, hasChatData, state: p.state ?? data.state });
+  
+  // Check for both old format (state/message) and new format (stream + data.text/delta)
+  const hasOldFormatChatData = (p.state ?? data.state) || (p.message ?? data.message);
+  const hasNewFormatChatData = p.stream && (data.text || data.delta);
+  const hasChatData = hasOldFormatChatData || hasNewFormatChatData;
+  
+  console.log('[DEBUG handleGatewayNotification] Parsed:', { 
+    phase, 
+    hasChatData, 
+    hasOldFormat: !!hasOldFormatChatData,
+    hasNewFormat: !!hasNewFormatChatData,
+    stream: p.stream,
+    hasText: !!data.text,
+    hasDelta: !!data.delta
+  });
 
   // Handle error phase even without chat data
   if (phase === 'error') {
@@ -131,21 +144,56 @@ function handleGatewayNotification(notification: { method?: string; params?: Rec
   }
 
   if (hasChatData) {
-    const normalizedEvent: Record<string, unknown> = {
-      ...data,
-      runId: p.runId ?? data.runId,
-      sessionKey: p.sessionKey ?? data.sessionKey,
-      stream: p.stream ?? data.stream,
-      seq: p.seq ?? data.seq,
-      state: p.state ?? data.state,
-      message: p.message ?? data.message,
-    };
+    let normalizedEvent: Record<string, unknown>;
+    
+    // Convert new format to standard format
+    if (hasNewFormatChatData) {
+      const content = String(data.text || data.delta || '');
+      normalizedEvent = {
+        state: 'delta',
+        message: {
+          role: 'assistant',
+          content,
+          timestamp: p.ts ? (p.ts as number) / 1000 : Date.now() / 1000,
+        },
+        runId: p.runId ?? data.runId,
+        sessionKey: p.sessionKey ?? data.sessionKey,
+        seq: p.seq ?? data.seq,
+      };
+      console.log('[DEBUG handleGatewayNotification] Converted new format to standard:', {
+        runId: normalizedEvent.runId,
+        sessionKey: normalizedEvent.sessionKey,
+        state: normalizedEvent.state,
+        contentLength: content.length,
+      });
+    } else {
+      // Old format - pass through
+      normalizedEvent = {
+        ...data,
+        runId: p.runId ?? data.runId,
+        sessionKey: p.sessionKey ?? data.sessionKey,
+        stream: p.stream ?? data.stream,
+        seq: p.seq ?? data.seq,
+        state: p.state ?? data.state,
+        message: p.message ?? data.message,
+      };
+      console.log('[DEBUG handleGatewayNotification] Normalized old format event:', {
+        runId: normalizedEvent.runId,
+        sessionKey: normalizedEvent.sessionKey,
+        state: normalizedEvent.state,
+        hasMessage: !!normalizedEvent.message,
+      });
+    }
+    
     if (shouldProcessGatewayEvent(normalizedEvent)) {
+      console.log('[DEBUG handleGatewayNotification] Passing to handleChatEvent');
       import('./chat')
         .then(({ useChatStore }) => {
           useChatStore.getState().handleChatEvent(normalizedEvent);
         })
         .catch(() => {});
+    } else {
+      console.log('[DEBUG handleGatewayNotification] Event filtered by shouldProcessGatewayEvent (duplicate)');
     }
   }
 

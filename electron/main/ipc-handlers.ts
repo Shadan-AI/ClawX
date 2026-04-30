@@ -719,16 +719,45 @@ function registerUnifiedRequestHandlers(gatewayManager: GatewayManager): void {
  * Direct read/write to ~/.openclaw/openclaw.json (bypasses Gateway RPC)
  */
 function registerSkillConfigHandlers(): void {
+  // Helper function to clean up session stores
+  async function cleanupSessionStores(): Promise<void> {
+    try {
+      const fs = await import('fs/promises');
+      const path = await import('path');
+      const os = await import('os');
+      const openclawDir = path.join(os.homedir(), '.openclaw');
+      const sessionStorePattern = /^session-store-.*\.json$/;
+      
+      const files = await fs.readdir(openclawDir);
+      for (const file of files) {
+        if (sessionStorePattern.test(file)) {
+          const filePath = path.join(openclawDir, file);
+          await fs.unlink(filePath);
+          logger.info(`Deleted session store: ${file}`);
+        }
+      }
+    } catch (cleanupError) {
+      logger.warn('Failed to clean up session stores:', cleanupError);
+    }
+  }
+
   // Update skill config (apiKey and env)
   ipcMain.handle('skill:updateConfig', async (_, params: {
     skillKey: string;
     apiKey?: string;
     env?: Record<string, string>;
   }) => {
-    return await updateSkillConfig(params.skillKey, {
+    const result = await updateSkillConfig(params.skillKey, {
       apiKey: params.apiKey,
       env: params.env,
     });
+    
+    // Clean up session stores after skill config update to force skills snapshot rebuild
+    if (result.success) {
+      await cleanupSessionStores();
+    }
+    
+    return result;
   });
 
   // Get skill config
@@ -1385,16 +1414,12 @@ function registerGatewayHandlers(
   // Start Gateway
   ipcMain.handle('gateway:start', async () => {
     try {
-      // Sync digital employee models before starting
-      try {
-        const { syncAllDigitalEmployeeModels } = await import('../utils/agent-config');
-        await syncAllDigitalEmployeeModels();
-        logger.info('Digital employee models synced before gateway start');
-      } catch (syncError) {
-        logger.warn('Failed to sync digital employee models:', syncError);
-      }
-      
       await gatewayManager.start();
+      
+      // Note: Digital employee model sync is disabled during startup to avoid config conflicts
+      // Models will be synced by the periodic auto-sync timer (every 60 seconds)
+      // or manually when user updates agent settings
+      
       return { success: true };
     } catch (error) {
       return { success: false, error: String(error) };
@@ -1414,16 +1439,12 @@ function registerGatewayHandlers(
   // Restart Gateway
   ipcMain.handle('gateway:restart', async () => {
     try {
-      // Sync digital employee models before restarting
-      try {
-        const { syncAllDigitalEmployeeModels } = await import('../utils/agent-config');
-        await syncAllDigitalEmployeeModels();
-        logger.info('Digital employee models synced before gateway restart');
-      } catch (syncError) {
-        logger.warn('Failed to sync digital employee models:', syncError);
-      }
-      
       await gatewayManager.restart();
+      
+      // Note: Digital employee model sync is disabled during restart to avoid config conflicts
+      // Models will be synced by the periodic auto-sync timer (every 60 seconds)
+      // or manually when user updates agent settings
+      
       return { success: true };
     } catch (error) {
       return { success: false, error: String(error) };

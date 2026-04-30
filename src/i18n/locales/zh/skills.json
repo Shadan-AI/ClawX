@@ -71,6 +71,14 @@
             "agentsPersonal": "个人 .agents",
             "agentsProject": "项目 .agents",
             "unknown": "未知来源"
+        },
+        "group": {
+            "managed": "本地上传",
+            "bundled": "内置技能",
+            "workspace": "工作区技能",
+            "agentsPersonal": "个人 .agents",
+            "agentsProject": "项目 .agents",
+            "extra": "额外目录"
         }
     },
     "toast": {

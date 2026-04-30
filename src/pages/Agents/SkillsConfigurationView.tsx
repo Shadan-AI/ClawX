@@ -776,6 +776,17 @@ This file contains periodic tasks and reminders for the agent.
       
       toast.success(successMsg, { id: savingToast, duration: 4000 });
       
+      // 重启 Gateway 以应用技能配置
+      toast.loading('🔄 正在重启 Gateway 以应用配置...', { id: 'restart-gateway' });
+      try {
+        const { useGatewayStore } = await import('@/stores/gateway');
+        await useGatewayStore.getState().restart();
+        toast.success('✅ Gateway 已重启,技能配置已生效', { id: 'restart-gateway', duration: 3000 });
+      } catch (restartErr) {
+        console.error('[SkillsConfigurationView] Failed to restart Gateway:', restartErr);
+        toast.warning('⚠️ 技能已保存,但 Gateway 重启失败。请手动重启以应用配置', { id: 'restart-gateway', duration: 5000 });
+      }
+      
       onRefresh();
     } catch (err) {
       const errorMsg = String(err);
@@ -1798,16 +1809,16 @@ This file contains periodic tasks and reminders for the agent.
                     <div className="flex items-center gap-1.5 w-full mt-1 pointer-events-auto">
                       <button
                         onClick={(e) => handleShowSkillDetail(skill, e)}
-                        className="flex-1 h-7 px-2 text-[11px] font-medium rounded-lg border border-black/10 dark:border-white/10 bg-transparent hover:bg-black/5 dark:hover:bg-white/5 text-foreground/70 hover:text-foreground transition-colors flex items-center justify-center gap-1"
+                        className="flex-1 h-7 px-2 text-[11px] font-medium rounded-lg border border-black/10 dark:border-white/10 bg-transparent hover:bg-black/5 dark:hover:bg-white/5 text-foreground/70 hover:text-foreground transition-colors flex items-center justify-center gap-1 whitespace-nowrap"
                       >
-                        <Info className="h-3 w-3" />
+                        <Info className="h-3 w-3 shrink-0" />
                         详情
                       </button>
                       <button
                         onClick={(e) => handleInvokeSkill(skill, e)}
-                        className="flex-1 h-7 px-2 text-[11px] font-medium rounded-lg border border-primary/20 bg-primary/5 hover:bg-primary/10 text-primary hover:text-primary transition-colors flex items-center justify-center gap-1"
+                        className="flex-1 h-7 px-2 text-[11px] font-medium rounded-lg border border-primary/20 bg-primary/5 hover:bg-primary/10 text-primary hover:text-primary transition-colors flex items-center justify-center gap-1 whitespace-nowrap"
                       >
-                        <MessageSquare className="h-3 w-3" />
+                        <MessageSquare className="h-3 w-3 shrink-0" />
                         调用
                       </button>
                     </div>

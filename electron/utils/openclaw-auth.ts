@@ -331,7 +331,7 @@ async function getProvidersFromAuthProfileStores(): Promise<Set<string>> {
   return providers;
 }
 
-async function readOpenClawJson(): Promise<Record<string, unknown>> {
+export async function readOpenClawJson(): Promise<Record<string, unknown>> {
   return (await readJsonFile<Record<string, unknown>>(OPENCLAW_CONFIG_PATH)) ?? {};
 }
 
@@ -369,7 +369,7 @@ function normalizeAgentsDefaultsCompactionMode(config: Record<string, unknown>):
   }
 }
 
-async function writeOpenClawJson(config: Record<string, unknown>): Promise<void> {
+export async function writeOpenClawJson(config: Record<string, unknown>): Promise<void> {
   normalizeAgentsDefaultsCompactionMode(config);
 
   // Ensure SIGUSR1 graceful reload is authorized by OpenClaw config.

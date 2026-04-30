@@ -152,6 +152,15 @@ export async function launchGatewayProcess(options: {
 
   const runtimeEnv = { ...forkEnv };
   
+  // Increase Node.js heap size to prevent OOM errors when loading many skills
+  const existingNodeOptions = runtimeEnv.NODE_OPTIONS || '';
+  const heapSizeFlag = '--max-old-space-size=4096'; // 4GB heap
+  if (!existingNodeOptions.includes('--max-old-space-size')) {
+    runtimeEnv.NODE_OPTIONS = existingNodeOptions 
+      ? `${existingNodeOptions} ${heapSizeFlag}`
+      : heapSizeFlag;
+  }
+  
   // Add NODE_PATH for pnpm module resolution when using local openme
   const openclawNodeModules = join(openclawDir, 'node_modules');
   if (existsSync(openclawNodeModules)) {
@@ -176,11 +185,16 @@ export async function launchGatewayProcess(options: {
   }
 
   return await new Promise<{ child: Electron.UtilityProcess; lastSpawnSummary: string }>((resolve, reject) => {
+    // Increase Node.js heap size for utilityProcess to prevent OOM errors
+    // utilityProcess may ignore NODE_OPTIONS, so we use execArgv instead
+    const execArgv = ['--max-old-space-size=4096']; // 4GB heap
+    
     const child = utilityProcess.fork(entryScript, gatewayArgs, {
       cwd: openclawDir,
       stdio: 'pipe',
       env: runtimeEnv as NodeJS.ProcessEnv,
       serviceName: 'OpenClaw Gateway',
+      execArgv, // Pass Node.js flags directly to the child process
     });
 
     let settled = false;

@@ -1859,13 +1859,37 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const eventSessionKey = event.sessionKey != null ? String(event.sessionKey) : null;
     const { activeRunId, currentSessionKey } = get();
 
+    console.log('[handleChatEvent] Received event:', {
+      eventState,
+      eventSessionKey,
+      currentSessionKey,
+      runId,
+      activeRunId,
+      hasMessage: !!event.message,
+    });
+
     // Only process events for the current session (when sessionKey is present)
-    if (eventSessionKey != null && eventSessionKey !== currentSessionKey) return;
+    if (eventSessionKey != null && eventSessionKey !== currentSessionKey) {
+      console.log('[handleChatEvent] Skipping event: sessionKey mismatch', {
+        eventSessionKey,
+        currentSessionKey,
+      });
+      return;
+    }
 
     // Only process events for the active run (or if no active run set)
-    if (activeRunId && runId && runId !== activeRunId) return;
+    if (activeRunId && runId && runId !== activeRunId) {
+      console.log('[handleChatEvent] Skipping event: runId mismatch', {
+        eventRunId: runId,
+        activeRunId,
+      });
+      return;
+    }
 
-    if (isDuplicateChatEvent(eventState, event)) return;
+    if (isDuplicateChatEvent(eventState, event)) {
+      console.log('[handleChatEvent] Skipping event: duplicate');
+      return;
+    }
 
     _lastChatEventAt = Date.now();
 
@@ -1907,6 +1931,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         break;
       }
       case 'delta': {
+        console.log('[handleChatEvent] Processing delta event');
         // Clear any stale error (including RPC timeout) when new data arrives.
         if (_errorRecoveryTimer) {
           clearErrorRecoveryTimer();
@@ -1925,14 +1950,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
           })(),
           streamingTools: updates.length > 0 ? upsertToolStatuses(s.streamingTools, updates) : s.streamingTools,
         }));
+        console.log('[handleChatEvent] Delta processed, streamingMessage updated');
         break;
       }
       case 'final': {
+        console.log('[handleChatEvent] Processing final event');
         clearErrorRecoveryTimer();
         if (get().error) set({ error: null });
         // Message complete - add to history and clear streaming
         const finalMsg = event.message as RawMessage | undefined;
         if (finalMsg) {
+          console.log('[handleChatEvent] Final message received:', {
+            role: finalMsg.role,
+            hasContent: !!finalMsg.content,
+          });
           const updates = collectToolUpdates(finalMsg, resolvedState);
           if (isToolResultRole(finalMsg.role)) {
             // Resolve file path from the streaming assistant message's matching tool call

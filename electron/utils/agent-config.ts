@@ -596,6 +596,71 @@ export async function createAgent(
   });
 }
 
+import { logger } from './logger.js';
+import { getBoxImConfig } from './box-im-sync.js';
+
+// 同步员工名称到数据库
+async function syncAgentNameToDatabase(agentId: string, nickName: string): Promise<void> {
+  const { tokenKey, apiUrl } = await getBoxImConfig();
+  if (!tokenKey) {
+    logger.warn('[agent-config] No tokenKey, skipping name sync to database');
+    return;
+  }
+
+  try {
+    const response = await fetch(`${apiUrl}/bot/name/${encodeURIComponent(agentId)}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Token-Key': tokenKey,
+      },
+      body: JSON.stringify({ nickName }),
+      signal: AbortSignal.timeout(5000),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Failed to sync name to database: ${response.status} ${errorText}`);
+    }
+
+    logger.info('[agent-config] Synced agent name to database', { agentId, nickName });
+  } catch (error) {
+    logger.error('[agent-config] Failed to sync agent name to database:', error);
+    throw error;
+  }
+}
+
+// 同步员工模型到数据库
+async function syncAgentModelToDatabase(agentId: string, model: string | null): Promise<void> {
+  const { tokenKey, apiUrl } = await getBoxImConfig();
+  if (!tokenKey) {
+    logger.warn('[agent-config] No tokenKey, skipping model sync to database');
+    return;
+  }
+
+  try {
+    const response = await fetch(`${apiUrl}/bot/model/${encodeURIComponent(agentId)}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Token-Key': tokenKey,
+      },
+      body: JSON.stringify({ model }),
+      signal: AbortSignal.timeout(5000),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Failed to sync model to database: ${response.status} ${errorText}`);
+    }
+
+    logger.info('[agent-config] Synced agent model to database', { agentId, model });
+  } catch (error) {
+    logger.error('[agent-config] Failed to sync agent model to database:', error);
+    throw error;
+  }
+}
+
 export async function updateAgentName(agentId: string, name: string): Promise<AgentsSnapshot> {
   return withConfigLock(async () => {
     const config = await readOpenClawConfig() as AgentConfigDocument;
@@ -656,6 +721,14 @@ export async function updateAgentModel(agentId: string, modelRef: string | null)
 
     await writeOpenClawConfig(config);
     logger.info('Updated agent model', { agentId, modelRef: normalizedModelRef || null });
+    
+    // 同步到数据库
+    try {
+      await syncAgentModelToDatabase(agentId, normalizedModelRef || null);
+    } catch (err) {
+      logger.warn('Failed to sync agent model to database:', err);
+    }
+    
     return buildSnapshotFromConfig(config);
   });
 }
@@ -820,7 +893,7 @@ export async function syncAllDigitalEmployeeModels(): Promise<void> {
               model: { primary: botModel },
             };
             updated = true;
-            logger.info('Synced digital employee model to agent on startup', { agentId, model: botModel });
+            logger.info('Synced digital employee model to agent', { agentId, from: currentModel, to: botModel });
           }
         }
       }
@@ -835,6 +908,41 @@ export async function syncAllDigitalEmployeeModels(): Promise<void> {
       logger.info('Digital employee models synced to agents.list');
     }
   });
+}
+
+/**
+ * Start auto-sync timer to periodically sync digital employee models from database
+ * This ensures local config stays in sync with database changes
+ */
+let autoSyncTimer: NodeJS.Timeout | null = null;
+
+export function startAutoSyncDigitalEmployeeModels(intervalMs: number = 60000): void {
+  if (autoSyncTimer) {
+    logger.debug('Auto-sync timer already running');
+    return;
+  }
+
+  logger.info(`Starting auto-sync for digital employee models (interval: ${intervalMs}ms)`);
+  
+  // Run immediately on start
+  syncAllDigitalEmployeeModels().catch(err => {
+    logger.warn('Initial auto-sync failed:', err);
+  });
+
+  // Then run periodically
+  autoSyncTimer = setInterval(() => {
+    syncAllDigitalEmployeeModels().catch(err => {
+      logger.warn('Auto-sync failed:', err);
+    });
+  }, intervalMs);
+}
+
+export function stopAutoSyncDigitalEmployeeModels(): void {
+  if (autoSyncTimer) {
+    clearInterval(autoSyncTimer);
+    autoSyncTimer = null;
+    logger.info('Stopped auto-sync for digital employee models');
+  }
 }
 
 export async function clearChannelBinding(channelType: string, accountId?: string): Promise<AgentsSnapshot> {

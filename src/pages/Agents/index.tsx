@@ -906,7 +906,7 @@ function AddAgentDialog({
   
   const { models, fetchModels, createDigitalEmployee, fetchDigitalEmployees } = useModelsStore();
   const { fetchAgents } = useAgentsStore();
-  const { templates, fetchTemplates } = useAgentTemplatesStore();
+  const { templates, fetchTemplates, loading: templatesLoading } = useAgentTemplatesStore();
   
   // 加载模板列表（只加载一次，避免无限循环）
   useEffect(() => {

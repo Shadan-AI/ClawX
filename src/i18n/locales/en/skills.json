@@ -71,6 +71,14 @@
             "agentsPersonal": "Personal .agents",
             "agentsProject": "Project .agents",
             "unknown": "Unknown source"
+        },
+        "group": {
+            "managed": "Local Upload",
+            "bundled": "Built-in Skills",
+            "workspace": "Workspace Skills",
+            "agentsPersonal": "Personal .agents",
+            "agentsProject": "Project .agents",
+            "extra": "Extra Directories"
         }
     },
     "toast": {
