@@ -24,9 +24,10 @@ import {
   Check,
   Loader2,
 } from 'lucide-react';
+import { resolveSessionAgentId } from '@/lib/session-agent';
 import { cn } from '@/lib/utils';
 import { useSettingsStore } from '@/stores/settings';
-import { useChatStore } from '@/stores/chat';
+import { useChatStore, type ChatSession } from '@/stores/chat';
 import { useGatewayStore } from '@/stores/gateway';
 import { useAgentsStore } from '@/stores/agents';
 import { Button } from '@/components/ui/button';
@@ -111,21 +112,6 @@ function getSessionBucket(activityMs: number, nowMs: number): SessionBucketKey {
 
 const INITIAL_NOW_MS = Date.now();
 
-function getAgentIdFromSessionKey(sessionKey: string): string {
-  // Handle box-im sessions: box-im:325:bot-xxx -> bot-xxx
-  if (sessionKey.startsWith('box-im:')) {
-    const parts = sessionKey.split(':');
-    if (parts.length >= 3) {
-      return parts[2]; // Return the bot ID
-    }
-  }
-  
-  // Handle canonical format: agent:agentId:...
-  if (!sessionKey.startsWith('agent:')) return 'main';
-  const [, agentId] = sessionKey.split(':');
-  return agentId || 'main';
-}
-
 export function Sidebar() {
   const sidebarCollapsed = useSettingsStore((state) => state.sidebarCollapsed);
   const setSidebarCollapsed = useSettingsStore((state) => state.setSidebarCollapsed);
@@ -168,18 +154,8 @@ export function Sidebar() {
   const getSessionLabel = (key: string, displayName?: string, label?: string) =>
     sessionLabels[key] ?? label ?? displayName ?? key;
 
-  // Get agent ID from session, using channel bindings for box-im sessions
   const getAgentIdFromSession = (session: ChatSession): string => {
-    // For box-im sessions, use the binding map
-    if (session.origin?.provider === 'box-im' && session.origin?.accountId) {
-      const boundAgentId = channelBindings[session.origin.accountId];
-      if (boundAgentId) {
-        return boundAgentId;
-      }
-    }
-    
-    // Fall back to extracting from session key
-    return getAgentIdFromSessionKey(session.key);
+    return resolveSessionAgentId(session, channelBindings);
   };
 
   const openDevConsole = async () => {

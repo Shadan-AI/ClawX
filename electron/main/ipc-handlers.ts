@@ -2394,6 +2394,32 @@ function registerDialogHandlers(): void {
     const result = await dialog.showMessageBox(options);
     return result;
   });
+
+  ipcMain.handle('context-menu-action', async (_, action: string) => {
+    const focusedWindow = BrowserWindow.getFocusedWindow();
+    const targetWindow = focusedWindow ?? BrowserWindow.getAllWindows()[0];
+    const webContents = targetWindow?.webContents;
+    if (!webContents) {
+      return { success: false, error: 'No active window' };
+    }
+
+    switch (action) {
+      case 'cut':
+        webContents.cut();
+        return { success: true };
+      case 'copy':
+        webContents.copy();
+        return { success: true };
+      case 'paste':
+        webContents.paste();
+        return { success: true };
+      case 'selectAll':
+        webContents.selectAll();
+        return { success: true };
+      default:
+        return { success: false, error: `Unsupported context menu action: ${action}` };
+    }
+  });
 }
 
 /**

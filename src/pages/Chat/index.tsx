@@ -4,7 +4,7 @@
  * via gateway:rpc IPC. Session selector, thinking toggle, and refresh
  * are in the toolbar; messages render with markdown + streaming.
  */
-import { useEffect, useState, useCallback, useLayoutEffect } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
 import { AlertCircle, Loader2, Sparkles } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -18,8 +18,11 @@ import { ChatInput } from './ChatInput';
 import { extractImages, extractText, extractThinking, extractToolUse } from './message-utils';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
+import { SKILL_TRIAL_AGENT_ID } from '@/lib/skill-trial';
 import { useStickToBottomInstant } from '@/hooks/use-stick-to-bottom-instant';
 import { useMinLoading } from '@/hooks/use-min-loading';
+
+type InputShellState = 'collapsed' | 'auto' | 'focused';
 
 export function Chat() {
   const { t } = useTranslation('chat');
@@ -29,6 +32,7 @@ export function Chat() {
 
   const messages = useChatStore((s) => s.messages);
   const currentSessionKey = useChatStore((s) => s.currentSessionKey);
+  const modelCount = useModelsStore((s) => s.models.length);
   const loading = useChatStore((s) => s.loading);
   
   // 技能快速使用状态
@@ -37,43 +41,46 @@ export function Chat() {
   // 处理从员工列表跳转过来创建新会话的情况
   useEffect(() => {
     const state = location.state as { createNewSessionFor?: string; quickUseSkill?: { name: string; slug: string; description: string } } | null;
-    
-    // 处理URL参数中的技能调用
     const searchParams = new URLSearchParams(location.search);
     const skillSlug = searchParams.get('skill');
-    
-    if (skillSlug) {
-      console.log('[Chat] Skill from URL:', skillSlug);
-      // 从技能slug创建快速使用对象
-      setQuickUseSkill({ 
-        name: skillSlug, 
-        slug: skillSlug, 
-        description: `使用 ${skillSlug} 技能` 
-      });
-      // 清除URL参数
-      window.history.replaceState({}, document.title, location.pathname);
-    }
-    // 处理技能快速使用
-    else if (state?.quickUseSkill) {
-      console.log('[Chat] Quick use skill:', state.quickUseSkill);
-      setQuickUseSkill(state.quickUseSkill);
-      // 清除 location state，避免重复触发
-      window.history.replaceState({}, document.title);
-    }
-    // 处理创建新会话
-    else if (state?.createNewSessionFor) {
-      const agentId = state.createNewSessionFor;
-      // 创建新会话，sessionKey 格式必须是 agent:agentId:session-timestamp
+
+    const quickUseSkillFromUrl = skillSlug
+      ? {
+          name: skillSlug,
+          slug: skillSlug,
+          description: `使用 ${skillSlug} 技能`,
+        }
+      : null;
+    const nextQuickUseSkill = quickUseSkillFromUrl || state?.quickUseSkill || null;
+    const targetAgentId = state?.createNewSessionFor || (nextQuickUseSkill ? SKILL_TRIAL_AGENT_ID : null);
+
+    if (targetAgentId) {
+      const agentId = targetAgentId;
       const newSessionKey = `agent:${agentId}:session-${Date.now()}`;
-      
+
       console.log('[Chat] Creating new session for agent:', { agentId, newSessionKey });
-      
-      // 切换到新会话（switchSession 会自动更新 currentAgentId）
       useChatStore.getState().switchSession(newSessionKey);
-      
-      // 清除 location state，避免重复触发
+    }
+
+    let quickUseFrameId: number | null = null;
+    if (nextQuickUseSkill) {
+      console.log('[Chat] Quick use skill:', nextQuickUseSkill);
+      quickUseFrameId = window.requestAnimationFrame(() => {
+        setQuickUseSkill(nextQuickUseSkill);
+      });
+    }
+
+    if (skillSlug) {
+      window.history.replaceState({}, document.title, location.pathname);
+    } else if (state?.quickUseSkill || state?.createNewSessionFor) {
       window.history.replaceState({}, document.title);
     }
+
+    return () => {
+      if (quickUseFrameId !== null) {
+        window.cancelAnimationFrame(quickUseFrameId);
+      }
+    };
   }, [location]);
   const sending = useChatStore((s) => s.sending);
   const error = useChatStore((s) => s.error);
@@ -90,18 +97,42 @@ export function Chat() {
 
   const [streamingTimestamp, setStreamingTimestamp] = useState<number>(0);
   const minLoading = useMinLoading(loading && messages.length > 0);
-  const { contentRef, scrollRef } = useStickToBottomInstant(currentSessionKey);
+  const { contentRef, scrollRef, isNearBottom, escapedFromLock } = useStickToBottomInstant(currentSessionKey);
 
-  const [isInputFocused, setIsInputFocused] = useState(false);
-  const [autoExpandedAtBottom, setAutoExpandedAtBottom] = useState(false);
-  
-  // 输入框展开状态: 焦点 或 自动展开
-  const isInputExpanded = isInputFocused || autoExpandedAtBottom;
+  const [inputShellState, setInputShellState] = useState<InputShellState>('collapsed');
+  const inputShellStateRef = useRef<InputShellState>(inputShellState);
+
+  const isInputFocused = inputShellState === 'focused';
+  const isInputExpanded = inputShellState !== 'collapsed';
 
   // Debug: 监控状态变化
   useEffect(() => {
-    console.log('[Chat] State:', { isInputFocused, autoExpandedAtBottom, isInputExpanded });
-  }, [isInputFocused, autoExpandedAtBottom, isInputExpanded]);
+    console.log('[Chat] State:', { inputShellState, isInputFocused, isInputExpanded, isNearBottom, escapedFromLock });
+  }, [escapedFromLock, inputShellState, isInputFocused, isInputExpanded, isNearBottom]);
+
+  useEffect(() => {
+    inputShellStateRef.current = inputShellState;
+  }, [inputShellState]);
+
+  const blurActiveElement = useCallback(() => {
+    const activeElement = document.activeElement;
+    if (activeElement instanceof HTMLElement) {
+      activeElement.blur();
+    }
+  }, []);
+
+  const getScrollDrivenInputState = useCallback((): InputShellState => {
+    return isNearBottom ? 'auto' : 'collapsed';
+  }, [isNearBottom]);
+
+  const handleInputFocusChange = useCallback((focused: boolean) => {
+    if (focused) {
+      setInputShellState('focused');
+      return;
+    }
+
+    setInputShellState(getScrollDrivenInputState());
+  }, [getScrollDrivenInputState]);
 
   const scrollToBottom = useCallback(() => {
     if (scrollRef.current) {
@@ -113,63 +144,41 @@ export function Chat() {
     }
   }, [scrollRef]);
 
-  // 包装 sendMessage，在发送后自动滚动到底部
-  const handleSendMessage = useCallback((text: string, attachments?: any[], targetAgentId?: string | null) => {
-    sendMessage(text, attachments, targetAgentId);
-  }, [sendMessage]);
-
   // 监听消息变化，当有新消息时自动滚动到底部
   useEffect(() => {
     if (messages.length > 0) {
       // 延迟滚动，确保消息已完全渲染到 DOM
       const timer = setTimeout(() => {
         scrollToBottom();
-        // 新消息到达时自动展开输入框
-        setAutoExpandedAtBottom(true);
+        if (inputShellStateRef.current !== 'focused') {
+          setInputShellState('auto');
+        }
       }, 100);
       return () => clearTimeout(timer);
     }
   }, [messages.length, scrollToBottom]);
 
-  // 监听滚动事件 - 只用于检测用户向上滚动时收起输入框
+  // 未聚焦时，输入框状态直接跟随是否接近底部
   useEffect(() => {
-    const scrollElement = scrollRef.current;
-    if (!scrollElement) return;
-
-    let lastScrollTop = scrollElement.scrollTop;
-
-    const handleScroll = () => {
-      const currentScrollTop = scrollElement.scrollTop;
-      const { scrollHeight, clientHeight } = scrollElement;
-      const distanceFromBottom = scrollHeight - currentScrollTop - clientHeight;
-
-      // 如果用户向上滚动超过 150px，收起自动展开
-      if (currentScrollTop < lastScrollTop - 150) {
-        setAutoExpandedAtBottom(false);
-      }
-      // 如果滚动到底部附近(100px内)，自动展开
-      else if (distanceFromBottom < 100) {
-        setAutoExpandedAtBottom(true);
-      }
-
-      lastScrollTop = currentScrollTop;
-    };
-
-    scrollElement.addEventListener('scroll', handleScroll, { passive: true });
-
-    return () => {
-      scrollElement.removeEventListener('scroll', handleScroll);
-    };
-  }, [scrollRef]);
-
-  // 点击消息区域时，让输入框失去焦点(收起输入框)
-  const handleMessagesAreaClick = useCallback(() => {
-    if (isInputFocused) {
-      setIsInputFocused(false);
+    if (inputShellState === 'focused') {
+      return;
     }
-    // 点击消息区域也收起自动展开
-    setAutoExpandedAtBottom(false);
-  }, [isInputFocused]);
+
+    const nextState = getScrollDrivenInputState();
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setInputShellState((prev) => (prev === nextState ? prev : nextState));
+  }, [getScrollDrivenInputState, inputShellState]);
+
+  // 手动输入展开时，滚动不再改动输入框大小；
+  // 只有失焦后，才根据当前位置回到 auto / collapsed。
+  // 这样可以避免“正在输入时一滚动就先缩小，再滚回去又变大”。
+
+  // 点击消息区域时，如果正在输入，则只取消焦点，状态交给滚动位置决定
+  const handleMessagesAreaClick = useCallback(() => {
+    if (inputShellState === 'focused') {
+      blurActiveElement();
+    }
+  }, [blurActiveElement, inputShellState]);
 
   // Load data when gateway is running.
   // When the store already holds messages for this session (i.e. the user
@@ -198,7 +207,7 @@ export function Chat() {
     if (currentSessionKey) {
       void useModelsStore.getState().ensureSessionModel(currentSessionKey);
     }
-  }, [currentSessionKey]);
+  }, [currentSessionKey, modelCount]);
   // Update timestamp when sending starts
   useEffect(() => {
     if (sending && streamingTimestamp === 0) {
@@ -237,7 +246,7 @@ export function Chat() {
         className="flex-1 overflow-y-auto px-0 py-0 pb-32"
         onClick={handleMessagesAreaClick}
       >
-        <div ref={contentRef} className="max-w-4xl mx-auto space-y-5 relative pt-4">
+        <div ref={contentRef} className="relative mx-auto w-full max-w-[1120px] space-y-5 px-4 pt-4">
           <AnimatePresence mode="wait">
             {isLoading ? (
               <motion.div
@@ -343,7 +352,7 @@ export function Chat() {
       {/* Error bar - 在输入框上方显示 */}
       {error && !error.includes('Gateway stopped') && (
         <div className="absolute bottom-32 left-0 right-0 z-20 pointer-events-auto px-4 py-2 bg-destructive/10 border-y border-destructive/20 backdrop-blur-sm">
-          <div className="max-w-4xl mx-auto flex items-center justify-between">
+          <div className="mx-auto flex w-full max-w-[1120px] items-center justify-between px-4">
             <p className="text-sm text-destructive flex items-center gap-2">
               <AlertCircle className="h-4 w-4" />
               {error}
@@ -369,7 +378,7 @@ export function Chat() {
             disabled={!isGatewayRunning}
             sending={sending}
             isExpanded={isInputExpanded}
-            onFocusChange={setIsInputFocused}
+            onFocusChange={handleInputFocusChange}
             quickUseSkill={quickUseSkill}
             onSkillUsed={() => setQuickUseSkill(null)}
           />

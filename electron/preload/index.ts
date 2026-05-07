@@ -37,6 +37,7 @@ const electronAPI = {
         'dialog:open',
         'dialog:save',
         'dialog:message',
+        'context-menu-action',
         // App
         'app:version',
         'app:name',

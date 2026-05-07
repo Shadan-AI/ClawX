@@ -4,7 +4,7 @@
  * with markdown, thinking sections, images, and tool cards.
  */
 import { useState, useCallback, useEffect, memo, useRef } from 'react';
-import { Sparkles, Copy, Check, ChevronDown, ChevronRight, Wrench, FileText, Film, Music, FileArchive, File, X, FolderOpen, ZoomIn, Loader2, CheckCircle2, AlertCircle } from 'lucide-react';
+import { Sparkles, Copy, Check, ChevronDown, Wrench, FileText, Film, Music, FileArchive, File, X, FolderOpen, ZoomIn, Loader2, CheckCircle2, AlertCircle } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { createPortal } from 'react-dom';
@@ -74,7 +74,7 @@ export const ChatMessage = memo(function ChatMessage({
   return (
     <div
       className={cn(
-        'flex gap-3 group',
+        'flex w-full gap-3 group',
         isUser ? 'flex-row-reverse' : 'flex-row',
       )}
     >
@@ -88,7 +88,7 @@ export const ChatMessage = memo(function ChatMessage({
       {/* Content */}
       <div
         className={cn(
-          'flex flex-col w-full min-w-0 max-w-[80%] space-y-2',
+          'flex w-full min-w-0 flex-col space-y-2.5',
           isUser ? 'items-end' : 'items-start',
         )}
       >
@@ -103,7 +103,7 @@ export const ChatMessage = memo(function ChatMessage({
 
         {/* Tool use cards */}
         {visibleTools.length > 0 && (
-          <div className="space-y-1">
+          <div className="w-full space-y-1.5">
             {visibleTools.map((tool, i) => (
               <ToolCard key={tool.id || i} name={tool.name} input={tool.input} />
             ))}
@@ -278,7 +278,7 @@ function ToolStatusBar({
           <div
             key={tool.toolCallId || tool.id || tool.name}
             className={cn(
-              'flex items-center gap-2 rounded-lg border px-3 py-2 text-xs transition-colors',
+              'flex w-full items-center gap-2 rounded-lg border px-3 py-2 text-xs transition-colors',
               isRunning && 'border-primary/30 bg-primary/5 text-foreground',
               !isRunning && !isError && 'border-border/50 bg-muted/20 text-muted-foreground',
               isError && 'border-destructive/30 bg-destructive/5 text-destructive',
@@ -288,10 +288,10 @@ function ToolStatusBar({
             {!isRunning && !isError && <CheckCircle2 className="h-3.5 w-3.5 text-green-500 shrink-0" />}
             {isError && <AlertCircle className="h-3.5 w-3.5 text-destructive shrink-0" />}
             <Wrench className="h-3 w-3 shrink-0 opacity-60" />
-            <span className="font-mono text-[12px] font-medium">{tool.name}</span>
-            {duration && <span className="text-[11px] opacity-60">{tool.summary ? `(${duration})` : duration}</span>}
+            <span className="font-mono text-[12px] font-medium shrink-0">{tool.name}</span>
+            {duration && <span className="text-[11px] opacity-60 shrink-0">{tool.summary ? `(${duration})` : duration}</span>}
             {tool.summary && (
-              <span className="truncate text-[11px] opacity-70">{tool.summary}</span>
+              <span className="min-w-0 flex-1 truncate text-[11px] opacity-70">{tool.summary}</span>
             )}
           </div>
         );
@@ -387,9 +387,9 @@ function MessageBubble({
     <div
       className={cn(
         'relative rounded-2xl px-4 py-3',
-        !isUser && 'w-full',
+        !isUser && 'w-full max-w-none',
         isUser
-          ? 'bg-[#0a84ff] text-white shadow-sm'
+          ? 'max-w-[82%] self-end bg-[#0a84ff] text-white shadow-sm md:max-w-[76%] xl:max-w-[70%]'
           : 'bg-black/5 dark:bg-white/5 text-foreground',
       )}
       onCopy={handleCopy}
@@ -454,7 +454,7 @@ function ThinkingBlock({ content }: { content: string }) {
   }, [content]);
 
   return (
-    <div className="w-full rounded-xl border border-black/10 dark:border-white/10 bg-black/5 dark:bg-white/5 text-[14px] overflow-hidden">
+    <div className="w-full max-w-none rounded-xl border border-black/10 dark:border-white/10 bg-black/5 dark:bg-white/5 text-[14px] overflow-hidden">
       <button
         className="flex items-center gap-2 w-full px-3 py-2 text-muted-foreground hover:text-foreground transition-colors"
         onClick={() => setExpanded(!expanded)}
@@ -683,7 +683,7 @@ function ToolCard({ name, input }: { name: string; input: unknown }) {
   }, [input]);
 
   return (
-    <div className="rounded-xl border border-black/10 dark:border-white/10 bg-black/5 dark:bg-white/5 text-[14px] overflow-hidden">
+    <div className="w-full max-w-none rounded-xl border border-black/10 dark:border-white/10 bg-black/5 dark:bg-white/5 text-[14px] overflow-hidden">
       <button
         className="flex items-center gap-2 w-full px-3 py-1.5 text-muted-foreground hover:text-foreground transition-colors"
         onClick={() => setExpanded(!expanded)}

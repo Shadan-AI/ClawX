@@ -7,11 +7,11 @@
     "tabs": {
         "installed": "Installed skills",
         "official": "Official library",
-        "market": "Skill market"
+        "market": "OpenMe Skill Market"
     },
     "officialMinChars": "Enter at least 2 characters to search the official library.",
     "searchOfficial": "Search official library…",
-    "searchMarketTab": "Search skill market…",
+    "searchMarketTab": "Search OpenMe Skill Market…",
     "loadMoreMarket": "Load more ({{shown}} / {{total}})",
     "filter": {
         "all": "All ({{count}})",
@@ -110,7 +110,7 @@
     },
     "marketplace": {
         "installedBadge": "Installed",
-        "title": "Marketplace",
+        "title": "OpenMe Skill Market",
         "installDialogTitle": "Install Skills",
         "installDialogSubtitle": "Browse Explore by default, or enter keywords to search.",
         "sourceLabel": "Source",

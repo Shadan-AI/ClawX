@@ -5,6 +5,7 @@
  */
 import { create } from 'zustand';
 import { hostApiFetch } from '@/lib/host-api';
+import { buildChannelBindingLookupKeys, resolveSessionAgentIdByKey } from '@/lib/session-agent';
 import { useGatewayStore } from './gateway';
 import { useAgentsStore } from './agents';
 import { buildCronSessionHistoryPath, isCronSessionKey } from './chat/cron-session-utils';
@@ -619,21 +620,6 @@ function getCanonicalPrefixFromSessions(sessions: ChatSession[]): string | null 
   return `${parts[0]}:${parts[1]}`;
 }
 
-function getAgentIdFromSessionKey(sessionKey: string): string {
-  // Handle box-im sessions: box-im:325:bot-xxx -> bot-xxx
-  if (sessionKey.startsWith('box-im:')) {
-    const parts = sessionKey.split(':');
-    if (parts.length >= 3) {
-      return parts[2]; // Return the bot ID
-    }
-  }
-  
-  // Handle canonical format: agent:agentId:...
-  if (!sessionKey.startsWith('agent:')) return 'main';
-  const parts = sessionKey.split(':');
-  return parts[1] || 'main';
-}
-
 function parseSessionUpdatedAtMs(value: unknown): number | undefined {
   if (typeof value === 'number' && Number.isFinite(value)) {
     return toMs(value);
@@ -689,7 +675,7 @@ function clearSessionEntryFromMap<T extends Record<string, unknown>>(entries: T,
 function buildSessionSwitchPatch(
   state: Pick<
     ChatState,
-    'currentSessionKey' | 'messages' | 'sessions' | 'sessionLabels' | 'sessionLastActivity'
+    'currentSessionKey' | 'messages' | 'sessions' | 'sessionLabels' | 'sessionLastActivity' | 'channelBindings'
   >,
   nextSessionKey: string,
 ): Partial<ChatState> {
@@ -708,7 +694,7 @@ function buildSessionSwitchPatch(
 
   return {
     currentSessionKey: nextSessionKey,
-    currentAgentId: getAgentIdFromSessionKey(nextSessionKey),
+    currentAgentId: resolveSessionAgentIdByKey(nextSessionKey, nextSessions, state.channelBindings),
     sessions: ensureSessionEntry(nextSessions, nextSessionKey),
     sessionLabels: leavingEmpty
       ? clearSessionEntryFromMap(state.sessionLabels, state.currentSessionKey)
@@ -1157,7 +1143,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           set((state) => ({
             sessions: sessionsWithCurrent,
             currentSessionKey: nextSessionKey,
-            currentAgentId: getAgentIdFromSessionKey(nextSessionKey),
+            currentAgentId: resolveSessionAgentIdByKey(nextSessionKey, sessionsWithCurrent, state.channelBindings),
             sessionLastActivity: {
               ...state.sessionLastActivity,
               ...discoveredActivity,
@@ -1229,9 +1215,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (result.success && result.bindings) {
         const bindingsMap: Record<string, string> = {};
         for (const binding of result.bindings) {
-          bindingsMap[binding.accountId] = binding.agentId;
+          for (const key of buildChannelBindingLookupKeys(binding.channelType, binding.accountId)) {
+            bindingsMap[key] = binding.agentId;
+          }
         }
-        set({ channelBindings: bindingsMap });
+        set((state) => ({
+          channelBindings: bindingsMap,
+          currentAgentId: resolveSessionAgentIdByKey(state.currentSessionKey, state.sessions, bindingsMap),
+        }));
       }
     } catch (err) {
       console.error('[loadChannelBindings] Failed:', err);
@@ -1284,22 +1275,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (currentSessionKey === key) {
       // Switched away from deleted session — pick the first remaining or create new
       const next = remaining[0];
-      set((s) => ({
-        sessions: remaining,
-        sessionLabels: Object.fromEntries(Object.entries(s.sessionLabels).filter(([k]) => k !== key)),
-        sessionLastActivity: Object.fromEntries(Object.entries(s.sessionLastActivity).filter(([k]) => k !== key)),
-        messages: [],
+        set((s) => ({
+          sessions: remaining,
+          sessionLabels: Object.fromEntries(Object.entries(s.sessionLabels).filter(([k]) => k !== key)),
+          sessionLastActivity: Object.fromEntries(Object.entries(s.sessionLastActivity).filter(([k]) => k !== key)),
+          messages: [],
         streamingText: '',
         streamingMessage: null,
         streamingTools: [],
         activeRunId: null,
         error: null,
-        pendingFinal: false,
-        lastUserMessageAt: null,
-        pendingToolImages: [],
-        currentSessionKey: next?.key ?? DEFAULT_SESSION_KEY,
-        currentAgentId: getAgentIdFromSessionKey(next?.key ?? DEFAULT_SESSION_KEY),
-      }));
+          pendingFinal: false,
+          lastUserMessageAt: null,
+          pendingToolImages: [],
+          currentSessionKey: next?.key ?? DEFAULT_SESSION_KEY,
+          currentAgentId: resolveSessionAgentIdByKey(next?.key ?? DEFAULT_SESSION_KEY, remaining, s.channelBindings),
+        }));
       if (next) {
         get().loadHistory();
       }
@@ -1330,12 +1321,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       ?? DEFAULT_CANONICAL_PREFIX;
     const newKey = `${prefix}:session-${Date.now()}`;
     const newSessionEntry: ChatSession = { key: newKey, displayName: newKey };
-    set((s) => ({
-      currentSessionKey: newKey,
-      currentAgentId: getAgentIdFromSessionKey(newKey),
-      sessions: [
-        ...(leavingEmpty ? s.sessions.filter((sess) => sess.key !== currentSessionKey) : s.sessions),
-        newSessionEntry,
+      set((s) => ({
+        currentSessionKey: newKey,
+        currentAgentId: resolveSessionAgentIdByKey(newKey, s.sessions, s.channelBindings),
+        sessions: [
+          ...(leavingEmpty ? s.sessions.filter((sess) => sess.key !== currentSessionKey) : s.sessions),
+          newSessionEntry,
       ],
       sessionLabels: leavingEmpty
         ? Object.fromEntries(Object.entries(s.sessionLabels).filter(([k]) => k !== currentSessionKey))

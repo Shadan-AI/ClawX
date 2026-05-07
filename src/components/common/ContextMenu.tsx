@@ -1,7 +1,10 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { Scissors, Copy, ClipboardPaste, CheckSquare, RefreshCw, Check } from 'lucide-react';
+import { invokeIpc } from '@/lib/api-client';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
+
+const CONTEXT_MENU_INTERACT_EVENT = 'clawx-context-menu-interact';
 
 interface MenuItem {
   label: string;
@@ -13,11 +16,15 @@ interface MenuItem {
 }
 
 function execElectron(cmd: string) {
+  if (window.electron?.ipcRenderer) {
+    void invokeIpc('context-menu-action', cmd);
+    return;
+  }
+
   try {
-    const { ipcRenderer } = window.require('electron');
-    ipcRenderer.invoke('context-menu-action', cmd);
-  } catch {
     document.execCommand(cmd);
+  } catch {
+    // no-op fallback
   }
 }
 
@@ -33,7 +40,8 @@ export function ContextMenu() {
     setTimeout(() => { setState('hidden'); setFlashIdx(null); }, 120);
   }, []);
 
-  const handleAction = useCallback((item: MenuItem, idx: number) => {
+  const handleAction = useCallback((item: MenuItem) => {
+    window.dispatchEvent(new CustomEvent(CONTEXT_MENU_INTERACT_EVENT));
     item.action();
     if (item.successLabel) {
       toast.success(item.successLabel);
@@ -127,7 +135,14 @@ export function ContextMenu() {
                   ? 'bg-green-500/15 text-green-600 dark:text-green-400'
                   : 'text-foreground/90 hover:bg-black/15 dark:hover:bg-white/15 active:scale-[0.97] active:bg-black/20 dark:active:bg-white/20',
               )}
-              onClick={() => handleAction(item, i)}
+              onMouseDown={(e) => {
+                // Keep the original editable element focused so paste/cut/copy
+                // still targets the chat input even though this menu lives outside it.
+                e.preventDefault();
+                e.stopPropagation();
+                window.dispatchEvent(new CustomEvent(CONTEXT_MENU_INTERACT_EVENT));
+              }}
+              onClick={() => handleAction(item)}
             >
               <span className={cn(
                 'transition-all duration-150',

@@ -14,6 +14,8 @@ import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { hostApiFetch } from '@/lib/host-api';
 import { invokeIpc } from '@/lib/api-client';
+import { getAgentIdFromSessionKey } from '@/lib/session-agent';
+import { SKILL_TRIAL_AGENT_ID } from '@/lib/skill-trial';
 import { cn } from '@/lib/utils';
 import { useAgentsStore } from '@/stores/agents';
 import { useChatStore } from '@/stores/chat';
@@ -21,6 +23,9 @@ import { useModelsStore } from '@/stores/models';
 import { useSkillsStore } from '@/stores/skills';
 import type { AgentSummary } from '@/types/agent';
 import { useTranslation } from 'react-i18next';
+
+const CONTEXT_MENU_INTERACT_EVENT = 'clawx-context-menu-interact';
+const MAX_TEXTAREA_HEIGHT = 168;
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -45,6 +50,13 @@ interface ChatInputProps {
   onFocusChange?: (focused: boolean) => void;
   quickUseSkill?: { name: string; slug: string; description: string } | null;
   onSkillUsed?: () => void;
+}
+
+function modelIdFromRef(modelValue: string | null | undefined): string | null {
+  const trimmed = (modelValue || '').trim();
+  if (!trimmed) return null;
+  const separatorIndex = trimmed.indexOf('/');
+  return separatorIndex >= 0 ? trimmed.slice(separatorIndex + 1) : trimmed;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -103,13 +115,71 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
   const pickerRef = useRef<HTMLDivElement>(null);
   const skillPickerRef = useRef<HTMLDivElement>(null);
   const isComposingRef = useRef(false);
+  const contextMenuInteractTimeoutRef = useRef<number | null>(null);
+  const isContextMenuInteractingRef = useRef(false);
   const agents = useAgentsStore((s) => s.agents);
+  const agentSkills = useAgentsStore((s) => s.agentSkills);
   const skills = useSkillsStore((s) => s.skills);
+  const skillsLoading = useSkillsStore((s) => s.loading);
+  const fetchSkills = useSkillsStore((s) => s.fetchSkills);
+  const currentSessionKey = useChatStore((s) => s.currentSessionKey);
+  const currentAgentId = useChatStore((s) => s.currentAgentId);
+  const currentSessionAgentId = currentAgentId || getAgentIdFromSessionKey(currentSessionKey);
+  const skillOwnerAgentId = targetAgentId || currentSessionAgentId;
+  const skillOwnerAgent = useMemo(
+    () => (agents ?? []).find((agent) => agent.id === skillOwnerAgentId) ?? null,
+    [agents, skillOwnerAgentId],
+  );
+  const isUniversalSkillAgent = skillOwnerAgentId === SKILL_TRIAL_AGENT_ID;
 
   // 获取所有非核心技能列表（包括未启用的）
+  const skillOwnerSkillIds = useMemo(() => {
+    if (isUniversalSkillAgent) {
+      return [];
+    }
+
+    const syncedSkillIds = agentSkills[skillOwnerAgentId];
+    if (Array.isArray(syncedSkillIds) && syncedSkillIds.length > 0) {
+      return syncedSkillIds;
+    }
+
+    return Array.isArray(skillOwnerAgent?.skills) ? skillOwnerAgent.skills : [];
+  }, [agentSkills, isUniversalSkillAgent, skillOwnerAgent, skillOwnerAgentId]);
+
   const availableSkills = useMemo(() => {
-    return (skills || []).filter(skill => !skill.isCore);
-  }, [skills]);
+    const nonCoreSkills = (skills ?? []).filter((skill) => !skill.isCore);
+
+    if (isUniversalSkillAgent) {
+      return nonCoreSkills;
+    }
+
+    if (skillOwnerSkillIds.length === 0) {
+      return [];
+    }
+
+    const skillsByKey = new Map<string, (typeof skills)[number]>();
+    for (const skill of nonCoreSkills) {
+      skillsByKey.set(skill.id, skill);
+      if (skill.slug) {
+        skillsByKey.set(skill.slug, skill);
+      }
+    }
+
+    const resolvedSkills: (typeof skills)[number][] = [];
+    const seenSkillIds = new Set<string>();
+
+    for (const skillKey of skillOwnerSkillIds) {
+      const resolvedSkill = skillsByKey.get(skillKey);
+      if (!resolvedSkill || seenSkillIds.has(resolvedSkill.id)) {
+        continue;
+      }
+
+      seenSkillIds.add(resolvedSkill.id);
+      resolvedSkills.push(resolvedSkill);
+    }
+
+    return resolvedSkills;
+  }, [isUniversalSkillAgent, skillOwnerSkillIds, skills]);
 
   // 过滤技能列表
   const filteredSkills = useMemo(() => {
@@ -124,26 +194,74 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
 
   // 处理技能快速使用
   const [activeSkill, setActiveSkill] = useState<{ name: string; slug: string; description: string } | null>(null);
+  useEffect(() => {
+    if (disabled || skillsLoading || skills.length > 0) {
+      return;
+    }
+
+    void fetchSkills();
+  }, [disabled, fetchSkills, skills.length, skillsLoading]);
+
+  useEffect(() => {
+    if (!activeSkill || skillsLoading || skills.length === 0) {
+      return;
+    }
+
+    const availableSkillKeys = new Set(availableSkills.map((skill) => skill.slug || skill.id));
+    if (!availableSkillKeys.has(activeSkill.slug)) {
+      setActiveSkill(null);
+    }
+  }, [activeSkill, availableSkills, skills.length, skillsLoading]);
+
+  const activeSkillDescription = activeSkill?.description ?? '';
+
+  const resizeTextarea = useCallback(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+
+    if (!isExpanded) {
+      textarea.style.height = '44px';
+      return;
+    }
+
+    textarea.style.height = 'auto';
+
+    if (!textarea.value && activeSkillDescription) {
+      const previousValue = textarea.value;
+      textarea.value = activeSkillDescription;
+      const placeholderHeight = Math.min(textarea.scrollHeight, MAX_TEXTAREA_HEIGHT);
+      textarea.value = previousValue;
+      textarea.style.height = `${placeholderHeight}px`;
+      return;
+    }
+
+    textarea.style.height = `${Math.min(textarea.scrollHeight, MAX_TEXTAREA_HEIGHT)}px`;
+  }, [activeSkillDescription, isExpanded]);
+
+  const focusTextarea = useCallback(() => {
+    onFocusChange?.(true);
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        textareaRef.current?.focus();
+      });
+    });
+  }, [onFocusChange]);
   
   useEffect(() => {
     if (quickUseSkill) {
       setActiveSkill(quickUseSkill);
-      // 不填充文本,只设置技能状态
+      // 不填充文本，只设置技能状态
       setInput('');
-      // 聚焦输入框
-      if (textareaRef.current) {
-        textareaRef.current.focus();
-      }
-      // 通知父组件技能已使用
+      focusTextarea();
       onSkillUsed?.();
     }
-  }, [quickUseSkill, onSkillUsed]);
+  }, [quickUseSkill, onSkillUsed, focusTextarea]);
 
   // 清除技能标签
   const handleClearSkill = useCallback(() => {
     setActiveSkill(null);
-    textareaRef.current?.focus();
-  }, []);
+    focusTextarea();
+  }, [focusTextarea]);
 
   // 选择技能
   const handleSelectSkill = useCallback((skill: { name: string; slug: string; description: string }) => {
@@ -152,9 +270,8 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
     setInput('');
     setSkillPickerOpen(false);
     setSkillSearchQuery('');
-    textareaRef.current?.focus();
-  }, []);
-  const currentAgentId = useChatStore((s) => s.currentAgentId);
+    focusTextarea();
+  }, [focusTextarea]);
   const currentAgentName = useMemo(
     () => (agents ?? []).find((agent) => agent.id === currentAgentId)?.name ?? currentAgentId,
     [agents, currentAgentId],
@@ -172,7 +289,19 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
   const models = useModelsStore((s) => s.models);
   const currentModelId = useModelsStore((s) => s.currentModelId);
   const setCurrentModel = useModelsStore((s) => s.setCurrentModel);
-  const currentModel = models.find((m) => m.id === currentModelId);
+  const getSessionModel = useModelsStore((s) => s.getSessionModel);
+  const getAgentDefaultModel = useModelsStore((s) => s.getAgentDefaultModel);
+  const normalizedCurrentModelId = modelIdFromRef(currentModelId);
+  const currentModel = models.find((m) => m.id === normalizedCurrentModelId);
+  const currentSessionModelId = currentSessionKey ? getSessionModel(currentSessionKey) : null;
+  const agentDefaultModelId = getAgentDefaultModel(currentSessionAgentId);
+  const displayModelId =
+    currentModel?.id
+    || normalizedCurrentModelId
+    || modelIdFromRef(currentSessionModelId)
+    || modelIdFromRef(agentDefaultModelId)
+    || null;
+  const displayModel = models.find((m) => m.id === displayModelId);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const modelMenuRef = useRef<HTMLDivElement>(null);
 
@@ -188,15 +317,23 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
 
   // Auto-resize textarea (only when expanded)
   useEffect(() => {
-    if (textareaRef.current) {
-      if (isExpanded) {
-        textareaRef.current.style.height = 'auto';
-        textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 200)}px`;
-      } else {
-        textareaRef.current.style.height = '44px';
-      }
-    }
-  }, [input, isExpanded]);
+    const frameId = window.requestAnimationFrame(() => {
+      resizeTextarea();
+    });
+    const settleFrameId = window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        resizeTextarea();
+      });
+    });
+    const settleTimeoutId = window.setTimeout(() => {
+      resizeTextarea();
+    }, 220);
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      window.cancelAnimationFrame(settleFrameId);
+      window.clearTimeout(settleTimeoutId);
+    };
+  }, [input, isExpanded, activeSkillDescription, resizeTextarea]);
 
   // Focus textarea on mount (avoids Windows focus loss after session delete + native dialog)
   useEffect(() => {
@@ -259,6 +396,27 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
   }, [modelMenuOpen]);
 
   // ── File staging via native dialog ─────────────────────────────
+
+  useEffect(() => {
+    const markContextMenuInteraction = () => {
+      isContextMenuInteractingRef.current = true;
+      if (contextMenuInteractTimeoutRef.current !== null) {
+        window.clearTimeout(contextMenuInteractTimeoutRef.current);
+      }
+      contextMenuInteractTimeoutRef.current = window.setTimeout(() => {
+        isContextMenuInteractingRef.current = false;
+        contextMenuInteractTimeoutRef.current = null;
+      }, 200);
+    };
+
+    window.addEventListener(CONTEXT_MENU_INTERACT_EVENT, markContextMenuInteraction);
+    return () => {
+      window.removeEventListener(CONTEXT_MENU_INTERACT_EVENT, markContextMenuInteraction);
+      if (contextMenuInteractTimeoutRef.current !== null) {
+        window.clearTimeout(contextMenuInteractTimeoutRef.current);
+      }
+    };
+  }, []);
 
   const pickFiles = useCallback(async () => {
     try {
@@ -393,6 +551,14 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
   const allReady = attachments.length === 0 || attachments.every(a => a.status === 'ready');
   const canSend = (input.trim() || attachments.length > 0) && allReady && !disabled && !sending;
   const canStop = sending && !disabled && !!onStop;
+
+  const shouldIgnoreBlur = useCallback((relatedTarget: EventTarget | null) => {
+    const nextTarget = relatedTarget as HTMLElement | null;
+    if (nextTarget && inputBoxRef.current?.contains(nextTarget)) {
+      return true;
+    }
+    return isContextMenuInteractingRef.current;
+  }, []);
 
   const handleSend = useCallback(() => {
     if (!canSend) return;
@@ -551,11 +717,16 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
     }
   }, [input, spawnParticles]);
 
+  const revealTransition = {
+    duration: 0.22,
+    ease: [0.22, 1, 0.36, 1] as const,
+  };
+
   return (
     <div
       className={cn(
-        "w-full mx-auto transition-all duration-300 ease-out bg-transparent",
-        isExpanded ? "max-w-3xl p-1 pb-1" : "max-w-2xl px-1 py-0.5"
+        "mx-auto w-full bg-transparent px-4 transition-[max-width] duration-200 ease-out",
+        isExpanded ? "max-w-[820px]" : "max-w-[760px]"
       )}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
@@ -564,10 +735,12 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
       <div className="w-full">
         {/* Attachment Previews */}
         {attachments.length > 0 && (
-          <div className={cn(
-            "flex gap-2 mb-3 flex-wrap transition-all duration-300",
-            !isExpanded && "opacity-0 h-0 mb-0 overflow-hidden"
-          )}>
+          <div
+            className={cn(
+              "mb-3 flex flex-wrap gap-2 overflow-hidden transition-[max-height,opacity,margin] duration-200 ease-out",
+              isExpanded ? "max-h-32 opacity-100" : "mb-0 max-h-0 opacity-0"
+            )}
+          >
             {attachments.map((att) => (
               <AttachmentPreview
                 key={att.id}
@@ -579,16 +752,14 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
         )}
 
         {/* Input Box */}
-        <div 
+        <div
           ref={inputBoxRef}
           className={cn(
-            "relative backdrop-blur-xl bg-white/60 dark:bg-card/60 rounded-[28px] shadow-sm border transition-all duration-300 ease-out",
-            dragOver ? 'border-primary ring-2 ring-primary/30' : 'border-black/8 dark:border-white/10 focus-within:border-black/20 dark:focus-within:border-white/20 focus-within:shadow-lg focus-within:shadow-black/5 dark:focus-within:shadow-white/5',
-            isExpanded ? "shadow-md p-2" : "p-1"
+            "relative overflow-visible rounded-[26px] border border-black/8 bg-white shadow-[0_10px_24px_rgba(15,23,42,0.06)] backdrop-blur-md transition-[box-shadow,border-color] duration-200 ease-out supports-[backdrop-filter]:bg-white/94 dark:border-white/10 dark:bg-card/88",
+            dragOver
+              ? 'border-primary ring-2 ring-primary/30'
+              : 'focus-within:border-black/20 focus-within:shadow-[0_14px_28px_rgba(15,23,42,0.08)] dark:focus-within:border-white/20 dark:focus-within:shadow-[0_14px_28px_rgba(0,0,0,0.26)]'
           )}
-          style={{
-            transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.2s ease-out',
-          } as React.CSSProperties}
         >
           <AnimatePresence mode="wait">
             {selectedTarget && (
@@ -597,7 +768,7 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                 initial={{ opacity: 0, y: -8, scale: 0.95 }}
                 animate={{ opacity: 1, y: 0, scale: 1 }}
                 exit={{ opacity: 0, y: -8, scale: 0.95 }}
-                transition={{ duration: 0.2, ease: 'easeOut' }}
+                transition={revealTransition}
                 className={cn(
                   "px-2.5 pt-2 pb-1",
                   !isExpanded && "opacity-0 h-0 py-0 overflow-hidden"
@@ -616,27 +787,34 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
             )}
           </AnimatePresence>
 
-          {/* Collapsed layout: single row with buttons + textarea + send */}
-          {!isExpanded && (
-            <div 
-              className="flex items-center gap-1"
+          <div className="flex flex-col relative">
+            <div
+              className={cn(
+                'flex items-end px-1.5 py-1.5 transition-[padding,gap] duration-200 ease-out',
+                isExpanded ? 'gap-1.5 pt-2' : 'gap-1'
+              )}
             >
-              <Button
-                variant="ghost"
-                size="icon"
-                className="shrink-0 h-9 w-9 rounded-full text-muted-foreground hover:bg-black/5 dark:hover:bg-white/10 hover:text-foreground"
-                onClick={pickFiles}
-                disabled={disabled || sending}
-                title={t('composer.attachFiles')}
+              <div
+                className={cn(
+                  'flex shrink-0 items-center overflow-hidden transition-[width,opacity,margin,transform] duration-200 ease-out',
+                  isExpanded ? 'mr-0 w-0 scale-95 opacity-0' : 'mr-0.5 w-9 scale-100 opacity-100'
+                )}
               >
-                <Paperclip className="h-4 w-4" />
-              </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-9 w-9 rounded-full text-muted-foreground hover:bg-black/5 dark:hover:bg-white/10 hover:text-foreground"
+                  onClick={pickFiles}
+                  disabled={isExpanded || disabled || sending}
+                  title={t('composer.attachFiles')}
+                >
+                  <Paperclip className="h-4 w-4" />
+                </Button>
+              </div>
 
-              <div 
-                className="flex-1 relative cursor-text"
+              <div
+                className="min-w-0 flex-1 relative cursor-text"
                 onClick={() => {
-                  // 点击时立即聚焦，这样会触发 onFocus -> onFocusChange(true) -> 展开
-                  // 展开后 textarea 会保持聚焦状态
                   textareaRef.current?.focus();
                 }}
               >
@@ -648,105 +826,86 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                   onCompositionStart={() => { isComposingRef.current = true; }}
                   onCompositionEnd={() => { isComposingRef.current = false; }}
                   onPaste={handlePaste}
-                  onFocus={() => {
-                    onFocusChange?.(true);
-                    // 确保在展开后仍然保持聚焦
-                    setTimeout(() => {
-                      if (textareaRef.current && document.activeElement !== textareaRef.current) {
-                        textareaRef.current.focus();
-                      }
-                    }, 50);
-                  }}
-                  onBlur={() => onFocusChange?.(false)}
-                  placeholder={
-                    disabled 
-                      ? t('composer.gatewayDisconnectedPlaceholder') 
-                      : activeSkill 
-                        ? `使用 ${activeSkill.name} - ${activeSkill.description}` 
-                        : ''
-                  }
-                  disabled={disabled}
-                  className="resize-none border-0 focus-visible:ring-0 focus-visible:ring-offset-0 shadow-none bg-transparent px-2 placeholder:text-muted-foreground/60 !min-h-[44px] h-[44px] overflow-hidden !py-[11px] text-base leading-normal"
-                  rows={1}
-                />
-              </div>
-
-              <Button
-                onMouseDown={(e) => {
-                  // 阻止按钮点击时触发 textarea 的 blur 事件
-                  e.preventDefault();
-                }}
-                onClick={sending ? handleStop : handleSend}
-                disabled={sending ? !canStop : !canSend}
-                size="icon"
-                className={cn(
-                  "shrink-0 h-9 w-9 rounded-full transition-all duration-300 active:scale-90",
-                  (sending || canSend)
-                    ? 'bg-black/5 dark:bg-white/10 text-foreground hover:bg-black/10 dark:hover:bg-white/20'
-                    : 'text-muted-foreground/50 hover:bg-transparent bg-transparent',
-                )}
-                variant="ghost"
-                title={sending ? t('composer.stop') : t('composer.send')}
-              >
-                {sending ? (
-                  <Square className="h-4 w-4" fill="currentColor" />
-                ) : (
-                  <SendHorizontal className="h-4 w-4" strokeWidth={2} />
-                )}
-              </Button>
-            </div>
-          )}
-
-          {/* Expanded layout: textarea on top, buttons on bottom row */}
-          {isExpanded && (
-            <div className="flex flex-col relative">
-              {/* Textarea - full width, taller */}
-              <div className="relative px-1 pt-1">
-                <Textarea
-                  ref={textareaRef}
-                  value={input}
-                  onChange={handleInputChange}
-                  onKeyDown={handleKeyDown}
-                  onCompositionStart={() => { isComposingRef.current = true; }}
-                  onCompositionEnd={() => { isComposingRef.current = false; }}
-                  onPaste={handlePaste}
                   onFocus={(e) => {
                     onFocusChange?.(true);
-                    // 将光标移到文本末尾
-                    const target = e.target;
+                    const target = e.currentTarget;
                     const length = target.value.length;
-                    setTimeout(() => {
+                    window.requestAnimationFrame(() => {
+                      if (document.activeElement !== target) {
+                        target.focus();
+                      }
                       target.setSelectionRange(length, length);
-                    }, 0);
+                    });
                   }}
                   onBlur={(e) => {
-                    // 检查焦点是否移到了输入框容器内的其他元素
-                    // 如果是，不触发 blur（保持展开状态）
-                    const relatedTarget = e.relatedTarget as HTMLElement;
-                    if (relatedTarget && inputBoxRef.current?.contains(relatedTarget)) {
+                    if (shouldIgnoreBlur(e.relatedTarget)) {
                       return;
                     }
                     onFocusChange?.(false);
                   }}
                   placeholder={
-                    disabled 
-                      ? t('composer.gatewayDisconnectedPlaceholder') 
-                      : activeSkill 
+                    disabled
+                      ? t('composer.gatewayDisconnectedPlaceholder')
+                      : activeSkill
                         ? activeSkill.description
                         : ''
                   }
                   disabled={disabled}
-                  className="resize-none border-0 focus-visible:ring-0 focus-visible:ring-offset-0 shadow-none bg-transparent px-2 placeholder:text-muted-foreground/60 min-h-[32px] max-h-[200px] py-0.5 text-base leading-relaxed w-full"
+                  className={cn(
+                    'w-full resize-none border-0 bg-transparent px-2 shadow-none placeholder:text-muted-foreground/60 transition-[height,min-height,padding] duration-200 ease-out focus-visible:ring-0 focus-visible:ring-offset-0',
+                    isExpanded
+                      ? 'min-h-[56px] max-h-[168px] py-1 text-[15px] leading-relaxed'
+                      : '!min-h-[44px] h-[44px] overflow-hidden py-[11px] text-[15px] leading-normal'
+                  )}
                   rows={1}
                 />
               </div>
 
-              {/* Bottom row: left buttons + right send/model */}
-              <div className="flex items-center justify-between px-0.5 pb-0">
+              <div
+                className={cn(
+                  'flex shrink-0 items-center justify-end overflow-hidden transition-[width,opacity,margin,transform] duration-200 ease-out',
+                  isExpanded ? 'ml-0 w-0 scale-95 opacity-0' : 'ml-0.5 w-9 scale-100 opacity-100'
+                )}
+              >
+                <Button
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                  }}
+                  onClick={sending ? handleStop : handleSend}
+                  disabled={isExpanded || (sending ? !canStop : !canSend)}
+                  size="icon"
+                  className={cn(
+                    'h-9 w-9 shrink-0 rounded-full transition-all duration-300 active:scale-90',
+                    (sending || canSend)
+                      ? 'bg-black/5 text-foreground hover:bg-black/10 dark:bg-white/10 dark:hover:bg-white/20'
+                      : 'bg-transparent text-muted-foreground/50 hover:bg-transparent',
+                  )}
+                  variant="ghost"
+                  title={sending ? t('composer.stop') : t('composer.send')}
+                >
+                  {sending ? (
+                    <Square className="h-4 w-4" fill="currentColor" />
+                  ) : (
+                    <SendHorizontal className="h-4 w-4" strokeWidth={2} />
+                  )}
+                </Button>
+              </div>
+            </div>
+
+            <div
+              className={cn(
+                'grid transition-all duration-200 ease-out',
+                isExpanded ? 'grid-rows-[1fr] overflow-visible opacity-100 translate-y-0' : 'pointer-events-none grid-rows-[0fr] overflow-hidden opacity-0 translate-y-1'
+              )}
+              aria-hidden={!isExpanded}
+            >
+              <div className={cn('min-h-0', isExpanded ? 'overflow-visible' : 'overflow-hidden')}>
+                {/* Bottom row: left buttons + right send/model */}
+                <div className="flex items-center justify-between px-2 pb-2 pt-1">
                 {/* Left: current agent + attach + @ */}
                 <div className="flex items-center gap-1">
                   {/* 当前对话对象 */}
-                  <div className="flex items-center gap-1.5 rounded-full border border-black/5 bg-white/70 dark:bg-white/5 px-2.5 py-1 text-[11px] font-medium text-foreground/70 dark:border-white/10">
+                  <div className="flex items-center gap-1.5 rounded-full border border-black/6 bg-white px-2.5 py-1 text-[11px] font-medium text-foreground/70 shadow-sm dark:border-white/10 dark:bg-white/8">
                     <Bot className="h-3 w-3 text-primary" />
                     <span>{currentAgentName}</span>
                   </div>
@@ -775,6 +934,9 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                           if (activeSkill) {
                             handleClearSkill();
                           } else {
+                            if (!disabled && skills.length === 0 && !skillsLoading) {
+                              void fetchSkills();
+                            }
                             setSkillPickerOpen(!skillPickerOpen);
                           }
                         }}
@@ -816,9 +978,15 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                             className="absolute left-0 bottom-full z-20 mb-2 w-72 overflow-hidden rounded-2xl border border-black/10 bg-white p-1.5 shadow-xl dark:border-white/10 dark:bg-card"
                           >
                             <div className="px-3 py-2 text-[11px] font-medium text-muted-foreground/80">
-                              选择技能 {skillSearchQuery && `(搜索: ${skillSearchQuery})`}
+                              {`选择技能 · ${isUniversalSkillAgent ? 'OpenClaw助手' : (skillOwnerAgent?.name || '当前数字员工')}`}
+                              {skillSearchQuery && ` (搜索: ${skillSearchQuery})`}
                             </div>
-                            {filteredSkills.length > 0 ? (
+                            {skillsLoading ? (
+                              <div className="flex items-center justify-center gap-2 px-3 py-6 text-[12px] text-muted-foreground">
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                <span>加载技能中...</span>
+                              </div>
+                            ) : filteredSkills.length > 0 ? (
                               <div className="max-h-64 overflow-y-auto">
                               {filteredSkills.map((skill) => (
                                 <button
@@ -864,8 +1032,22 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                             </div>
                             ) : (
                               <div className="px-3 py-6 text-center text-[12px] text-muted-foreground">
-                                暂无可用技能<br/>
-                                <span className="text-[11px]">请前往技能市场安装</span>
+                                {!isUniversalSkillAgent && skillOwnerSkillIds.length === 0 ? (
+                                  <>
+                                    {(skillOwnerAgent?.name || '当前数字员工')} 还没有配置技能<br />
+                                    <span className="text-[11px]">先去员工技能配置里给它分配技能</span>
+                                  </>
+                                ) : availableSkills.length === 0 ? (
+                                  <>
+                                    {(skillOwnerAgent?.name || '当前数字员工')} 的技能暂时不可用<br />
+                                    <span className="text-[11px]">可以稍后重试，或检查这些技能是否已安装并启用</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    没有匹配的技能<br />
+                                    <span className="text-[11px]">换个关键词再试试</span>
+                                  </>
+                                )}
                               </div>
                             )}
                           </motion.div>
@@ -972,13 +1154,13 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                           setModelMenuOpen((open) => !open);
                         }}
                         className={cn(
-                          'flex items-center gap-1 rounded-full border border-black/10 bg-black/5 dark:bg-white/10 px-3 py-2 text-[12px] font-medium text-foreground/80 dark:border-white/10',
+                          'flex items-center gap-1 rounded-full border border-black/8 bg-white px-3 py-2 text-[12px] font-medium text-foreground/80 shadow-sm dark:border-white/10 dark:bg-white/10',
                           'focus:outline-none focus:ring-1 focus:ring-ring/50 transition-all duration-200',
                           modelMenuOpen && 'ring-1 ring-ring/50'
                         )}
                       >
                         <span className="truncate max-w-[100px]">
-                          {currentModel?.name || currentModelId || t('selectModel')}
+                          {displayModel?.name || displayModelId || '-'}
                         </span>
                         <ChevronDown className={cn('h-3.5 w-3.5 text-muted-foreground shrink-0 transition-transform duration-200', modelMenuOpen && 'rotate-180')} />
                       </button>
@@ -993,7 +1175,7 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                             className="absolute z-50 right-0 bottom-full mb-2 min-w-[160px] rounded-lg border border-border bg-popover shadow-lg max-h-48 overflow-auto py-1"
                           >
                             {models.map((model) => {
-                              const isSelected = model.id === currentModelId;
+                              const isSelected = model.id === normalizedCurrentModelId;
                               return (
                                 <button
                                   key={model.id}
@@ -1047,8 +1229,9 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                   </Button>
                 </div>
               </div>
+              </div>
             </div>
-          )}
+          </div>
         </div>
       </div>
 

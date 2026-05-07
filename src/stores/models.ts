@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { invokeIpc } from '@/lib/api-client';
-import { hostApiFetch } from '@/lib/host-api';
+import { getAgentIdFromSessionKey, resolveSessionAgentIdByKey } from '@/lib/session-agent';
+import { useAgentsStore } from './agents';
 
 export interface OneApiModel {
   id: string;
@@ -95,19 +96,38 @@ async function fetchModelsFromOneApi(tokenKey: string): Promise<OneApiModel[]> {
   }));
 }
 
-function getAgentIdFromSessionKey(sessionKey: string): string {
-  // Handle box-im sessions: box-im:325:bot-xxx -> bot-xxx
-  if (sessionKey.startsWith('box-im:')) {
-    const parts = sessionKey.split(':');
-    if (parts.length >= 3) {
-      return parts[2]; // Return the bot ID
+function normalizeModelRef(modelRef: string | null | undefined): string | null {
+  const trimmed = (modelRef || '').trim();
+  return trimmed || null;
+}
+
+function modelIdFromRef(modelRef: string): string {
+  const separatorIndex = modelRef.indexOf('/');
+  return separatorIndex >= 0 ? modelRef.slice(separatorIndex + 1) : modelRef;
+}
+
+function toSessionModelRef(modelValue: string): string {
+  return modelValue.includes('/') ? modelValue : `shadan/${modelValue}`;
+}
+
+function toCurrentModelId(modelRef: string, models: OneApiModel[]): string {
+  const modelId = modelIdFromRef(modelRef);
+  return models.some((model) => model.id === modelId) ? modelId : modelRef;
+}
+
+async function resolveAgentModelRef(agentId: string): Promise<string | null> {
+  let agentsState = useAgentsStore.getState();
+  if (agentsState.agents.length === 0 && !agentsState.loading) {
+    try {
+      await agentsState.fetchAgents();
+    } catch (err) {
+      console.warn('[models] Failed to fetch agents while resolving model:', err);
     }
+    agentsState = useAgentsStore.getState();
   }
-  
-  // Handle canonical format: agent:agentId:...
-  if (!sessionKey.startsWith('agent:')) return 'main';
-  const [, agentId] = sessionKey.split(':');
-  return agentId || 'main';
+
+  const agent = agentsState.agents.find((entry) => entry.id === agentId);
+  return normalizeModelRef(agent?.modelRef) || normalizeModelRef(agentsState.defaultModelRef);
 }
 
 export const useModelsStore = create<ModelState>((set, get) => ({
@@ -188,6 +208,56 @@ export const useModelsStore = create<ModelState>((set, get) => ({
     let { models, digitalEmployees, sessionModels } = get();
     if (models.length === 0) return;
 
+    let agentId = getAgentIdFromSessionKey(sessionKey);
+    try {
+      const { useChatStore } = await import('./chat');
+      const chatState = useChatStore.getState();
+      agentId = resolveSessionAgentIdByKey(sessionKey, chatState.sessions, chatState.channelBindings);
+    } catch (err) {
+      console.warn('[ensureSessionModel] Failed to resolve binding-aware agent:', err);
+    }
+    const sessionOverride = sessionModels[sessionKey];
+    let modelRef = sessionOverride ? toSessionModelRef(sessionOverride) : null;
+
+    if (!modelRef) {
+      modelRef = await resolveAgentModelRef(agentId);
+      if (modelRef) {
+        console.log(`[ensureSessionModel] Using agent default model: ${modelRef} for agent ${agentId}`);
+      }
+    }
+
+    if (!modelRef) {
+      if (digitalEmployees.length === 0) {
+        console.log('[ensureSessionModel] digitalEmployees is empty, fetching...');
+        await get().fetchDigitalEmployees();
+        digitalEmployees = get().digitalEmployees;
+      }
+
+      const employee = digitalEmployees.find((entry) => entry.openclawAgentId === agentId);
+      if (employee?.model) {
+        modelRef = toSessionModelRef(employee.model);
+        console.log(`[ensureSessionModel] Falling back to synced employee model: ${modelRef} for agent ${agentId}`);
+      }
+    }
+
+    if (!modelRef) {
+      modelRef = `shadan/${models[0].id}`;
+      console.log(`[ensureSessionModel] No agent model configured, using first available model: ${modelRef}`);
+    }
+
+    set({ currentModelId: toCurrentModelId(modelRef, models) });
+    try {
+      await invokeIpc('gateway:rpc', 'sessions.patch', {
+        key: sessionKey,
+        model: modelRef,
+      });
+      console.log(`[ensureSessionModel] Set session model to ${modelRef} for ${sessionKey}`);
+    } catch (err) {
+      console.error('Failed to ensure session model:', err);
+    }
+    return;
+    /*
+
     // 如果 digitalEmployees 为空,先加载
     if (digitalEmployees.length === 0) {
       console.log('[ensureSessionModel] digitalEmployees is empty, fetching...');
@@ -230,6 +300,7 @@ export const useModelsStore = create<ModelState>((set, get) => ({
         console.error('Failed to ensure session model:', err);
       }
     }
+    */
   },
 
   clearError: () => set({ error: null }),
@@ -535,7 +606,14 @@ export const useModelsStore = create<ModelState>((set, get) => ({
   },
 
   getAgentDefaultModel: (agentId: string): string | null => {
-    const employee = get().digitalEmployees.find(e => e.openclawAgentId === agentId);
+    const agentsState = useAgentsStore.getState();
+    const agent = agentsState.agents.find((entry) => entry.id === agentId);
+    const modelRef = normalizeModelRef(agent?.modelRef) || normalizeModelRef(agentsState.defaultModelRef);
+    if (modelRef) {
+      return modelIdFromRef(modelRef);
+    }
+
+    const employee = get().digitalEmployees.find((entry) => entry.openclawAgentId === agentId);
     return employee?.model || null;
   },
 

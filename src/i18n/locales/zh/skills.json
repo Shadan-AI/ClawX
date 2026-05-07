@@ -7,11 +7,11 @@
     "tabs": {
         "installed": "已安装技能",
         "official": "官方技能库",
-        "market": "技能市场"
+        "market": "OpenMe技能市场"
     },
     "officialMinChars": "请输入至少 2 个字符以搜索官方技能库。",
     "searchOfficial": "搜索官方技能库…",
-    "searchMarketTab": "搜索技能市场…",
+    "searchMarketTab": "搜索OpenMe技能市场…",
     "loadMoreMarket": "加载更多（{{shown}} / {{total}}）",
     "filter": {
         "all": "全部 ({{count}})",
@@ -110,7 +110,7 @@
     },
     "marketplace": {
         "installedBadge": "已安装",
-        "title": "市场",
+        "title": "OpenMe技能市场",
         "installDialogTitle": "安装技能",
         "installDialogSubtitle": "默认展示 Explore，输入关键词后执行搜索。",
         "sourceLabel": "来源",

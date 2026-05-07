@@ -15,6 +15,7 @@ import type { AgentSummary } from '@/types/agent';
 import type { AgentTemplate } from '@/types/agent';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
+import { buildSkillTrialNavigationState } from '@/lib/skill-trial';
 
 /**
  * Skills Configuration View
@@ -650,8 +651,13 @@ This file contains periodic tasks and reminders for the agent.
   // 跳转到对话页面并调用技能
   const handleInvokeSkill = useCallback((skill: any, e: React.MouseEvent) => {
     e.stopPropagation();
-    // 跳转到对话页面，并通过URL参数传递技能信息
-    navigate(`/?skill=${encodeURIComponent(skill.slug || skill.id)}`);
+    navigate('/', {
+      state: buildSkillTrialNavigationState({
+        name: skill.name || skill.slug || skill.id,
+        slug: skill.slug || skill.id,
+        description: skill.description || '',
+      }),
+    });
   }, [navigate]);
 
   const handleAddSkill = useCallback((skillId: string) => {

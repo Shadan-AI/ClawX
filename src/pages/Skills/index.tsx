@@ -32,6 +32,7 @@ import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 import { cn } from '@/lib/utils';
 import { invokeIpc } from '@/lib/api-client';
 import { hostApiFetch } from '@/lib/host-api';
+import { buildSkillTrialNavigationState } from '@/lib/skill-trial';
 import { trackUiEvent } from '@/lib/telemetry';
 import { toast } from 'sonner';
 import type { Skill } from '@/types/skill';
@@ -603,15 +604,12 @@ export function Skills() {
   }, [installSkill, enableSkill, t, skillsDirPath]);
 
   const handleQuickUse = useCallback((skill: { name: string; slug: string; description: string }) => {
-    // 跳转到对话页面，传递技能信息
     navigate('/', {
-      state: {
-        quickUseSkill: {
-          name: skill.name,
-          slug: skill.slug,
-          description: skill.description,
-        }
-      }
+      state: buildSkillTrialNavigationState({
+        name: skill.name,
+        slug: skill.slug,
+        description: skill.description,
+      }),
     });
   }, [navigate]);
 
@@ -839,17 +837,6 @@ export function Skills() {
             >
               <FolderOpen className="h-3.5 w-3.5 mr-1.5" />
               {t('actions.installLocal', '本地安装')}
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setSkillsTab('official');
-                setOfficialQuery('');
-              }}
-              className="h-8 text-[13px] font-medium rounded-md px-3 border-black/10 dark:border-white/10 bg-transparent hover:bg-black/5 dark:hover:bg-white/5 shadow-none"
-            >
-              {t('actions.installSkill')}
             </Button>
             <Button
               variant="outline"

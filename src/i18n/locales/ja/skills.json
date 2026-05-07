@@ -7,11 +7,11 @@
     "tabs": {
         "installed": "インストール済みスキル",
         "official": "公式ライブラリ",
-        "market": "スキルマーケット"
+        "market": "OpenMeスキルマーケット"
     },
     "officialMinChars": "公式ライブラリを検索するには2文字以上入力してください。",
     "searchOfficial": "公式ライブラリを検索…",
-    "searchMarketTab": "スキルマーケットを検索…",
+    "searchMarketTab": "OpenMeスキルマーケットを検索…",
     "loadMoreMarket": "さらに読み込む（{{shown}} / {{total}}）",
     "filter": {
         "all": "すべて ({{count}})",
@@ -102,7 +102,7 @@
     },
     "marketplace": {
         "installedBadge": "インストール済み",
-        "title": "マーケットプレイス",
+        "title": "OpenMeスキルマーケット",
         "installDialogTitle": "スキルをインストール",
         "installDialogSubtitle": "初期表示は Explore、キーワード入力時は検索します。",
         "sourceLabel": "ソース",
