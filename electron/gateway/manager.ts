@@ -52,6 +52,8 @@ import {
 } from './reload-policy';
 import { classifyGatewayStderrMessage, recordGatewayStartupStderrLine } from './startup-stderr';
 import { runGatewayStartupSequence } from './startup-orchestrator';
+import { runConfigMigrations } from '../utils/config-migration';
+import { syncAllDigitalEmployeeModels } from '../utils/agent-config';
 
 export interface GatewayStatus {
   state: GatewayLifecycleState;
@@ -239,6 +241,11 @@ export class GatewayManager extends EventEmitter {
     warmupManagedPythonReadiness();
 
     try {
+      // Normalize stale local model config before every gateway launch so a
+      // gateway restart cannot resurrect deprecated model refs.
+      await runConfigMigrations();
+      await syncAllDigitalEmployeeModels();
+
       await runGatewayStartupSequence({
         port: this.status.port,
         ownedPid: this.process?.pid,

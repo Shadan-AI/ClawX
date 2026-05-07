@@ -927,7 +927,7 @@ function AddAgentDialog({
   // 设置默认模型
   useEffect(() => {
     if (models.length > 0 && !selectedModel) {
-      const defaultModel = models.find(m => m.id === 'step-3.5-flash')?.id || models[0]?.id || '';
+      const defaultModel = models.find(m => m.id === 'glm-5')?.id || models[0]?.id || '';
       setSelectedModel(defaultModel);
     }
   }, [models, selectedModel]);

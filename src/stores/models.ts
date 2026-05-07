@@ -50,11 +50,44 @@ export interface ModelState {
 }
 
 const SESSION_MODELS_KEY = 'clawx-session-models';
+const BANNED_MODEL_IDS = new Set(['step-3.5-flash']);
+const SAFE_FALLBACK_MODEL_ID = 'glm-5';
+
+function modelIdFromRef(modelRef: string): string {
+  const separatorIndex = modelRef.indexOf('/');
+  return separatorIndex >= 0 ? modelRef.slice(separatorIndex + 1) : modelRef;
+}
+
+function isBannedModelId(modelId: string | null | undefined): boolean {
+  const trimmed = (modelId || '').trim();
+  return !!trimmed && BANNED_MODEL_IDS.has(modelIdFromRef(trimmed));
+}
+
+function sanitizeModelId(modelId: string | null | undefined): string | null {
+  const trimmed = (modelId || '').trim();
+  if (!trimmed) return null;
+  const normalizedModelId = modelIdFromRef(trimmed);
+  return BANNED_MODEL_IDS.has(normalizedModelId) ? null : normalizedModelId;
+}
+
+function sanitizeModelValue(modelValue: string | null | undefined): string | null {
+  const trimmed = (modelValue || '').trim();
+  if (!trimmed) return null;
+  return sanitizeModelId(trimmed) ? trimmed : null;
+}
 
 function loadSessionModels(): Record<string, string> {
   try {
     const raw = localStorage.getItem(SESSION_MODELS_KEY);
-    return raw ? JSON.parse(raw) : {};
+    if (!raw) return {};
+
+    const parsed = JSON.parse(raw) as Record<string, string>;
+    const sanitizedEntries = Object.entries(parsed).filter(([, value]) => sanitizeModelId(value));
+    const sanitizedModels = Object.fromEntries(sanitizedEntries);
+    if (sanitizedEntries.length !== Object.keys(parsed).length) {
+      localStorage.setItem(SESSION_MODELS_KEY, JSON.stringify(sanitizedModels));
+    }
+    return sanitizedModels;
   } catch { return {}; }
 }
 
@@ -97,22 +130,35 @@ async function fetchModelsFromOneApi(tokenKey: string): Promise<OneApiModel[]> {
 }
 
 function normalizeModelRef(modelRef: string | null | undefined): string | null {
-  const trimmed = (modelRef || '').trim();
-  return trimmed || null;
+  return sanitizeModelValue(modelRef);
 }
 
-function modelIdFromRef(modelRef: string): string {
-  const separatorIndex = modelRef.indexOf('/');
-  return separatorIndex >= 0 ? modelRef.slice(separatorIndex + 1) : modelRef;
-}
-
-function toSessionModelRef(modelValue: string): string {
-  return modelValue.includes('/') ? modelValue : `shadan/${modelValue}`;
+function toSessionModelRef(modelValue: string | null | undefined): string | null {
+  const sanitizedModelValue = sanitizeModelValue(modelValue);
+  if (!sanitizedModelValue) return null;
+  const sanitizedModelId = sanitizeModelId(sanitizedModelValue);
+  if (!sanitizedModelId) return null;
+  return sanitizedModelValue.includes('/') ? sanitizedModelValue : `shadan/${sanitizedModelId}`;
 }
 
 function toCurrentModelId(modelRef: string, models: OneApiModel[]): string {
   const modelId = modelIdFromRef(modelRef);
   return models.some((model) => model.id === modelId) ? modelId : modelRef;
+}
+
+function resolveEmployeeModelRef(agentId: string, digitalEmployees: DigitalEmployee[]): string | null {
+  const employee = digitalEmployees.find((entry) => entry.openclawAgentId === agentId);
+  return toSessionModelRef(employee?.model);
+}
+
+function resolveSafeFallbackModelRef(models: OneApiModel[]): string | null {
+  const preferredModel = models.find((model) => model.id === SAFE_FALLBACK_MODEL_ID && !isBannedModelId(model.id));
+  if (preferredModel) {
+    return `shadan/${preferredModel.id}`;
+  }
+
+  const firstAvailableModel = models.find((model) => !isBannedModelId(model.id));
+  return firstAvailableModel ? `shadan/${firstAvailableModel.id}` : null;
 }
 
 async function resolveAgentModelRef(agentId: string): Promise<string | null> {
@@ -168,7 +214,7 @@ export const useModelsStore = create<ModelState>((set, get) => ({
 
     try {
       const models = await fetchModelsFromOneApi(tokenKey);
-      const currentModelId = get().currentModelId;
+      const currentModelId = sanitizeModelId(get().currentModelId);
       // 不再设置默认模型,让每个智能体使用自己配置的模型
       set({ models, loading: false, currentModelId: currentModelId || null, isLoggedIn: true, error: null });
     } catch (err) {
@@ -180,6 +226,10 @@ export const useModelsStore = create<ModelState>((set, get) => ({
     const { models } = get();
     if (!models.find(m => m.id === modelId)) {
       set({ error: `模型 ${modelId} 不存在` });
+      return;
+    }
+    if (isBannedModelId(modelId)) {
+      set({ error: '当前模型已禁用' });
       return;
     }
     set({ currentModelId: modelId });
@@ -217,7 +267,20 @@ export const useModelsStore = create<ModelState>((set, get) => ({
       console.warn('[ensureSessionModel] Failed to resolve binding-aware agent:', err);
     }
     const sessionOverride = sessionModels[sessionKey];
-    let modelRef = sessionOverride ? toSessionModelRef(sessionOverride) : null;
+    let modelRef = toSessionModelRef(sessionOverride);
+
+    if (!modelRef) {
+      if (digitalEmployees.length === 0) {
+        console.log('[ensureSessionModel] digitalEmployees is empty, fetching...');
+        await get().fetchDigitalEmployees();
+        digitalEmployees = get().digitalEmployees;
+      }
+
+      modelRef = resolveEmployeeModelRef(agentId, digitalEmployees);
+      if (modelRef) {
+        console.log(`[ensureSessionModel] Using synced employee model: ${modelRef} for agent ${agentId}`);
+      }
+    }
 
     if (!modelRef) {
       modelRef = await resolveAgentModelRef(agentId);
@@ -227,22 +290,12 @@ export const useModelsStore = create<ModelState>((set, get) => ({
     }
 
     if (!modelRef) {
-      if (digitalEmployees.length === 0) {
-        console.log('[ensureSessionModel] digitalEmployees is empty, fetching...');
-        await get().fetchDigitalEmployees();
-        digitalEmployees = get().digitalEmployees;
+      modelRef = resolveSafeFallbackModelRef(models);
+      if (!modelRef) {
+        console.warn('[ensureSessionModel] No safe model available');
+        return;
       }
-
-      const employee = digitalEmployees.find((entry) => entry.openclawAgentId === agentId);
-      if (employee?.model) {
-        modelRef = toSessionModelRef(employee.model);
-        console.log(`[ensureSessionModel] Falling back to synced employee model: ${modelRef} for agent ${agentId}`);
-      }
-    }
-
-    if (!modelRef) {
-      modelRef = `shadan/${models[0].id}`;
-      console.log(`[ensureSessionModel] No agent model configured, using first available model: ${modelRef}`);
+      console.log(`[ensureSessionModel] No agent model configured, using safe fallback model: ${modelRef}`);
     }
 
     set({ currentModelId: toCurrentModelId(modelRef, models) });
@@ -377,7 +430,7 @@ export const useModelsStore = create<ModelState>((set, get) => ({
           nickName: emp.nickName || '',
           headImage: emp.headImage || '',
           openclawAgentId: emp.openclawAgentId || emp.agentId || emp.userName || '',
-          model: emp.model || '',
+          model: sanitizeModelValue(emp.model) || '',
           nodeId: emp.nodeId || '',
           skills: skillsArray,
           templateId: emp.templateId, // 添加 templateId
@@ -464,7 +517,7 @@ export const useModelsStore = create<ModelState>((set, get) => ({
           agentId,
           nickName,
           headImage: headImage || '',
-          model: model || '',
+          model: sanitizeModelValue(model) || '',
         }),
       });
       
@@ -486,7 +539,7 @@ export const useModelsStore = create<ModelState>((set, get) => ({
         nickName,
         headImage: headImage || '',
         openclawAgentId: agentId,
-        model: model || '',
+        model: sanitizeModelValue(model) || '',
         nodeId: result.data?.nodeId || '',
         skills: [],
       };
@@ -606,15 +659,18 @@ export const useModelsStore = create<ModelState>((set, get) => ({
   },
 
   getAgentDefaultModel: (agentId: string): string | null => {
+    const employeeModelRef = resolveEmployeeModelRef(agentId, get().digitalEmployees);
+    if (employeeModelRef) {
+      return modelIdFromRef(employeeModelRef);
+    }
+
     const agentsState = useAgentsStore.getState();
     const agent = agentsState.agents.find((entry) => entry.id === agentId);
     const modelRef = normalizeModelRef(agent?.modelRef) || normalizeModelRef(agentsState.defaultModelRef);
     if (modelRef) {
       return modelIdFromRef(modelRef);
     }
-
-    const employee = get().digitalEmployees.find((entry) => entry.openclawAgentId === agentId);
-    return employee?.model || null;
+    return null;
   },
 
   getSessionModel: (sessionKey: string): string | null => {
@@ -623,7 +679,15 @@ export const useModelsStore = create<ModelState>((set, get) => ({
 
   setSessionModel: (sessionKey: string, modelId: string) => {
     set((state) => {
-      const next = { ...state.sessionModels, [sessionKey]: modelId };
+      const sanitizedModelId = sanitizeModelId(modelId);
+      if (!sanitizedModelId) {
+        const next = { ...state.sessionModels };
+        delete next[sessionKey];
+        saveSessionModels(next);
+        return { sessionModels: next };
+      }
+
+      const next = { ...state.sessionModels, [sessionKey]: sanitizedModelId };
       saveSessionModels(next);
       return { sessionModels: next };
     });
