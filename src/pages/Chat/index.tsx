@@ -32,6 +32,7 @@ export function Chat() {
 
   const messages = useChatStore((s) => s.messages);
   const currentSessionKey = useChatStore((s) => s.currentSessionKey);
+  const currentAgentId = useChatStore((s) => s.currentAgentId);
   const modelCount = useModelsStore((s) => s.models.length);
   const loading = useChatStore((s) => s.loading);
   
@@ -207,7 +208,7 @@ export function Chat() {
     if (currentSessionKey) {
       void useModelsStore.getState().ensureSessionModel(currentSessionKey);
     }
-  }, [currentSessionKey, modelCount]);
+  }, [currentAgentId, currentSessionKey, modelCount]);
   // Update timestamp when sending starts
   useEffect(() => {
     if (sending && streamingTimestamp === 0) {
@@ -286,12 +287,11 @@ export function Chat() {
               >
                 {messages
                   .filter((msg) => {
-                    // 过滤掉 HEARTBEAT 系统消息
-                    if (msg.role === 'system') {
-                      const text = extractText(msg);
-                      if (text.includes('Read HEARTBEAT.md') || text.includes('HEARTBEAT_OK')) {
-                        return false;
-                      }
+                    // 过滤掉内部 heartbeat 探活消息
+                    if (msg.role === 'system' || msg.role === 'assistant' || msg.role === 'user') {
+                      const text = extractText(msg).trim();
+                      if (/^(HEARTBEAT_OK|NO_REPLY)\s*$/.test(text)) return false;
+                      if (text.startsWith('Read HEARTBEAT.md if it exists (workspace context).')) return false;
                     }
                     return true;
                   })

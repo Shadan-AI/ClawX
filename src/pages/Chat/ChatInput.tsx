@@ -292,14 +292,17 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
   const getSessionModel = useModelsStore((s) => s.getSessionModel);
   const getAgentDefaultModel = useModelsStore((s) => s.getAgentDefaultModel);
   const normalizedCurrentModelId = modelIdFromRef(currentModelId);
-  const currentModel = models.find((m) => m.id === normalizedCurrentModelId);
   const currentSessionModelId = currentSessionKey ? getSessionModel(currentSessionKey) : null;
   const agentDefaultModelId = getAgentDefaultModel(currentSessionAgentId);
-  const displayModelId =
-    currentModel?.id
-    || normalizedCurrentModelId
-    || modelIdFromRef(currentSessionModelId)
+  const effectiveModelId =
+    modelIdFromRef(currentSessionModelId)
     || modelIdFromRef(agentDefaultModelId)
+    || normalizedCurrentModelId
+    || null;
+  const currentModel = models.find((m) => m.id === normalizedCurrentModelId);
+  const displayModelId =
+    effectiveModelId
+    || currentModel?.id
     || null;
   const displayModel = models.find((m) => m.id === displayModelId);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
@@ -1175,7 +1178,7 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                             className="absolute z-50 right-0 bottom-full mb-2 min-w-[160px] rounded-lg border border-border bg-popover shadow-lg max-h-48 overflow-auto py-1"
                           >
                             {models.map((model) => {
-                              const isSelected = model.id === normalizedCurrentModelId;
+                              const isSelected = model.id === displayModelId;
                               return (
                                 <button
                                   key={model.id}

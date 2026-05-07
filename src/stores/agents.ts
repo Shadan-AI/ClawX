@@ -42,6 +42,13 @@ function saveAgentTemplates(templates: Record<string, number | null>) {
   } catch { /* ignore */ }
 }
 
+function modelIdFromRef(modelRef: string | null | undefined): string {
+  const trimmed = (modelRef || '').trim();
+  if (!trimmed) return '';
+  const separatorIndex = trimmed.indexOf('/');
+  return separatorIndex >= 0 ? trimmed.slice(separatorIndex + 1) : trimmed;
+}
+
 function applySnapshot(snapshot: AgentsSnapshot | undefined) {
   return snapshot ? {
     agents: snapshot.agents ?? [],
@@ -130,6 +137,26 @@ export const useAgentsStore = create<AgentsState>((set, get) => ({
         }
       );
       set(applySnapshot(snapshot));
+
+      try {
+        const { useModelsStore } = await import('./models');
+        const nextModelId = modelIdFromRef(modelRef);
+        useModelsStore.setState((state) => ({
+          digitalEmployees: state.digitalEmployees.map((employee) =>
+            employee.openclawAgentId === agentId
+              ? { ...employee, model: nextModelId }
+              : employee,
+          ),
+        }));
+
+        const { useChatStore } = await import('./chat');
+        const chatState = useChatStore.getState();
+        if (chatState.currentAgentId === agentId && chatState.currentSessionKey) {
+          await useModelsStore.getState().ensureSessionModel(chatState.currentSessionKey);
+        }
+      } catch (syncError) {
+        console.warn('[agents] Failed to sync updated agent model to runtime state:', syncError);
+      }
     } catch (error) {
       set({ error: String(error) });
       throw error;

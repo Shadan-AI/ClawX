@@ -672,6 +672,51 @@ function clearSessionEntryFromMap<T extends Record<string, unknown>>(entries: T,
   return Object.fromEntries(Object.entries(entries).filter(([key]) => key !== sessionKey)) as T;
 }
 
+function isFinitePositiveTimestamp(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0;
+}
+
+function isUnusedDraftSession(
+  sessionKey: string,
+  messages: RawMessage[],
+  sessionLastActivity: Record<string, number>,
+  sessionLabels: Record<string, string>,
+): boolean {
+  return !sessionKey.endsWith(':main')
+    && messages.length === 0
+    && !sessionLastActivity[sessionKey]
+    && !sessionLabels[sessionKey];
+}
+
+function getSessionActivityMs(
+  session: Pick<ChatSession, 'key' | 'updatedAt'>,
+  sessionLastActivity: Record<string, number>,
+): number {
+  const activity = sessionLastActivity[session.key];
+  if (isFinitePositiveTimestamp(activity)) {
+    return activity;
+  }
+  if (isFinitePositiveTimestamp(session.updatedAt)) {
+    return session.updatedAt;
+  }
+  return 0;
+}
+
+function sortSessionsByActivity(
+  sessions: ChatSession[],
+  sessionLastActivity: Record<string, number>,
+): ChatSession[] {
+  return [...sessions].sort((a, b) => {
+    const activityDiff = getSessionActivityMs(b, sessionLastActivity) - getSessionActivityMs(a, sessionLastActivity);
+    if (activityDiff !== 0) return activityDiff;
+
+    const updatedAtDiff = (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
+    if (updatedAtDiff !== 0) return updatedAtDiff;
+
+    return b.key.localeCompare(a.key);
+  });
+}
+
 function buildSessionSwitchPatch(
   state: Pick<
     ChatState,
@@ -683,10 +728,12 @@ function buildSessionSwitchPatch(
   // Relying solely on messages.length is unreliable because switchSession clears
   // the current messages before loadHistory runs, creating a race condition that
   // could cause sessions with real history to be incorrectly removed from the sidebar.
-  const leavingEmpty = !state.currentSessionKey.endsWith(':main')
-    && state.messages.length === 0
-    && !state.sessionLastActivity[state.currentSessionKey]
-    && !state.sessionLabels[state.currentSessionKey];
+  const leavingEmpty = isUnusedDraftSession(
+    state.currentSessionKey,
+    state.messages,
+    state.sessionLastActivity,
+    state.sessionLabels,
+  );
 
   const nextSessions = leavingEmpty
     ? state.sessions.filter((session) => session.key !== state.currentSessionKey)
@@ -776,9 +823,10 @@ function isToolResultRole(role: unknown): boolean {
 /** True for internal plumbing messages that should never be shown in the UI. */
 function isInternalMessage(msg: { role?: unknown; content?: unknown }): boolean {
   if (msg.role === 'system') return true;
-  if (msg.role === 'assistant') {
-    const text = getMessageText(msg.content);
+  if (msg.role === 'assistant' || msg.role === 'user') {
+    const text = getMessageText(msg.content).trim();
     if (/^(HEARTBEAT_OK|NO_REPLY)\s*$/.test(text)) return true;
+    if (text.startsWith('Read HEARTBEAT.md if it exists (workspace context).')) return true;
   }
   return false;
 }
@@ -1061,6 +1109,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
           const sessions: ChatSession[] = rawSessions.map((s: Record<string, unknown>) => {
             // Extract origin data first
             const origin = s.origin && typeof s.origin === 'object' ? s.origin as Record<string, unknown> : undefined;
+            const deliveryContext = s.deliveryContext && typeof s.deliveryContext === 'object'
+              ? s.deliveryContext as Record<string, unknown>
+              : undefined;
             
             // For channel sessions (box-im, wechat, etc.), prioritize origin.label (sender nickname)
             // Otherwise use derivedTitle (from first user message) or fall back to displayName/label
@@ -1078,9 +1129,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
               updatedAt: parseSessionUpdatedAtMs(s.updatedAt),
               sessionId: s.sessionId ? String(s.sessionId) : undefined,  // Store sessionId for direct file reading
               sessionFile: s.sessionFile ? String(s.sessionFile) : undefined,  // Also store sessionFile if provided
+              lastChannel: s.lastChannel ? String(s.lastChannel) : undefined,
+              lastAccountId: s.lastAccountId ? String(s.lastAccountId) : undefined,
+              deliveryContext: deliveryContext ? {
+                channel: deliveryContext.channel ? String(deliveryContext.channel) : undefined,
+                accountId: deliveryContext.accountId ? String(deliveryContext.accountId) : undefined,
+              } : undefined,
               origin: origin ? {
                 accountId: origin.accountId ? String(origin.accountId) : undefined,
                 provider: origin.provider ? String(origin.provider) : undefined,
+                surface: origin.surface ? String(origin.surface) : undefined,
                 label: origin.label ? String(origin.label) : undefined,
                 chatType: origin.chatType ? String(origin.chatType) : undefined,
                 from: origin.from ? String(origin.from) : undefined,
@@ -1088,7 +1146,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 threadId: origin.threadId !== undefined ? origin.threadId as string | number : undefined,
               } : undefined,
             };
-          }).filter((s: ChatSession) => s.key);
+        }).filter((s: ChatSession) => s.key);
+
+          const discoveredActivity = Object.fromEntries(
+            sessions
+              .filter((session) => isFinitePositiveTimestamp(session.updatedAt))
+              .map((session) => [session.key, session.updatedAt!]),
+          );
 
           const canonicalBySuffix = new Map<string, string>();
           for (const session of sessions) {
@@ -1109,6 +1173,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             seen.add(s.key);
             return true;
           });
+          const sortedDedupedSessions = sortSessionsByActivity(dedupedSessions, discoveredActivity);
 
           const { currentSessionKey, sessions: localSessions } = get();
           let nextSessionKey = currentSessionKey || DEFAULT_SESSION_KEY;
@@ -1118,30 +1183,30 @@ export const useChatStore = create<ChatState>((set, get) => ({
               nextSessionKey = canonicalMatch;
             }
           }
-          if (!dedupedSessions.find((s) => s.key === nextSessionKey) && dedupedSessions.length > 0) {
+          if (!sortedDedupedSessions.find((s) => s.key === nextSessionKey) && sortedDedupedSessions.length > 0) {
             // Preserve only locally-created pending sessions. On initial boot the
             // default ghost key (`agent:main:main`) should yield to real history.
             const hasLocalPendingSession = localSessions.some((session) => session.key === nextSessionKey);
             if (!hasLocalPendingSession) {
-              nextSessionKey = dedupedSessions[0].key;
+              nextSessionKey = sortedDedupedSessions[0].key;
             }
           }
 
-          const sessionsWithCurrent = !dedupedSessions.find((s) => s.key === nextSessionKey) && nextSessionKey
+          const sessionsWithCurrent = !sortedDedupedSessions.find((s) => s.key === nextSessionKey) && nextSessionKey
             ? [
-              ...dedupedSessions,
+              ...sortedDedupedSessions,
               { key: nextSessionKey, displayName: nextSessionKey },
             ]
-            : dedupedSessions;
-
-          const discoveredActivity = Object.fromEntries(
-            sessionsWithCurrent
-              .filter((session) => typeof session.updatedAt === 'number' && Number.isFinite(session.updatedAt))
-              .map((session) => [session.key, session.updatedAt!]),
-          );
+            : sortedDedupedSessions;
 
           set((state) => ({
-            sessions: sessionsWithCurrent,
+            sessions: sortSessionsByActivity(
+              sessionsWithCurrent,
+              {
+                ...state.sessionLastActivity,
+                ...discoveredActivity,
+              },
+            ),
             currentSessionKey: nextSessionKey,
             currentAgentId: resolveSessionAgentIdByKey(nextSessionKey, sessionsWithCurrent, state.channelBindings),
             sessionLastActivity: {
@@ -1311,11 +1376,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // sessions.reset archives (renames) the session JSONL file, making old
     // conversation history inaccessible when the user switches back to it.
     const { currentSessionKey, messages, sessions, sessionLastActivity, sessionLabels } = get();
-    // Only treat sessions with no history records and no activity timestamp as empty
-    const leavingEmpty = !currentSessionKey.endsWith(':main')
-      && messages.length === 0
-      && !sessionLastActivity[currentSessionKey]
-      && !sessionLabels[currentSessionKey];
+    const leavingEmpty = isUnusedDraftSession(
+      currentSessionKey,
+      messages,
+      sessionLastActivity,
+      sessionLabels,
+    );
     const prefix = getCanonicalPrefixFromSessionKey(currentSessionKey)
       ?? getCanonicalPrefixFromSessions(sessions)
       ?? DEFAULT_CANONICAL_PREFIX;
@@ -1356,10 +1422,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // in the sidebar.
     // Also check sessionLastActivity and sessionLabels comprehensively to prevent
     // falsely treating sessions with history as empty due to switchSession clearing messages early.
-    const isEmptyNonMain = !currentSessionKey.endsWith(':main')
-      && messages.length === 0
-      && !sessionLastActivity[currentSessionKey]
-      && !sessionLabels[currentSessionKey];
+    const isEmptyNonMain = isUnusedDraftSession(
+      currentSessionKey,
+      messages,
+      sessionLastActivity,
+      sessionLabels,
+    );
     if (!isEmptyNonMain) return;
     set((s) => ({
       sessions: s.sessions.filter((sess) => sess.key !== currentSessionKey),

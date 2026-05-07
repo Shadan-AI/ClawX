@@ -2,12 +2,20 @@ import { toOpenClawChannelType, toUiChannelType } from './channel-alias';
 
 type SessionOriginLike = {
   provider?: string;
+  surface?: string;
   accountId?: string;
+  to?: string;
 };
 
 type SessionLike = {
   key: string;
   origin?: SessionOriginLike;
+  lastChannel?: string;
+  lastAccountId?: string;
+  deliveryContext?: {
+    channel?: string;
+    accountId?: string;
+  };
 };
 
 function normalizeAgentId(value: string | undefined | null): string {
@@ -65,18 +73,67 @@ export function buildChannelBindingLookupKeys(
   return keys;
 }
 
+function resolveSessionChannelCandidates(session: SessionLike): string[] {
+  const values = [
+    session.origin?.provider,
+    session.origin?.surface,
+    session.deliveryContext?.channel,
+    session.lastChannel,
+  ];
+
+  const results: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    const normalized = normalizeValue(value);
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    results.push(normalized);
+  }
+  return results;
+}
+
+function resolveSessionAccountCandidates(session: SessionLike): string[] {
+  const values = [
+    session.origin?.accountId,
+    session.deliveryContext?.accountId,
+    session.lastAccountId,
+    session.origin?.to,
+  ];
+
+  const results: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    const normalized = normalizeValue(value);
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    results.push(normalized);
+  }
+  return results;
+}
+
 export function resolveBoundAgentId(
-  origin: SessionOriginLike | undefined,
+  session: SessionLike,
   channelBindings: Record<string, string>,
 ): string | null {
-  if (!origin?.accountId) {
+  const channelCandidates = resolveSessionChannelCandidates(session);
+  const accountCandidates = resolveSessionAccountCandidates(session);
+
+  if (accountCandidates.length === 0) {
     return null;
   }
 
-  for (const key of buildChannelBindingLookupKeys(origin.provider, origin.accountId)) {
-    const boundAgentId = normalizeAgentId(channelBindings[key]);
-    if (boundAgentId) {
-      return boundAgentId;
+  for (const accountId of accountCandidates) {
+    for (const channelType of channelCandidates) {
+      for (const key of buildChannelBindingLookupKeys(channelType, accountId)) {
+        const boundAgentId = normalizeAgentId(channelBindings[key]);
+        if (boundAgentId) {
+          return boundAgentId;
+        }
+      }
     }
   }
 
@@ -87,7 +144,7 @@ export function resolveSessionAgentId(
   session: SessionLike,
   channelBindings: Record<string, string>,
 ): string {
-  return resolveBoundAgentId(session.origin, channelBindings) || getAgentIdFromSessionKey(session.key);
+  return resolveBoundAgentId(session, channelBindings) || getAgentIdFromSessionKey(session.key);
 }
 
 export function resolveSessionAgentIdByKey(

@@ -611,9 +611,10 @@ function isToolResultRole(role: unknown): boolean {
 /** True for internal plumbing messages that should never be shown in the UI. */
 function isInternalMessage(msg: { role?: unknown; content?: unknown }): boolean {
   if (msg.role === 'system') return true;
-  if (msg.role === 'assistant') {
-    const text = getMessageText(msg.content);
+  if (msg.role === 'assistant' || msg.role === 'user') {
+    const text = getMessageText(msg.content).trim();
     if (/^(HEARTBEAT_OK|NO_REPLY)\s*$/.test(text)) return true;
+    if (text.startsWith('Read HEARTBEAT.md if it exists (workspace context).')) return true;
   }
   return false;
 }

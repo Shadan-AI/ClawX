@@ -3,7 +3,7 @@
  * Navigation sidebar with menu items.
  * No longer fixed - sits inside the flex layout below the title bar.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import {
   Network,
@@ -110,6 +110,31 @@ function getSessionBucket(activityMs: number, nowMs: number): SessionBucketKey {
   return 'older';
 }
 
+function getSessionActivityMs(session: ChatSession, sessionLastActivity: Record<string, number>): number {
+  const activity = sessionLastActivity[session.key];
+  if (typeof activity === 'number' && Number.isFinite(activity) && activity > 0) {
+    return activity;
+  }
+
+  if (typeof session.updatedAt === 'number' && Number.isFinite(session.updatedAt) && session.updatedAt > 0) {
+    return session.updatedAt;
+  }
+
+  return 0;
+}
+
+function isUnusedDraftSession(
+  sessionKey: string,
+  messagesLength: number,
+  sessionLastActivity: Record<string, number>,
+  sessionLabels: Record<string, string>,
+): boolean {
+  return !sessionKey.endsWith(':main')
+    && messagesLength === 0
+    && !sessionLastActivity[sessionKey]
+    && !sessionLabels[sessionKey];
+}
+
 const INITIAL_NOW_MS = Date.now();
 
 export function Sidebar() {
@@ -151,12 +176,15 @@ export function Sidebar() {
   const navigate = useNavigate();
   const isOnChat = useLocation().pathname === '/';
 
-  const getSessionLabel = (key: string, displayName?: string, label?: string) =>
-    sessionLabels[key] ?? label ?? displayName ?? key;
+  const getSessionLabel = useCallback(
+    (key: string, displayName?: string, label?: string) => sessionLabels[key] ?? label ?? displayName ?? key,
+    [sessionLabels],
+  );
 
-  const getAgentIdFromSession = (session: ChatSession): string => {
-    return resolveSessionAgentId(session, channelBindings);
-  };
+  const getAgentIdFromSession = useCallback(
+    (session: ChatSession): string => resolveSessionAgentId(session, channelBindings),
+    [channelBindings],
+  );
 
   const openDevConsole = async () => {
     try {
@@ -208,7 +236,21 @@ export function Sidebar() {
       const agentName = (agentNameById[agentId] || agentId).toLowerCase();
       return label.includes(query) || agentName.includes(query);
     });
-  }, [sessions, searchQuery, sessionLabels, agentNameById, channelBindings]);
+  }, [sessions, searchQuery, agentNameById, getAgentIdFromSession, getSessionLabel]);
+
+  const sortedFilteredSessions = useMemo(
+    () =>
+      [...filteredSessions].sort((a, b) => {
+        const activityDiff = getSessionActivityMs(b, sessionLastActivity) - getSessionActivityMs(a, sessionLastActivity);
+        if (activityDiff !== 0) return activityDiff;
+
+        const updatedAtDiff = (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
+        if (updatedAtDiff !== 0) return updatedAtDiff;
+
+        return b.key.localeCompare(a.key);
+      }),
+    [filteredSessions, sessionLastActivity],
+  );
 
   const sessionBuckets: Array<{ key: SessionBucketKey; label: string; sessions: typeof sessions }> = [
     { key: 'today', label: t('chat:historyBuckets.today'), sessions: [] },
@@ -223,10 +265,8 @@ export function Sidebar() {
     (typeof sessionBuckets)[number]
   >;
 
-  for (const session of [...filteredSessions].sort((a, b) =>
-    (sessionLastActivity[b.key] ?? 0) - (sessionLastActivity[a.key] ?? 0)
-  )) {
-    const bucketKey = getSessionBucket(sessionLastActivity[session.key] ?? 0, nowMs);
+  for (const session of sortedFilteredSessions) {
+    const bucketKey = getSessionBucket(getSessionActivityMs(session, sessionLastActivity), nowMs);
     sessionBucketMap[bucketKey].sessions.push(session);
   }
 
@@ -292,8 +332,16 @@ export function Sidebar() {
         <button
           data-testid="sidebar-new-chat"
           onClick={() => {
-            const { messages } = useChatStore.getState();
-            if (messages.length > 0) newSession();
+            const { currentSessionKey, messages, sessionLastActivity, sessionLabels } = useChatStore.getState();
+            const keepCurrentDraft = isUnusedDraftSession(
+              currentSessionKey,
+              messages.length,
+              sessionLastActivity,
+              sessionLabels,
+            );
+            if (!keepCurrentDraft) {
+              newSession();
+            }
             navigate('/');
           }}
           className={cn(
