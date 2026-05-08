@@ -136,6 +136,56 @@ describe('parseUsageEntriesFromJsonl', () => {
     ]);
   });
 
+  it('skips assistant error entries with zero tokens', () => {
+    const jsonl = [
+      JSON.stringify({
+        type: 'message',
+        timestamp: '2026-04-30T04:56:00.000Z',
+        message: {
+          role: 'assistant',
+          model: 'step-3.5-flash',
+          provider: 'shadan',
+          stopReason: 'error',
+          errorMessage: '503 no available channel',
+          usage: {
+            totalTokens: 0,
+          },
+        },
+      }),
+      JSON.stringify({
+        type: 'message',
+        timestamp: '2026-04-30T04:57:00.000Z',
+        message: {
+          role: 'assistant',
+          model: 'glm-5',
+          provider: 'shadan',
+          usage: {
+            promptTokens: 12,
+            completionTokens: 8,
+            totalTokens: 20,
+          },
+        },
+      }),
+    ].join('\n');
+
+    expect(parseUsageEntriesFromJsonl(jsonl, { sessionId: 'abc', agentId: 'default' })).toEqual([
+      {
+        timestamp: '2026-04-30T04:57:00.000Z',
+        sessionId: 'abc',
+        agentId: 'default',
+        model: 'glm-5',
+        provider: 'shadan',
+        usageStatus: 'available',
+        inputTokens: 12,
+        outputTokens: 8,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        totalTokens: 20,
+        costUsd: undefined,
+      },
+    ]);
+  });
+
   it('extracts usage fields from snake_case provider payloads', () => {
     const jsonl = [
       JSON.stringify({

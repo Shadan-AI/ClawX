@@ -6,12 +6,245 @@ import { parseJsonBody, sendJson } from '../route-utils';
 
 const SAFE_SESSION_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 
+type LocalSessionIndexEntry = {
+  key: string;
+  label?: string;
+  displayName?: string;
+  thinkingLevel?: string;
+  model?: string;
+  updatedAt?: number;
+  sessionId?: string;
+  sessionFile?: string;
+};
+
+function stripUtf8Bom(raw: string): string {
+  return raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw;
+}
+
+function repairLikelyCorruptedJson(raw: string): string {
+  const input = stripUtf8Bom(raw);
+  let result = '';
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < input.length; i += 1) {
+    const ch = input[i];
+
+    if (!inString) {
+      result += ch;
+      if (ch === '"') {
+        inString = true;
+        escaped = false;
+      }
+      continue;
+    }
+
+    if (escaped) {
+      result += ch;
+      escaped = false;
+      continue;
+    }
+
+    if (ch === '\\') {
+      result += ch;
+      escaped = true;
+      continue;
+    }
+
+    if (ch === '"') {
+      let j = i + 1;
+      while (j < input.length && /\s/.test(input[j])) {
+        j += 1;
+      }
+      const next = input[j];
+      const isClosingQuote = next === ',' || next === '}' || next === ']' || next === ':';
+      if (isClosingQuote) {
+        result += ch;
+        inString = false;
+      } else {
+        result += '\\"';
+      }
+      continue;
+    }
+
+    result += ch;
+  }
+
+  return result;
+}
+
+async function repairSessionIndexFiles(): Promise<{ scanned: number; repaired: number; failed: string[] }> {
+  const fsP = await import('node:fs/promises');
+  const agentsDir = join(getOpenClawConfigDir(), 'agents');
+  const failed: string[] = [];
+  let scanned = 0;
+  let repaired = 0;
+
+  let agentEntries: Array<{ name: string; isDirectory(): boolean }> = [];
+  try {
+    agentEntries = (await fsP.readdir(agentsDir, { withFileTypes: true })) as Array<{ name: string; isDirectory(): boolean }>;
+  } catch {
+    return { scanned, repaired, failed };
+  }
+
+  for (const entry of agentEntries) {
+    if (!entry.isDirectory()) continue;
+    const sessionsJsonPath = join(agentsDir, entry.name, 'sessions', 'sessions.json');
+
+    try {
+      const raw = await fsP.readFile(sessionsJsonPath, 'utf8');
+      scanned += 1;
+      try {
+        const normalizedRaw = stripUtf8Bom(raw);
+        JSON.parse(normalizedRaw);
+        if (normalizedRaw !== raw) {
+          await fsP.writeFile(sessionsJsonPath, normalizedRaw, 'utf8');
+          repaired += 1;
+        }
+        continue;
+      } catch {
+        const repairedRaw = repairLikelyCorruptedJson(raw);
+        JSON.parse(repairedRaw);
+        await fsP.writeFile(sessionsJsonPath, repairedRaw, 'utf8');
+        repaired += 1;
+      }
+    } catch (error) {
+      if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') {
+        continue;
+      }
+      failed.push(sessionsJsonPath);
+    }
+  }
+
+  return { scanned, repaired, failed };
+}
+
+function coerceNonEmptyString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function coerceUpdatedAt(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    return value;
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return undefined;
+}
+
+function resolveLocalSessionEntry(
+  agentId: string,
+  sessionKey: string,
+  value: unknown,
+  sessionsDir: string,
+): LocalSessionIndexEntry | null {
+  if (!sessionKey) return null;
+
+  const entry = (value && typeof value === 'object') ? value as Record<string, unknown> : null;
+  const sessionId = coerceNonEmptyString(entry?.sessionId)
+    ?? coerceNonEmptyString(entry?.id);
+
+  let sessionFile = coerceNonEmptyString(entry?.sessionFile)
+    ?? coerceNonEmptyString(entry?.file)
+    ?? coerceNonEmptyString(entry?.fileName)
+    ?? coerceNonEmptyString(entry?.path);
+
+  if (sessionFile && !sessionFile.match(/^[A-Za-z]:\\/u) && !sessionFile.startsWith('/')) {
+    sessionFile = join(sessionsDir, sessionFile);
+  }
+
+  if (!sessionFile && sessionId) {
+    sessionFile = join(sessionsDir, `${sessionId}.jsonl`);
+  }
+
+  return {
+    key: sessionKey,
+    label: coerceNonEmptyString(entry?.label),
+    displayName: coerceNonEmptyString(entry?.displayName) ?? coerceNonEmptyString(entry?.derivedTitle),
+    thinkingLevel: coerceNonEmptyString(entry?.thinkingLevel),
+    model: coerceNonEmptyString(entry?.model),
+    updatedAt: coerceUpdatedAt(entry?.updatedAt),
+    sessionId,
+    sessionFile,
+  };
+}
+
+async function listLocalSessionIndexes(): Promise<LocalSessionIndexEntry[]> {
+  const fsP = await import('node:fs/promises');
+  const agentsDir = join(getOpenClawConfigDir(), 'agents');
+  const sessions: LocalSessionIndexEntry[] = [];
+
+  let agentEntries: Array<{ name: string; isDirectory(): boolean }> = [];
+  try {
+    agentEntries = (await fsP.readdir(agentsDir, { withFileTypes: true })) as Array<{ name: string; isDirectory(): boolean }>;
+  } catch {
+    return sessions;
+  }
+
+  for (const agentEntry of agentEntries) {
+    if (!agentEntry.isDirectory()) continue;
+    const agentId = agentEntry.name;
+    const sessionsDir = join(agentsDir, agentId, 'sessions');
+    const sessionsJsonPath = join(sessionsDir, 'sessions.json');
+
+    try {
+      const raw = stripUtf8Bom(await fsP.readFile(sessionsJsonPath, 'utf8'));
+      const json = JSON.parse(raw) as Record<string, unknown>;
+
+      if (Array.isArray(json.sessions)) {
+        for (const item of json.sessions as Array<Record<string, unknown>>) {
+          const sessionKey = coerceNonEmptyString(item.key) ?? coerceNonEmptyString(item.sessionKey);
+          if (!sessionKey) continue;
+          const normalized = resolveLocalSessionEntry(agentId, sessionKey, item, sessionsDir);
+          if (normalized) sessions.push(normalized);
+        }
+        continue;
+      }
+
+      for (const [sessionKey, value] of Object.entries(json)) {
+        const normalized = resolveLocalSessionEntry(agentId, sessionKey, value, sessionsDir);
+        if (normalized) sessions.push(normalized);
+      }
+    } catch {
+      // Ignore broken per-agent indexes here; repair endpoint already handles them.
+    }
+  }
+
+  for (const session of sessions) {
+    if (session.updatedAt || !session.sessionFile) continue;
+    try {
+      const stat = await fsP.stat(session.sessionFile);
+      session.updatedAt = stat.mtimeMs;
+    } catch {
+      // ignore stat failures
+    }
+  }
+
+  return sessions
+    .filter((session) => !session.sessionFile || !session.sessionFile.endsWith('.deleted.jsonl'))
+    .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+}
+
 export async function handleSessionRoutes(
   req: IncomingMessage,
   res: ServerResponse,
   url: URL,
   _ctx: HostApiContext,
 ): Promise<boolean> {
+  if (url.pathname === '/api/sessions/repair-indexes' && req.method === 'POST') {
+    try {
+      const result = await repairSessionIndexFiles();
+      sendJson(res, 200, { success: true, ...result });
+    } catch (error) {
+      sendJson(res, 500, { success: false, error: String(error) });
+    }
+    return true;
+  }
+
   if (url.pathname === '/api/sessions/transcript' && req.method === 'GET') {
     try {
       const agentId = url.searchParams.get('agentId')?.trim() || '';
@@ -45,6 +278,16 @@ export async function handleSessionRoutes(
       } else {
         sendJson(res, 500, { success: false, error: 'Failed to load transcript' });
       }
+    }
+    return true;
+  }
+
+  if (url.pathname === '/api/sessions/indexes' && req.method === 'GET') {
+    try {
+      const sessions = await listLocalSessionIndexes();
+      sendJson(res, 200, { success: true, sessions });
+    } catch (error) {
+      sendJson(res, 500, { success: false, error: String(error) });
     }
     return true;
   }

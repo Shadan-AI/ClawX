@@ -17,7 +17,10 @@ import { invokeIpc } from '@/lib/api-client';
 
 interface QrScene { ticket: string; sceneId: string }
 
-type ScanStatus = 'idle' | 'scanning' | 'scanned' | 'success' | 'expired' | 'need_phone' | 'need_register';
+type ScanStatus = 'idle' | 'scanning' | 'scanned' | 'logging_in' | 'success' | 'expired' | 'need_phone' | 'need_register';
+
+const POLL_INTERVAL_MS = 1000;
+const MAX_POLL_ATTEMPTS = 300;
 
 export function BoxImGate() {
   const { t } = useTranslation('boxImGate');
@@ -43,6 +46,8 @@ export function BoxImGate() {
   const [regLoading, setRegLoading] = useState(false);
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollInFlightRef = useRef(false);
+  const loginFlowRef = useRef(false);
   const attemptsRef = useRef(0);
 
   // Check if already logged in on mount
@@ -67,6 +72,8 @@ export function BoxImGate() {
     setPendingNickname(null);
     setPendingAvatar(null);
     attemptsRef.current = 0;
+    pollInFlightRef.current = false;
+    loginFlowRef.current = false;
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
 
     try {
@@ -101,6 +108,9 @@ export function BoxImGate() {
   }, [markBoxImGateComplete]);
 
   const pollScanResult = useCallback(async (sceneId: string) => {
+    if (pollInFlightRef.current || loginFlowRef.current) return;
+    pollInFlightRef.current = true;
+
     try {
       const res = await invokeIpc<{
         success: boolean;
@@ -114,7 +124,10 @@ export function BoxImGate() {
       if (!res.success) return;
 
       if (res.status === 'ok' && res.openid) {
+        loginFlowRef.current = true;
         if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+        setStatus('logging_in');
+        if (res.nickname) setNickname(res.nickname);
 
         // Find or create IM user
         const userRes = await invokeIpc<{
@@ -122,6 +135,7 @@ export function BoxImGate() {
           needPhone?: boolean;
           isNewUser?: boolean;
           tokenKey?: string;
+          accessToken?: string;
           userId?: number;
           openid?: string;
           nickname?: string;
@@ -146,7 +160,7 @@ export function BoxImGate() {
             setStatus('need_phone');
           }
         } else if (userRes.tokenKey) {
-          await handleLoginSuccess(userRes.tokenKey, res.nickname, res.openid, res.avatar, undefined, userRes.userId);
+          await handleLoginSuccess(userRes.tokenKey, res.nickname, res.openid, res.avatar, userRes.accessToken, userRes.userId);
         }
       } else if (res.status === 'scanned') {
         setStatus('scanned');
@@ -154,6 +168,8 @@ export function BoxImGate() {
       }
     } catch {
       // ignore polling errors
+    } finally {
+      pollInFlightRef.current = false;
     }
   }, [handleLoginSuccess]);
 
@@ -163,14 +179,15 @@ export function BoxImGate() {
     if (pollRef.current) return;
 
     pollRef.current = setInterval(() => {
+      if (loginFlowRef.current) return;
       attemptsRef.current++;
-      if (attemptsRef.current > 150) {
+      if (attemptsRef.current > MAX_POLL_ATTEMPTS) {
         if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
         setStatus('expired');
         return;
       }
       void pollScanResult(qrScene.sceneId);
-    }, 2000);
+    }, POLL_INTERVAL_MS);
 
     return () => {
       if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
@@ -216,7 +233,7 @@ export function BoxImGate() {
     setBindLoading(true);
     setSmsError(null);
     try {
-      const res = await invokeIpc<{ success: boolean; tokenKey?: string; userId?: number; nickname?: string; error?: string }>(
+      const res = await invokeIpc<{ success: boolean; tokenKey?: string; userId?: number; nickname?: string; accessToken?: string; error?: string }>(
         'wx-auth:bindPhone',
         pendingOpenid,
         phone,
@@ -225,7 +242,7 @@ export function BoxImGate() {
         pendingAvatar ?? undefined,
       );
       if (!res.success) throw new Error(res.error || '绑定失败');
-      if (res.tokenKey) await handleLoginSuccess(res.tokenKey, res.nickname ?? pendingNickname, pendingOpenid ?? undefined, pendingAvatar ?? undefined, undefined, res.userId);
+      if (res.tokenKey) await handleLoginSuccess(res.tokenKey, res.nickname ?? pendingNickname, pendingOpenid ?? undefined, pendingAvatar ?? undefined, res.accessToken, res.userId);
     } catch (err) {
       setSmsError(err instanceof Error ? err.message : '绑定失败，请重试');
     } finally {
@@ -261,11 +278,6 @@ export function BoxImGate() {
     } finally {
       setRegLoading(false);
     }
-  };
-
-  const handleSkip = () => {
-    markBoxImGateComplete();
-    navigate('/setup', { replace: true });
   };
 
   const renderContent = () => {
@@ -325,6 +337,22 @@ export function BoxImGate() {
           <h2 className="text-xl font-semibold">扫码成功</h2>
           {nickname && <p className="text-muted-foreground text-sm">你好，{nickname}</p>}
           <p className="text-muted-foreground text-sm">请在手机上确认登录...</p>
+        </motion.div>
+      );
+    }
+
+    if (status === 'logging_in') {
+      return (
+        <motion.div key="logging_in" initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0 }} className="text-center space-y-4">
+          <div className="flex justify-center">
+            <div className="relative">
+              <CheckCircle2 className="h-14 w-14 text-green-400" />
+              <Loader2 className="absolute -bottom-1 -right-1 h-5 w-5 animate-spin text-primary bg-background rounded-full" />
+            </div>
+          </div>
+          <h2 className="text-xl font-semibold">正在登录</h2>
+          {nickname && <p className="text-muted-foreground text-sm">你好，{nickname}</p>}
+          <p className="text-muted-foreground text-sm">已扫码，正在同步账号并完成登录...</p>
         </motion.div>
       );
     }

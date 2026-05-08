@@ -988,7 +988,7 @@ function registerWxAuthHandlers(gatewayManager: GatewayManager): void {
   ipcMain.handle('wx-auth:bindPhone', async (_, openid: string, phone: string, code: string, nickname?: string, avatar?: string) => {
     try {
       const result = await bindPhoneAndRegister(openid, phone, code, nickname, avatar);
-      await persistLoginResult(result.tokenKey, result.userId, openid, nickname, avatar);
+      await persistLoginResult(result.tokenKey, result.userId, openid, nickname, avatar, result.accessToken);
       return { success: true, ...result };
     } catch (err) {
       return { success: false, error: String(err) };

@@ -50,6 +50,7 @@ export interface ModelState {
 }
 
 const SESSION_MODELS_KEY = 'clawx-session-models';
+const MODELS_CACHE_KEY = 'clawx-model-catalog-cache';
 const BANNED_MODEL_IDS = new Set(['step-3.5-flash']);
 const SAFE_FALLBACK_MODEL_ID = 'glm-5';
 
@@ -97,6 +98,24 @@ function saveSessionModels(models: Record<string, string>) {
   } catch { /* ignore */ }
 }
 
+function loadCachedModels(): OneApiModel[] {
+  try {
+    const raw = localStorage.getItem(MODELS_CACHE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as OneApiModel[];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((model) => model?.id && !isBannedModelId(model.id));
+  } catch {
+    return [];
+  }
+}
+
+function saveCachedModels(models: OneApiModel[]) {
+  try {
+    localStorage.setItem(MODELS_CACHE_KEY, JSON.stringify(models));
+  } catch { /* ignore */ }
+}
+
 const ONEAPI_BASE_URL = 'https://one-api.shadanai.com';
 
 const MODEL_META: Record<string, { name?: string }> = {
@@ -123,10 +142,12 @@ async function fetchModelsFromOneApi(tokenKey: string): Promise<OneApiModel[]> {
   });
   if (!response.ok) throw new Error(`OneAPI 请求失败: ${response.status}`);
   const data = await response.json();
-  return (data.data || []).map((m: { id: string }) => ({
-    id: m.id,
-    name: MODEL_META[m.id]?.name || m.id,
-  }));
+  return (data.data || [])
+    .map((m: { id: string }) => ({
+      id: m.id,
+      name: MODEL_META[m.id]?.name || m.id,
+    }))
+    .filter((model: OneApiModel) => !isBannedModelId(model.id));
 }
 
 function normalizeModelRef(modelRef: string | null | undefined): string | null {
@@ -177,7 +198,7 @@ async function resolveAgentModelRef(agentId: string): Promise<string | null> {
 }
 
 export const useModelsStore = create<ModelState>((set, get) => ({
-  models: [],
+  models: loadCachedModels(),
   currentModelId: null,
   loading: false,
   error: null,
@@ -215,6 +236,7 @@ export const useModelsStore = create<ModelState>((set, get) => ({
     try {
       const models = await fetchModelsFromOneApi(tokenKey);
       const currentModelId = sanitizeModelId(get().currentModelId);
+      saveCachedModels(models);
       // 不再设置默认模型,让每个智能体使用自己配置的模型
       set({ models, loading: false, currentModelId: currentModelId || null, isLoggedIn: true, error: null });
     } catch (err) {

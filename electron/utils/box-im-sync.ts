@@ -207,6 +207,9 @@ export interface ProfileSyncStatus {
 
 interface BoxImOwnerAuth {
   tokenKey?: string;
+  accessToken?: string;
+  openid?: string;
+  userId?: number;
   [key: string]: unknown;
 }
 
@@ -242,6 +245,8 @@ interface Binding {
 
 export async function getBoxImConfig(): Promise<{
   tokenKey: string | null;
+  accessToken: string | null;
+  openid: string | null;
   apiUrl: string;
   ownerUserId: number | null;
   accounts: Record<string, BoxImAccount>;
@@ -252,14 +257,119 @@ export async function getBoxImConfig(): Promise<{
     const ownerAuth = (boxIm.ownerAuth ?? {}) as BoxImOwnerAuth;
     const tokenKey = typeof ownerAuth.tokenKey === 'string' && ownerAuth.tokenKey.length > 0
       ? ownerAuth.tokenKey : null;
+    const accessToken = typeof ownerAuth.accessToken === 'string' && ownerAuth.accessToken.length > 0
+      ? ownerAuth.accessToken : null;
+    const openid = typeof ownerAuth.openid === 'string' && ownerAuth.openid.length > 0
+      ? ownerAuth.openid : null;
     const apiUrl = typeof boxIm.apiUrl === 'string' && boxIm.apiUrl.length > 0
       ? boxIm.apiUrl : DEFAULT_API_URL;
     const ownerUserId = typeof ownerAuth.userId === 'number' ? ownerAuth.userId : null;
     const accounts = (boxIm.accounts ?? {}) as Record<string, BoxImAccount>;
-    return { tokenKey, apiUrl, ownerUserId, accounts };
+    return { tokenKey, accessToken, openid, apiUrl, ownerUserId, accounts };
   } catch (err) {
     logger.error('[box-im] Failed to read config:', err);
-    return { tokenKey: null, apiUrl: DEFAULT_API_URL, ownerUserId: null, accounts: {} };
+    return { tokenKey: null, accessToken: null, openid: null, apiUrl: DEFAULT_API_URL, ownerUserId: null, accounts: {} };
+  }
+}
+
+export async function ensureOwnerAccessToken(forceRefresh = false): Promise<string | null> {
+  const { tokenKey, accessToken, openid, apiUrl } = await getBoxImConfig();
+  if (!forceRefresh && accessToken) return accessToken;
+
+  try {
+    let refreshedUserId: number | undefined;
+    let refreshedTokenKey: string | undefined;
+    let nextAccessToken: string | null = null;
+
+    if (tokenKey) {
+      const loginResp = await fetch(`${apiUrl}/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Token-Key': tokenKey },
+        body: JSON.stringify({
+          userName: '__token_key_login__',
+          password: '__token_key_login__',
+          terminal: 0,
+          terminalNo: 0,
+        }),
+        signal: AbortSignal.timeout(10_000),
+      });
+
+      if (!loginResp.ok) {
+        logger.warn(`[box-im] Failed to refresh owner accessToken via tokenKey login: ${loginResp.status}`);
+      } else {
+        const loginPayload = await loginResp.json() as {
+          data?: {
+            id?: number;
+            accessToken?: string;
+            tokenKey?: string;
+          };
+        };
+        nextAccessToken = typeof loginPayload.data?.accessToken === 'string' && loginPayload.data.accessToken.trim().length > 0
+          ? loginPayload.data.accessToken.trim()
+          : null;
+        refreshedUserId = typeof loginPayload.data?.id === 'number' && loginPayload.data.id > 0
+          ? loginPayload.data.id
+          : undefined;
+        refreshedTokenKey = typeof loginPayload.data?.tokenKey === 'string' && loginPayload.data.tokenKey.trim().length > 0
+          ? loginPayload.data.tokenKey.trim()
+          : undefined;
+      }
+    }
+
+    if (!nextAccessToken && openid) {
+      const resp = await fetch(`${apiUrl}/findUserByOpenid`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ openid, terminalNo: 0 }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!resp.ok) {
+        logger.warn(`[box-im] Failed to refresh owner accessToken via openid lookup: ${resp.status}`);
+      } else {
+        const payload = await resp.json() as {
+          data?: {
+            id?: number;
+            accessToken?: string;
+            tokenKey?: string;
+          };
+        };
+        nextAccessToken = typeof payload.data?.accessToken === 'string' && payload.data.accessToken.trim().length > 0
+          ? payload.data.accessToken.trim()
+          : null;
+        refreshedUserId = typeof payload.data?.id === 'number' && payload.data.id > 0
+          ? payload.data.id
+          : refreshedUserId;
+        refreshedTokenKey = typeof payload.data?.tokenKey === 'string' && payload.data.tokenKey.trim().length > 0
+          ? payload.data.tokenKey.trim()
+          : refreshedTokenKey;
+      }
+    }
+
+    if (!nextAccessToken) return null;
+
+    const cfg = await readOpenClawConfig();
+    if (!cfg.channels) cfg.channels = {};
+    const boxIm = (cfg.channels[CHANNEL_ID] ?? {}) as Record<string, unknown>;
+    const ownerAuth = (boxIm.ownerAuth && typeof boxIm.ownerAuth === 'object'
+      ? boxIm.ownerAuth as Record<string, unknown>
+      : {}) as Record<string, unknown>;
+
+    ownerAuth.accessToken = nextAccessToken;
+    if (typeof refreshedUserId === 'number' && refreshedUserId > 0) {
+      ownerAuth.userId = refreshedUserId;
+    }
+    if (typeof refreshedTokenKey === 'string' && refreshedTokenKey.trim().length > 0) {
+      ownerAuth.tokenKey = refreshedTokenKey.trim();
+    }
+
+    boxIm.ownerAuth = ownerAuth;
+    cfg.channels[CHANNEL_ID] = boxIm;
+    await writeOpenClawConfig(cfg);
+    logger.info('[box-im] Refreshed owner accessToken');
+    return nextAccessToken;
+  } catch (err) {
+    logger.warn('[box-im] Failed to auto-repair owner accessToken:', err);
+    return null;
   }
 }
 
@@ -331,7 +441,8 @@ export async function fetchBotsFromApi(apiUrl: string, tokenKey: string): Promis
     signal: AbortSignal.timeout(10000),
   });
   if (!resp.ok) throw new Error(`bot list error: ${resp.status}`);
-  const result = await resp.json() as { code?: number; data?: any[]; message?: string };
+  const raw = new TextDecoder('utf-8').decode(await resp.arrayBuffer());
+  const result = JSON.parse(raw) as { code?: number; data?: any[]; message?: string };
   if (result.code !== 200) throw new Error(`bot list failed: ${result.message}`);
   
   // 详细日志:打印 API 返回的原始数据

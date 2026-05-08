@@ -5,6 +5,7 @@
  */
 import { create } from 'zustand';
 import { hostApiFetch } from '@/lib/host-api';
+import { sanitizeSessionLabelText } from '@/lib/chat-display';
 import { buildChannelBindingLookupKeys, resolveSessionAgentIdByKey } from '@/lib/session-agent';
 import { useGatewayStore } from './gateway';
 import { useAgentsStore } from './agents';
@@ -27,6 +28,10 @@ export type {
   RawMessage,
   ToolStatus,
 } from './chat/types';
+
+type SessionListPayload = {
+  sessions?: Array<Record<string, unknown>>;
+};
 
 // Module-level timestamp tracking the last chat event received.
 // Used by the safety timeout to avoid false-positive "no response" errors
@@ -53,10 +58,13 @@ let _loadSessionsInFlight: Promise<void> | null = null;
 let _lastLoadSessionsAt = 0;
 const _historyLoadInFlight = new Map<string, Promise<void>>();
 const _lastHistoryLoadAtBySession = new Map<string, number>();
+const _sessionSidebarMetaInFlight = new Set<string>();
 const SESSION_LOAD_MIN_INTERVAL_MS = 1_200;
 const HISTORY_LOAD_MIN_INTERVAL_MS = 800;
 const HISTORY_POLL_SILENCE_WINDOW_MS = 2_500;
 const CHAT_EVENT_DEDUPE_TTL_MS = 30_000;
+const SESSION_SIDEBAR_META_CONCURRENCY = 2;
+const ACTIVE_HISTORY_RPC_TIMEOUT_MS = 60_000;
 const _chatEventDedupe = new Map<string, number>();
 
 function clearErrorRecoveryTimer(): void {
@@ -717,6 +725,90 @@ function sortSessionsByActivity(
   });
 }
 
+function shouldHydrateSessionSidebarMeta(
+  session: Pick<ChatSession, 'key' | 'updatedAt'>,
+  sessionLastActivity: Record<string, number>,
+  sessionLabels: Record<string, string>,
+): boolean {
+  if (session.key.endsWith(':main')) {
+    return false;
+  }
+
+  const currentLabel = sessionLabels[session.key];
+  const missingLabel = !currentLabel;
+  const dirtyLabel = Boolean(currentLabel && sanitizeSessionLabelText(currentLabel) !== currentLabel);
+  const missingActivity = getSessionActivityMs(session, sessionLastActivity) <= 0;
+  return missingLabel || dirtyLabel || missingActivity;
+}
+
+function resolveTranscriptTarget(session: Pick<ChatSession, 'key' | 'sessionId' | 'sessionFile'>): {
+  agentId: string;
+  sessionId: string;
+} | null {
+  if (session.sessionFile) {
+    const match = session.sessionFile.match(/agents[/\\]([^/\\]+)[/\\]sessions[/\\]([^/\\]+)\.jsonl$/);
+    if (match) {
+      return {
+        agentId: match[1],
+        sessionId: match[2],
+      };
+    }
+  }
+
+  if (session.sessionId) {
+    const keyParts = session.key.split(':');
+    if (keyParts.length >= 2 && keyParts[0] === 'agent') {
+      return {
+        agentId: keyParts[1],
+        sessionId: session.sessionId,
+      };
+    }
+  }
+
+  return null;
+}
+
+function mapRawSessionList(rawSessions: unknown): ChatSession[] {
+  return (Array.isArray(rawSessions) ? rawSessions : []).map((s: Record<string, unknown>) => {
+    const origin = s.origin && typeof s.origin === 'object' ? s.origin as Record<string, unknown> : undefined;
+    const deliveryContext = s.deliveryContext && typeof s.deliveryContext === 'object'
+      ? s.deliveryContext as Record<string, unknown>
+      : undefined;
+
+    const title = origin?.label ? String(origin.label) :
+      s.derivedTitle ? String(s.derivedTitle) :
+        s.displayName ? String(s.displayName) :
+          s.label ? String(s.label) : undefined;
+
+    return {
+      key: String(s.key || ''),
+      label: s.label ? String(s.label) : undefined,
+      displayName: title,
+      thinkingLevel: s.thinkingLevel ? String(s.thinkingLevel) : undefined,
+      model: s.model ? String(s.model) : undefined,
+      updatedAt: parseSessionUpdatedAtMs(s.updatedAt),
+      sessionId: s.sessionId ? String(s.sessionId) : undefined,
+      sessionFile: s.sessionFile ? String(s.sessionFile) : undefined,
+      lastChannel: s.lastChannel ? String(s.lastChannel) : undefined,
+      lastAccountId: s.lastAccountId ? String(s.lastAccountId) : undefined,
+      deliveryContext: deliveryContext ? {
+        channel: deliveryContext.channel ? String(deliveryContext.channel) : undefined,
+        accountId: deliveryContext.accountId ? String(deliveryContext.accountId) : undefined,
+      } : undefined,
+      origin: origin ? {
+        accountId: origin.accountId ? String(origin.accountId) : undefined,
+        provider: origin.provider ? String(origin.provider) : undefined,
+        surface: origin.surface ? String(origin.surface) : undefined,
+        label: origin.label ? String(origin.label) : undefined,
+        chatType: origin.chatType ? String(origin.chatType) : undefined,
+        from: origin.from ? String(origin.from) : undefined,
+        to: origin.to ? String(origin.to) : undefined,
+        threadId: origin.threadId !== undefined ? origin.threadId as string | number : undefined,
+      } : undefined,
+    };
+  }).filter((s: ChatSession) => s.key);
+}
+
 function buildSessionSwitchPatch(
   state: Pick<
     ChatState,
@@ -1048,16 +1140,77 @@ function clearPendingFinalTimer() {
   }
 }
 
+function hasAssistantActivityAfterLastUser(
+  messages: RawMessage[],
+  lastUserMessageAt: number | null,
+): boolean {
+  const userMsTs = lastUserMessageAt ? toMs(lastUserMessageAt) : 0;
+  return [...messages].reverse().some((msg) => {
+    if (msg.role !== 'assistant') return false;
+    if (!userMsTs || !msg.timestamp) return true;
+    return toMs(msg.timestamp) >= userMsTs;
+  });
+}
+
+function shouldSilentlyFinalizePendingFinal(state: Pick<ChatState, 'messages' | 'streamingTools' | 'lastUserMessageAt'>): boolean {
+  if (state.streamingTools.length === 0) return false;
+  if (state.streamingTools.some((tool) => tool.status === 'running')) return false;
+  return hasAssistantActivityAfterLastUser(state.messages, state.lastUserMessageAt);
+}
+
 function startPendingFinalTimer(get: () => ChatState, set: (state: Partial<ChatState>) => void) {
   clearPendingFinalTimer();
-  pendingFinalTimer = setTimeout(() => {
-    const { pendingFinal, sending } = get();
+  pendingFinalTimer = setTimeout(async () => {
+    pendingFinalTimer = null;
+    const beforeRecovery = get();
+    const { pendingFinal, sending } = beforeRecovery;
     if (pendingFinal && sending) {
-      console.warn('[Chat] pendingFinal timeout (30s) - forcing clear');
-      set({ 
-        pendingFinal: false, 
+      console.warn('[Chat] pendingFinal timeout (30s) - attempting final history recovery');
+
+      try {
+        await beforeRecovery.loadHistory(true);
+      } catch (error) {
+        console.warn('[Chat] pendingFinal timeout recovery load failed:', error);
+      }
+
+      const recoveredState = get();
+      if (!recoveredState.pendingFinal || !recoveredState.sending) {
+        return;
+      }
+
+      if (recoveredState.error) {
+        console.warn('[Chat] pendingFinal timeout saw an existing backend error - finalizing without timeout override');
+        clearHistoryPoll();
+        set({
+          pendingFinal: false,
+          sending: false,
+          activeRunId: null,
+          lastUserMessageAt: null,
+        });
+        return;
+      }
+
+      if (shouldSilentlyFinalizePendingFinal(recoveredState)) {
+        console.warn('[Chat] pendingFinal timed out after completed tool cycle - finalizing without error');
+        clearHistoryPoll();
+        set({
+          pendingFinal: false,
+          sending: false,
+          activeRunId: null,
+          lastUserMessageAt: null,
+          error: null,
+        });
+        return;
+      }
+
+      console.warn('[Chat] pendingFinal timeout (30s) - forcing clear with error');
+      clearHistoryPoll();
+      set({
+        pendingFinal: false,
         sending: false,
-        error: 'Tool processing timeout - please try again'
+        activeRunId: null,
+        lastUserMessageAt: null,
+        error: 'Tool processing timeout - please try again',
       });
     }
   }, 30000); // 30 seconds timeout
@@ -1101,52 +1254,41 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     _loadSessionsInFlight = (async () => {
       try {
-        const data = await useGatewayStore.getState().rpc<Record<string, unknown>>('sessions.list', {
-          includeDerivedTitles: true,
-        });
-        if (data) {
-          const rawSessions = Array.isArray(data.sessions) ? data.sessions : [];
-          const sessions: ChatSession[] = rawSessions.map((s: Record<string, unknown>) => {
-            // Extract origin data first
-            const origin = s.origin && typeof s.origin === 'object' ? s.origin as Record<string, unknown> : undefined;
-            const deliveryContext = s.deliveryContext && typeof s.deliveryContext === 'object'
-              ? s.deliveryContext as Record<string, unknown>
-              : undefined;
-            
-            // For channel sessions (box-im, wechat, etc.), prioritize origin.label (sender nickname)
-            // Otherwise use derivedTitle (from first user message) or fall back to displayName/label
-            const title = origin?.label ? String(origin.label) :
-                         s.derivedTitle ? String(s.derivedTitle) : 
-                         s.displayName ? String(s.displayName) : 
-                         s.label ? String(s.label) : undefined;
-            
-            return {
-              key: String(s.key || ''),
-              label: s.label ? String(s.label) : undefined,
-              displayName: title,  // Use the best available title
-              thinkingLevel: s.thinkingLevel ? String(s.thinkingLevel) : undefined,
-              model: s.model ? String(s.model) : undefined,
-              updatedAt: parseSessionUpdatedAtMs(s.updatedAt),
-              sessionId: s.sessionId ? String(s.sessionId) : undefined,  // Store sessionId for direct file reading
-              sessionFile: s.sessionFile ? String(s.sessionFile) : undefined,  // Also store sessionFile if provided
-              lastChannel: s.lastChannel ? String(s.lastChannel) : undefined,
-              lastAccountId: s.lastAccountId ? String(s.lastAccountId) : undefined,
-              deliveryContext: deliveryContext ? {
-                channel: deliveryContext.channel ? String(deliveryContext.channel) : undefined,
-                accountId: deliveryContext.accountId ? String(deliveryContext.accountId) : undefined,
-              } : undefined,
-              origin: origin ? {
-                accountId: origin.accountId ? String(origin.accountId) : undefined,
-                provider: origin.provider ? String(origin.provider) : undefined,
-                surface: origin.surface ? String(origin.surface) : undefined,
-                label: origin.label ? String(origin.label) : undefined,
-                chatType: origin.chatType ? String(origin.chatType) : undefined,
-                from: origin.from ? String(origin.from) : undefined,
-                to: origin.to ? String(origin.to) : undefined,
-                threadId: origin.threadId !== undefined ? origin.threadId as string | number : undefined,
-              } : undefined,
-            };
-        }).filter((s: ChatSession) => s.key);
+        try {
+          await hostApiFetch('/api/sessions/repair-indexes', { method: 'POST' });
+        } catch {
+          // Best-effort only.
+        }
+        let data: SessionListPayload | null = null;
+        try {
+          data = await useGatewayStore.getState().rpc<SessionListPayload>('sessions.list', {
+            includeDerivedTitles: true,
+          });
+        } catch (rpcError) {
+          console.warn('[loadSessions] sessions.list failed, falling back to local indexes:', rpcError);
+        }
+
+        let sessions = mapRawSessionList(data?.sessions);
+        const localSessionsBeforeFallback = get().sessions;
+        const shouldFallbackToLocalIndexes = sessions.length === 0 || (
+          localSessionsBeforeFallback.length > 3 && sessions.length <= 1
+        );
+
+        if (shouldFallbackToLocalIndexes) {
+          try {
+            const localData = await hostApiFetch<{ success: boolean; sessions?: Array<Record<string, unknown>> }>(
+              '/api/sessions/indexes',
+            );
+            const localSessions = mapRawSessionList(localData.sessions);
+            if (localSessions.length > 0) {
+              sessions = localSessions;
+            }
+          } catch (localIndexError) {
+            console.warn('[loadSessions] Local session index fallback failed:', localIndexError);
+          }
+        }
+
+        if (sessions.length > 0) {
 
           const discoveredActivity = Object.fromEntries(
             sessions
@@ -1219,36 +1361,50 @@ export const useChatStore = create<ChatState>((set, get) => ({
             void get().loadHistory();
           }
 
-          // Background: fetch first user message for every non-main session to populate labels upfront.
-          // Uses a small limit so it's cheap; runs in parallel and doesn't block anything.
-          const sessionsToLabel = sessionsWithCurrent.filter((s) => !s.key.endsWith(':main'));
-          if (sessionsToLabel.length > 0) {
+          // Background: hydrate missing sidebar metadata conservatively so
+          // history prefetching cannot overwhelm the main chat flow.
+          const { sessionLabels, sessionLastActivity } = get();
+          const sessionsNeedingSidebarMeta = sessionsWithCurrent
+            .filter((session) => shouldHydrateSessionSidebarMeta(session, sessionLastActivity, sessionLabels))
+            .filter((session) => !_sessionSidebarMetaInFlight.has(session.key));
+          if (sessionsNeedingSidebarMeta.length > 0) {
+            for (const session of sessionsNeedingSidebarMeta) {
+              _sessionSidebarMetaInFlight.add(session.key);
+            }
+
+            const workerCount = Math.min(SESSION_SIDEBAR_META_CONCURRENCY, sessionsNeedingSidebarMeta.length);
             void Promise.all(
-              sessionsToLabel.map(async (session) => {
-                try {
-                  const r = await useGatewayStore.getState().rpc<Record<string, unknown>>(
-                    'chat.history',
-                    { sessionKey: session.key, limit: 1000 },
-                  );
-                  const msgs = Array.isArray(r.messages) ? r.messages as RawMessage[] : [];
-                  const firstUser = msgs.find((m) => m.role === 'user');
-                  const lastMsg = msgs[msgs.length - 1];
-                  set((s) => {
-                    const next: Partial<typeof s> = {};
-                    if (firstUser) {
-                      const labelText = getMessageText(firstUser.content).trim();
-                      if (labelText) {
-                        const truncated = labelText.length > 50 ? `${labelText.slice(0, 50)}…` : labelText;
-                        next.sessionLabels = { ...s.sessionLabels, [session.key]: truncated };
+              Array.from({ length: workerCount }, async (_, workerIndex) => {
+                for (let index = workerIndex; index < sessionsNeedingSidebarMeta.length; index += workerCount) {
+                  const session = sessionsNeedingSidebarMeta[index];
+                  try {
+                    const transcriptTarget = resolveTranscriptTarget(session);
+                    if (!transcriptTarget) continue;
+                    const transcriptData = await hostApiFetch<{ success: boolean; messages?: RawMessage[] }>(
+                      `/api/sessions/transcript?agentId=${encodeURIComponent(transcriptTarget.agentId)}&sessionId=${encodeURIComponent(transcriptTarget.sessionId)}`,
+                    );
+                    const msgs = Array.isArray(transcriptData.messages) ? transcriptData.messages : [];
+                    const firstUser = msgs.find((m) => m.role === 'user');
+                    const lastMsg = msgs[msgs.length - 1];
+                    set((s) => {
+                      const next: Partial<typeof s> = {};
+                      if (firstUser) {
+                        const labelText = sanitizeSessionLabelText(getMessageText(firstUser.content));
+                        if (labelText) {
+                          const truncated = labelText.length > 50 ? `${labelText.slice(0, 50)}…` : labelText;
+                          next.sessionLabels = { ...s.sessionLabels, [session.key]: truncated };
+                        }
                       }
-                    }
-                    if (lastMsg?.timestamp) {
-                      next.sessionLastActivity = { ...s.sessionLastActivity, [session.key]: toMs(lastMsg.timestamp) };
-                    }
-                    return next;
-                  });
-                } catch {
-                  // ignore per-session errors
+                      if (lastMsg?.timestamp) {
+                        next.sessionLastActivity = { ...s.sessionLastActivity, [session.key]: toMs(lastMsg.timestamp) };
+                      }
+                      return next;
+                    });
+                  } catch {
+                    // ignore per-session sidebar metadata errors
+                  } finally {
+                    _sessionSidebarMetaInFlight.delete(session.key);
+                  }
                 }
               }),
             );
@@ -1505,6 +1661,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
         });
       };
 
+      const currentSession = get().sessions.find((session) => session.key === currentSessionKey);
+      const transcriptTarget = currentSession ? resolveTranscriptTarget(currentSession) : null;
+      const loadTranscriptMessages = async (): Promise<RawMessage[] | null> => {
+        if (!transcriptTarget) return null;
+        try {
+          const transcriptData = await hostApiFetch<{ success: boolean; messages?: RawMessage[] }>(
+            `/api/sessions/transcript?agentId=${encodeURIComponent(transcriptTarget.agentId)}&sessionId=${encodeURIComponent(transcriptTarget.sessionId)}`,
+          );
+          if (!transcriptData.success) return null;
+          return Array.isArray(transcriptData.messages) ? transcriptData.messages : [];
+        } catch {
+          return null;
+        }
+      };
+
       const applyLoadedMessages = (rawMessages: RawMessage[], thinkingLevel: string | null) => {
       // Guard: if the user switched sessions while this async load was in
       // flight, discard the result to prevent overwriting the new session's
@@ -1549,7 +1720,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (!isMainSession) {
         const firstUserMsg = finalMessages.find((m) => m.role === 'user');
         if (firstUserMsg) {
-          const labelText = getMessageText(firstUserMsg.content).trim();
+          const labelText = sanitizeSessionLabelText(getMessageText(firstUserMsg.content));
           if (labelText) {
             const truncated = labelText.length > 50 ? `${labelText.slice(0, 50)}…` : labelText;
             set((s) => ({
@@ -1614,10 +1785,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
       };
 
+      const transcriptMessages = await loadTranscriptMessages();
+      if (transcriptMessages) {
+        applyLoadedMessages(transcriptMessages, null);
+        return;
+      }
+
       try {
         const data = await useGatewayStore.getState().rpc<Record<string, unknown>>(
           'chat.history',
           { sessionKey: currentSessionKey, limit: 200 },
+          ACTIVE_HISTORY_RPC_TIMEOUT_MS,
         );
         if (data) {
           let rawMessages = Array.isArray(data.messages) ? data.messages as RawMessage[] : [];
@@ -1625,37 +1803,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
           
           // Fallback: if RPC returned 0 messages but session has sessionId or sessionFile, read it directly
           if (rawMessages.length === 0) {
-            const currentSession = get().sessions.find(s => s.key === currentSessionKey);
-            
-            // Try sessionFile first (absolute path), then construct from sessionId
-            let agentId: string | undefined;
-            let sessionId: string | undefined;
-            
-            if (currentSession?.sessionFile) {
-              const match = currentSession.sessionFile.match(/agents[/\\]([^/\\]+)[/\\]sessions[/\\]([^/\\]+)\.jsonl$/);
-              if (match) {
-                [, agentId, sessionId] = match;
-              }
-            } else if (currentSession?.sessionId) {
-              // Extract agentId from session key: agent:main:box-im:... -> main
-              const keyParts = currentSessionKey.split(':');
-              if (keyParts.length >= 2 && keyParts[0] === 'agent') {
-                agentId = keyParts[1];
-              }
-              sessionId = currentSession.sessionId;
-            }
-            
-            if (agentId && sessionId) {
-              try {
-                const transcriptData = await hostApiFetch<{ success: boolean; messages?: RawMessage[] }>(
-                  `/api/sessions/transcript?agentId=${encodeURIComponent(agentId)}&sessionId=${encodeURIComponent(sessionId)}`,
-                );
-                if (transcriptData.success && transcriptData.messages) {
-                  rawMessages = transcriptData.messages;
-                }
-              } catch (err) {
-                console.warn('[loadHistory] Direct file read failed:', err);
-              }
+            const directMessages = await loadTranscriptMessages();
+            if (directMessages) {
+              rawMessages = directMessages;
             }
           }
           
@@ -1674,7 +1824,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
       } catch (err) {
         console.warn('[loadHistory] Failed to load chat history:', err);
-        const fallbackMessages = await loadCronFallbackMessages(currentSessionKey, 200);
+        let fallbackMessages: RawMessage[] = [];
+        const directMessages = await loadTranscriptMessages();
+        if (directMessages) {
+          fallbackMessages = directMessages;
+        }
+
+        if (fallbackMessages.length === 0) {
+          fallbackMessages = await loadCronFallbackMessages(currentSessionKey, 200);
+        }
+
         if (fallbackMessages.length > 0) {
           applyLoadedMessages(fallbackMessages, null);
         } else {
@@ -1750,7 +1909,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const { sessionLabels, messages } = get();
     const isFirstMessage = !messages.slice(0, -1).some((m) => m.role === 'user');
     if (!currentSessionKey.endsWith(':main') && isFirstMessage && !sessionLabels[currentSessionKey] && trimmed) {
-      const truncated = trimmed.length > 50 ? `${trimmed.slice(0, 50)}…` : trimmed;
+      const cleanLabel = sanitizeSessionLabelText(trimmed);
+      const truncated = cleanLabel.length > 50 ? `${cleanLabel.slice(0, 50)}…` : cleanLabel;
       set((s) => ({ sessionLabels: { ...s.sessionLabels, [currentSessionKey]: truncated } }));
     }
 
@@ -1787,6 +1947,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const state = get();
       if (!state.sending) return;
       if (state.streamingMessage || state.streamingText) return;
+      if (state.error) {
+        clearHistoryPoll();
+        clearErrorRecoveryTimer();
+        set({
+          sending: false,
+          activeRunId: null,
+          lastUserMessageAt: null,
+          pendingFinal: false,
+        });
+        void get().loadSessions();
+        return;
+      }
       if (state.pendingFinal) {
         setTimeout(checkStuck, 10_000);
         return;
@@ -1801,7 +1973,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
         sending: false,
         activeRunId: null,
         lastUserMessageAt: null,
+        pendingFinal: false,
       });
+      void get().loadSessions();
+      void get().loadHistory(true);
     };
     setTimeout(checkStuck, 30_000);
 

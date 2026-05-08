@@ -25,6 +25,7 @@ import {
   Loader2,
 } from 'lucide-react';
 import { resolveSessionAgentId } from '@/lib/session-agent';
+import { sanitizeSessionLabelText } from '@/lib/chat-display';
 import { cn } from '@/lib/utils';
 import { useSettingsStore } from '@/stores/settings';
 import { useChatStore, type ChatSession } from '@/stores/chat';
@@ -177,7 +178,10 @@ export function Sidebar() {
   const isOnChat = useLocation().pathname === '/';
 
   const getSessionLabel = useCallback(
-    (key: string, displayName?: string, label?: string) => sessionLabels[key] ?? label ?? displayName ?? key,
+    (key: string, displayName?: string, label?: string) => {
+      const raw = sessionLabels[key] ?? label ?? displayName ?? key;
+      return sanitizeSessionLabelText(raw) || key;
+    },
     [sessionLabels],
   );
 
