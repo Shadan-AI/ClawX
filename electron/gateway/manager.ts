@@ -115,6 +115,20 @@ export class GatewayManager extends EventEmitter {
   private static readonly HEARTBEAT_INTERVAL_MS = 30_000;
   private static readonly HEARTBEAT_TIMEOUT_MS = 12_000;
   private static readonly HEARTBEAT_MAX_MISSES = 3;
+
+  private syncDigitalEmployeeModelsAfterStart(): void {
+    void syncAllDigitalEmployeeModels()
+      .then((changed) => {
+        if (!changed || this.status.state !== 'running') {
+          return;
+        }
+        logger.info('Gateway startup synced digital employee models; scheduling hot reload');
+        this.debouncedReload(1200);
+      })
+      .catch((error) => {
+        logger.warn('Post-start digital employee model sync failed:', error);
+      });
+  }
   // Windows-specific heartbeat parameters — more lenient to reduce log noise
   // from false positives caused by Windows Defender scans, system updates,
   // and synchronous event-loop blocking in the gateway.
@@ -244,7 +258,6 @@ export class GatewayManager extends EventEmitter {
       // Normalize stale local model config before every gateway launch so a
       // gateway restart cannot resurrect deprecated model refs.
       await runConfigMigrations();
-      await syncAllDigitalEmployeeModels();
 
       await runGatewayStartupSequence({
         port: this.status.port,
@@ -282,6 +295,7 @@ export class GatewayManager extends EventEmitter {
           }
 
           this.startHealthCheck();
+          this.syncDigitalEmployeeModelsAfterStart();
         },
         waitForPortFree: async (port) => {
           await waitForPortFree(port);
@@ -300,6 +314,7 @@ export class GatewayManager extends EventEmitter {
         onConnectedToManagedGateway: () => {
           this.startHealthCheck();
           logger.debug('Gateway started successfully');
+          this.syncDigitalEmployeeModelsAfterStart();
         },
         runDoctorRepair: async () => await runOpenClawDoctorRepair(),
         onDoctorRepairSuccess: () => {

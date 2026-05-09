@@ -26,6 +26,28 @@ function normalizeValue(value: string | undefined | null): string {
   return (value ?? '').trim();
 }
 
+function resolveBoundAgentIdFromSessionKey(
+  sessionKey: string,
+  channelBindings: Record<string, string>,
+): string | null {
+  if (sessionKey.startsWith('box-im:')) {
+    const parts = sessionKey.split(':');
+    if (parts.length >= 2) {
+      const accountId = normalizeValue(parts[1]);
+      if (accountId) {
+        for (const key of buildChannelBindingLookupKeys('box-im', accountId)) {
+          const boundAgentId = normalizeAgentId(channelBindings[key]);
+          if (boundAgentId) {
+            return boundAgentId;
+          }
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
 export function getAgentIdFromSessionKey(sessionKey: string): string {
   if (sessionKey.startsWith('box-im:')) {
     const parts = sessionKey.split(':');
@@ -154,6 +176,10 @@ export function resolveSessionAgentIdByKey(
 ): string {
   const session = sessions.find((entry) => entry.key === sessionKey);
   if (!session) {
+    const boundAgentId = resolveBoundAgentIdFromSessionKey(sessionKey, channelBindings);
+    if (boundAgentId) {
+      return boundAgentId;
+    }
     return getAgentIdFromSessionKey(sessionKey);
   }
   return resolveSessionAgentId(session, channelBindings);

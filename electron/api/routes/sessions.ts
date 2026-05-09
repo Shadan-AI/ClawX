@@ -5,6 +5,7 @@ import type { HostApiContext } from '../context';
 import { parseJsonBody, sendJson } from '../route-utils';
 
 const SAFE_SESSION_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+const DANGLING_SESSION_PRUNE_AGE_MS = 10 * 60 * 1000;
 
 type LocalSessionIndexEntry = {
   key: string;
@@ -15,6 +16,18 @@ type LocalSessionIndexEntry = {
   updatedAt?: number;
   sessionId?: string;
   sessionFile?: string;
+};
+
+type TranscriptSidebarMeta = {
+  messageCount: number;
+  firstUserText?: string;
+  lastTimestamp?: number;
+};
+
+type PruneEmptySessionsResult = {
+  scanned: number;
+  removed: number;
+  failed: string[];
 };
 
 function stripUtf8Bom(raw: string): string {
@@ -80,7 +93,7 @@ async function repairSessionIndexFiles(): Promise<{ scanned: number; repaired: n
   let scanned = 0;
   let repaired = 0;
 
-  let agentEntries: Array<{ name: string; isDirectory(): boolean }> = [];
+  let agentEntries: Array<{ name: string; isDirectory(): boolean }>;
   try {
     agentEntries = (await fsP.readdir(agentsDir, { withFileTypes: true })) as Array<{ name: string; isDirectory(): boolean }>;
   } catch {
@@ -94,18 +107,25 @@ async function repairSessionIndexFiles(): Promise<{ scanned: number; repaired: n
     try {
       const raw = await fsP.readFile(sessionsJsonPath, 'utf8');
       scanned += 1;
+      let parsedJson: Record<string, unknown> | null = null;
+      let normalizedRaw = stripUtf8Bom(raw);
       try {
-        const normalizedRaw = stripUtf8Bom(raw);
-        JSON.parse(normalizedRaw);
-        if (normalizedRaw !== raw) {
-          await fsP.writeFile(sessionsJsonPath, normalizedRaw, 'utf8');
-          repaired += 1;
-        }
-        continue;
+        parsedJson = JSON.parse(normalizedRaw) as Record<string, unknown>;
       } catch {
         const repairedRaw = repairLikelyCorruptedJson(raw);
-        JSON.parse(repairedRaw);
-        await fsP.writeFile(sessionsJsonPath, repairedRaw, 'utf8');
+        normalizedRaw = repairedRaw;
+        parsedJson = JSON.parse(repairedRaw) as Record<string, unknown>;
+      }
+
+      if (!parsedJson) {
+        continue;
+      }
+
+      const sessionsDir = join(agentsDir, entry.name, 'sessions');
+      const { nextJson, removed } = await pruneDanglingSessionsJson(fsP, entry.name, sessionsDir, parsedJson);
+      const nextRaw = JSON.stringify(nextJson, null, 2);
+      if (nextRaw !== normalizedRaw || normalizedRaw !== raw || removed > 0) {
+        await fsP.writeFile(sessionsJsonPath, nextRaw, 'utf8');
         repaired += 1;
       }
     } catch (error) {
@@ -134,6 +154,119 @@ function coerceUpdatedAt(value: unknown): number | undefined {
     }
   }
   return undefined;
+}
+
+function getSessionKeyTail(sessionKey: string): string {
+  const parts = sessionKey.split(':');
+  return parts[parts.length - 1] || sessionKey;
+}
+
+function isGeneratedSessionIdentifier(value: string | undefined): boolean {
+  const trimmed = value?.trim();
+  if (!trimmed) return false;
+  return /^session-\d{8,}$/i.test(trimmed)
+    || /^[a-f0-9]{8}$/i.test(trimmed)
+    || /^[a-f0-9]{8}-[a-f0-9-]{27}$/i.test(trimmed);
+}
+
+function isMeaningfulSessionTitle(title: string | undefined, sessionKey: string): boolean {
+  const trimmed = title?.trim();
+  if (!trimmed || trimmed === sessionKey) {
+    return false;
+  }
+  const sessionTail = getSessionKeyTail(sessionKey);
+  if (trimmed === sessionTail) {
+    return false;
+  }
+  return !isGeneratedSessionIdentifier(trimmed);
+}
+
+function extractTranscriptText(content: unknown): string {
+  if (typeof content === 'string') {
+    return content.trim();
+  }
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === 'string') {
+          return part;
+        }
+        if (part && typeof part === 'object' && 'text' in part && typeof (part as { text?: unknown }).text === 'string') {
+          return (part as { text: string }).text;
+        }
+        return '';
+      })
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+  if (content && typeof content === 'object' && 'text' in content && typeof (content as { text?: unknown }).text === 'string') {
+    return (content as { text: string }).text.trim();
+  }
+  return '';
+}
+
+async function readTranscriptSidebarMeta(
+  fsP: typeof import('node:fs/promises'),
+  sessionFile: string | undefined,
+): Promise<TranscriptSidebarMeta | null> {
+  if (!sessionFile) {
+    return null;
+  }
+  try {
+    const raw = await fsP.readFile(sessionFile, 'utf8');
+    const lines = raw.split(/\r?\n/).filter(Boolean);
+    let messageCount = 0;
+    let firstUserText: string | undefined;
+    let lastTimestamp: number | undefined;
+
+    for (const line of lines) {
+      try {
+        const entry = JSON.parse(line) as { type?: string; message?: Record<string, unknown> };
+        if (entry.type !== 'message' || !entry.message || typeof entry.message !== 'object') {
+          continue;
+        }
+        messageCount += 1;
+        const timestamp = coerceUpdatedAt(entry.message.timestamp);
+        if (typeof timestamp === 'number') {
+          lastTimestamp = Math.max(lastTimestamp ?? 0, timestamp);
+        }
+        if (!firstUserText && entry.message.role === 'user') {
+          const text = extractTranscriptText(entry.message.content);
+          if (text) {
+            firstUserText = text;
+          }
+        }
+      } catch {
+        // Ignore malformed transcript lines.
+      }
+    }
+
+    return { messageCount, firstUserText, lastTimestamp };
+  } catch {
+    return null;
+  }
+}
+
+async function shouldPruneEmptyTranscriptSessionEntry(
+  fsP: typeof import('node:fs/promises'),
+  session: LocalSessionIndexEntry,
+): Promise<boolean> {
+  if (session.key.endsWith(':main')) {
+    return false;
+  }
+
+  const updatedAt = session.updatedAt ?? 0;
+  if (!updatedAt || Date.now() - updatedAt < DANGLING_SESSION_PRUNE_AGE_MS) {
+    return false;
+  }
+
+  if (!session.sessionFile) {
+    return true;
+  }
+
+  const transcriptMeta = await readTranscriptSidebarMeta(fsP, session.sessionFile);
+  return (transcriptMeta?.messageCount ?? 0) <= 0;
 }
 
 function resolveLocalSessionEntry(
@@ -173,12 +306,166 @@ function resolveLocalSessionEntry(
   };
 }
 
+async function shouldPruneDanglingSessionEntry(
+  fsP: typeof import('node:fs/promises'),
+  session: LocalSessionIndexEntry,
+): Promise<boolean> {
+  if (await shouldPruneEmptyTranscriptSessionEntry(fsP, session)) {
+    return true;
+  }
+
+  if (session.key.endsWith(':main')) {
+    return false;
+  }
+
+  const hasMeaningfulTitle = [
+    session.label,
+    session.displayName,
+  ].some((candidate) => isMeaningfulSessionTitle(candidate, session.key));
+  if (hasMeaningfulTitle) {
+    return false;
+  }
+
+  const sessionTail = getSessionKeyTail(session.key);
+  if (!isGeneratedSessionIdentifier(sessionTail)) {
+    return false;
+  }
+
+  const updatedAt = session.updatedAt ?? 0;
+  if (!updatedAt || Date.now() - updatedAt < DANGLING_SESSION_PRUNE_AGE_MS) {
+    return false;
+  }
+
+  if (!session.sessionFile) {
+    return true;
+  }
+
+  try {
+    await fsP.access(session.sessionFile);
+    const transcriptMeta = await readTranscriptSidebarMeta(fsP, session.sessionFile);
+    return (transcriptMeta?.messageCount ?? 0) <= 0;
+  } catch {
+    return true;
+  }
+}
+
+async function pruneDanglingSessionsJson(
+  fsP: typeof import('node:fs/promises'),
+  agentId: string,
+  sessionsDir: string,
+  json: Record<string, unknown>,
+): Promise<{ nextJson: Record<string, unknown>; removed: number }> {
+  if (Array.isArray(json.sessions)) {
+    const kept: Array<Record<string, unknown>> = [];
+    let removed = 0;
+    for (const item of json.sessions as Array<Record<string, unknown>>) {
+      const sessionKey = coerceNonEmptyString(item.key) ?? coerceNonEmptyString(item.sessionKey);
+      if (!sessionKey) {
+        kept.push(item);
+        continue;
+      }
+      const normalized = resolveLocalSessionEntry(agentId, sessionKey, item, sessionsDir);
+      if (normalized && await shouldPruneDanglingSessionEntry(fsP, normalized)) {
+        removed += 1;
+        continue;
+      }
+      kept.push(item);
+    }
+    return {
+      nextJson: { ...json, sessions: kept },
+      removed,
+    };
+  }
+
+  const nextJson: Record<string, unknown> = {};
+  let removed = 0;
+  for (const [sessionKey, value] of Object.entries(json)) {
+    const normalized = resolveLocalSessionEntry(agentId, sessionKey, value, sessionsDir);
+    if (normalized && await shouldPruneDanglingSessionEntry(fsP, normalized)) {
+      removed += 1;
+      continue;
+    }
+    nextJson[sessionKey] = value;
+  }
+
+  return { nextJson, removed };
+}
+
+async function pruneEmptySessionEntries(): Promise<PruneEmptySessionsResult> {
+  const fsP = await import('node:fs/promises');
+  const agentsDir = join(getOpenClawConfigDir(), 'agents');
+  const failed: string[] = [];
+  let scanned = 0;
+  let removed = 0;
+
+  let agentEntries: Array<{ name: string; isDirectory(): boolean }>;
+  try {
+    agentEntries = (await fsP.readdir(agentsDir, { withFileTypes: true })) as Array<{ name: string; isDirectory(): boolean }>;
+  } catch {
+    return { scanned, removed, failed };
+  }
+
+  for (const entry of agentEntries) {
+    if (!entry.isDirectory()) continue;
+
+    const sessionsDir = join(agentsDir, entry.name, 'sessions');
+    const sessionsJsonPath = join(sessionsDir, 'sessions.json');
+    scanned += 1;
+
+    try {
+      const raw = stripUtf8Bom(await fsP.readFile(sessionsJsonPath, 'utf8'));
+      const json = JSON.parse(raw) as Record<string, unknown>;
+      const nextJson: Record<string, unknown> = Array.isArray(json.sessions) ? { ...json, sessions: [] } : {};
+      let localRemoved = 0;
+
+      if (Array.isArray(json.sessions)) {
+        const kept: Array<Record<string, unknown>> = [];
+        for (const item of json.sessions as Array<Record<string, unknown>>) {
+          const sessionKey = coerceNonEmptyString(item.key) ?? coerceNonEmptyString(item.sessionKey);
+          if (!sessionKey) {
+            kept.push(item);
+            continue;
+          }
+          const normalized = resolveLocalSessionEntry(entry.name, sessionKey, item, sessionsDir);
+          if (normalized && await shouldPruneEmptyTranscriptSessionEntry(fsP, normalized)) {
+            localRemoved += 1;
+            continue;
+          }
+          kept.push(item);
+        }
+        nextJson.sessions = kept;
+      } else {
+        for (const [sessionKey, value] of Object.entries(json)) {
+          const normalized = resolveLocalSessionEntry(entry.name, sessionKey, value, sessionsDir);
+          if (normalized && await shouldPruneEmptyTranscriptSessionEntry(fsP, normalized)) {
+            localRemoved += 1;
+            continue;
+          }
+          nextJson[sessionKey] = value;
+        }
+      }
+
+      if (localRemoved > 0) {
+        await fsP.writeFile(sessionsJsonPath, JSON.stringify(nextJson, null, 2), 'utf8');
+        removed += localRemoved;
+      }
+    } catch (error) {
+      if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') {
+        continue;
+      }
+      failed.push(sessionsJsonPath);
+    }
+  }
+
+  return { scanned, removed, failed };
+}
+
 async function listLocalSessionIndexes(): Promise<LocalSessionIndexEntry[]> {
   const fsP = await import('node:fs/promises');
   const agentsDir = join(getOpenClawConfigDir(), 'agents');
   const sessions: LocalSessionIndexEntry[] = [];
 
-  let agentEntries: Array<{ name: string; isDirectory(): boolean }> = [];
+  let agentEntries: Array<{ name: string; isDirectory(): boolean }>;
   try {
     agentEntries = (await fsP.readdir(agentsDir, { withFileTypes: true })) as Array<{ name: string; isDirectory(): boolean }>;
   } catch {
@@ -224,9 +511,42 @@ async function listLocalSessionIndexes(): Promise<LocalSessionIndexEntry[]> {
     }
   }
 
-  return sessions
-    .filter((session) => !session.sessionFile || !session.sessionFile.endsWith('.deleted.jsonl'))
-    .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+  for (const session of sessions) {
+    if (!session.sessionFile) continue;
+
+    const shouldPreferTranscriptTitle = !session.key.endsWith(':main');
+    const needsTitle = shouldPreferTranscriptTitle
+      || !isMeaningfulSessionTitle(session.displayName ?? session.label, session.key);
+    const needsTimestamp = !session.updatedAt;
+    if (!needsTitle && !needsTimestamp) continue;
+
+    const transcriptMeta = await readTranscriptSidebarMeta(fsP, session.sessionFile);
+    if (!transcriptMeta) continue;
+
+    if (transcriptMeta.firstUserText && shouldPreferTranscriptTitle) {
+      const compactTitle = transcriptMeta.firstUserText.replace(/\s+/g, ' ').trim();
+      session.displayName = compactTitle.length > 50 ? `${compactTitle.slice(0, 50)}...` : compactTitle;
+    } else if (needsTitle && transcriptMeta.firstUserText) {
+      const compactTitle = transcriptMeta.firstUserText.replace(/\s+/g, ' ').trim();
+      session.displayName = compactTitle.length > 50 ? `${compactTitle.slice(0, 50)}...` : compactTitle;
+    }
+    if (needsTimestamp && transcriptMeta.lastTimestamp) {
+      session.updatedAt = transcriptMeta.lastTimestamp;
+    }
+  }
+
+  const visibleSessions: LocalSessionIndexEntry[] = [];
+  for (const session of sessions) {
+    if (session.sessionFile && session.sessionFile.endsWith('.deleted.jsonl')) {
+      continue;
+    }
+    if (await shouldPruneDanglingSessionEntry(fsP, session)) {
+      continue;
+    }
+    visibleSessions.push(session);
+  }
+
+  return visibleSessions.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
 }
 
 export async function handleSessionRoutes(
@@ -286,6 +606,16 @@ export async function handleSessionRoutes(
     try {
       const sessions = await listLocalSessionIndexes();
       sendJson(res, 200, { success: true, sessions });
+    } catch (error) {
+      sendJson(res, 500, { success: false, error: String(error) });
+    }
+    return true;
+  }
+
+  if (url.pathname === '/api/sessions/prune-empty' && req.method === 'POST') {
+    try {
+      const result = await pruneEmptySessionEntries();
+      sendJson(res, 200, { success: true, ...result });
     } catch (error) {
       sendJson(res, 500, { success: false, error: String(error) });
     }

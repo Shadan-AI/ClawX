@@ -33,6 +33,7 @@ import { useGatewayStore } from '@/stores/gateway';
 import { useAgentsStore } from '@/stores/agents';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Checkbox } from '@/components/ui/checkbox';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { hostApiFetch } from '@/lib/host-api';
 import { useTranslation } from 'react-i18next';
@@ -136,7 +137,63 @@ function isUnusedDraftSession(
     && !sessionLabels[sessionKey];
 }
 
+function getSessionKeyTail(sessionKey: string): string {
+  const parts = sessionKey.split(':');
+  return parts[parts.length - 1] || sessionKey;
+}
+
+function isGeneratedSessionIdentifier(value: string | undefined): boolean {
+  const trimmed = value?.trim();
+  if (!trimmed) return false;
+  return /^session-\d{8,}$/i.test(trimmed)
+    || /^[a-f0-9]{8}$/i.test(trimmed)
+    || /^[a-f0-9]{8}-[a-f0-9-]{27}$/i.test(trimmed);
+}
+
+function isMeaningfulSessionTitle(title: string | undefined, sessionKey: string): boolean {
+  const trimmed = title?.trim();
+  if (!trimmed || trimmed === sessionKey) {
+    return false;
+  }
+
+  const sessionTail = getSessionKeyTail(sessionKey);
+  if (trimmed === sessionTail) {
+    return false;
+  }
+
+  return !isGeneratedSessionIdentifier(trimmed);
+}
+
 const INITIAL_NOW_MS = Date.now();
+
+function getSafeDisplaySessionLabel(
+  sessionKey: string,
+  rawTitle: string | undefined,
+): string {
+  const sanitized = rawTitle ? sanitizeSessionLabelText(rawTitle) : '';
+  if (isMeaningfulSessionTitle(sanitized, sessionKey)) {
+    return sanitized;
+  }
+  return sessionKey.endsWith(':main') ? '\u65b0\u5bf9\u8bdd' : '\u672a\u547d\u540d\u5bf9\u8bdd';
+}
+
+function getPreferredDisplaySessionLabel(
+  sessionKey: string,
+  ...candidates: Array<string | undefined>
+): string {
+  for (const candidate of candidates) {
+    const sanitized = candidate ? sanitizeSessionLabelText(candidate) : '';
+    if (isMeaningfulSessionTitle(sanitized, sessionKey)) {
+      return sanitized;
+    }
+  }
+  return getSafeDisplaySessionLabel(sessionKey, undefined);
+}
+
+function isRawBotSessionLabel(value: string | undefined): boolean {
+  const trimmed = value?.trim();
+  return Boolean(trimmed && /^bot-[a-z0-9]+$/i.test(trimmed));
+}
 
 export function Sidebar() {
   const sidebarCollapsed = useSettingsStore((state) => state.sidebarCollapsed);
@@ -178,9 +235,17 @@ export function Sidebar() {
   const isOnChat = useLocation().pathname === '/';
 
   const getSessionLabel = useCallback(
-    (key: string, displayName?: string, label?: string) => {
-      const raw = sessionLabels[key] ?? label ?? displayName ?? key;
-      return sanitizeSessionLabelText(raw) || key;
+    (session: ChatSession, agentName?: string) => {
+      const resolvedLabel = getPreferredDisplaySessionLabel(
+        session.key,
+        sessionLabels[session.key],
+        session.label,
+        session.displayName,
+      );
+      if (isRawBotSessionLabel(resolvedLabel) && agentName) {
+        return agentName;
+      }
+      return resolvedLabel;
     },
     [sessionLabels],
   );
@@ -209,10 +274,14 @@ export function Sidebar() {
 
   const { t } = useTranslation(['common', 'chat']);
   const [sessionToDelete, setSessionToDelete] = useState<{ key: string; label: string } | null>(null);
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
   const [sessionToRename, setSessionToRename] = useState<{ key: string; label: string } | null>(null);
   const [renameInput, setRenameInput] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [nowMs, setNowMs] = useState(INITIAL_NOW_MS);
+  const [isManageMode, setIsManageMode] = useState(false);
+  const [selectedSessionKeys, setSelectedSessionKeys] = useState<string[]>([]);
+  const [isPruningEmpty, setIsPruningEmpty] = useState(false);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -242,19 +311,23 @@ export function Sidebar() {
     });
   }, [sessions, searchQuery, agentNameById, getAgentIdFromSession, getSessionLabel]);
 
-  const sortedFilteredSessions = useMemo(
-    () =>
-      [...filteredSessions].sort((a, b) => {
-        const activityDiff = getSessionActivityMs(b, sessionLastActivity) - getSessionActivityMs(a, sessionLastActivity);
-        if (activityDiff !== 0) return activityDiff;
+  useEffect(() => {
+    setSelectedSessionKeys((current) => current.filter((key) => sessions.some((session) => session.key === key)));
+  }, [sessions]);
 
-        const updatedAtDiff = (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
-        if (updatedAtDiff !== 0) return updatedAtDiff;
-
-        return b.key.localeCompare(a.key);
-      }),
-    [filteredSessions, sessionLastActivity],
+  const selectedSessionKeySet = useMemo(
+    () => new Set(selectedSessionKeys),
+    [selectedSessionKeys],
   );
+  const selectableSessions = useMemo(
+    () => filteredSessions,
+    [filteredSessions],
+  );
+  const allSelectableChecked = selectableSessions.length > 0
+    && selectableSessions.every((session) => selectedSessionKeySet.has(session.key));
+  const hasSelectedSessions = selectedSessionKeys.length > 0;
+
+  const sortedFilteredSessions = filteredSessions;
 
   const sessionBuckets: Array<{ key: SessionBucketKey; label: string; sessions: typeof sessions }> = [
     { key: 'today', label: t('chat:historyBuckets.today'), sessions: [] },
@@ -290,6 +363,51 @@ export function Sidebar() {
       console.error('Failed to rename session:', err);
     }
   };
+
+  const toggleSessionSelection = useCallback((sessionKey: string, checked: boolean) => {
+    setSelectedSessionKeys((current) => {
+      if (checked) {
+        return current.includes(sessionKey) ? current : [...current, sessionKey];
+      }
+      return current.filter((key) => key !== sessionKey);
+    });
+  }, []);
+
+  const toggleSelectAllVisible = useCallback((checked: boolean) => {
+    if (!checked) {
+      setSelectedSessionKeys([]);
+      return;
+    }
+    setSelectedSessionKeys(selectableSessions.map((session) => session.key));
+  }, [selectableSessions]);
+
+  const handleBulkDelete = useCallback(async () => {
+    const deleteTargets = sessions.filter((session) => selectedSessionKeys.includes(session.key));
+    for (const session of deleteTargets) {
+      await deleteSession(session.key);
+    }
+    if (selectedSessionKeys.includes(currentSessionKey)) {
+      navigate('/');
+    }
+    setSelectedSessionKeys([]);
+    setIsManageMode(false);
+    setBulkDeleteOpen(false);
+  }, [currentSessionKey, deleteSession, navigate, selectedSessionKeys, sessions]);
+
+  const handlePruneEmptySessions = useCallback(async () => {
+    setIsPruningEmpty(true);
+    try {
+      await hostApiFetch('/api/sessions/prune-empty', { method: 'POST' });
+      await loadSessions();
+      await loadChannelBindings();
+      await loadHistory(useChatStore.getState().messages.length > 0);
+      setSelectedSessionKeys([]);
+    } catch (error) {
+      console.error('Failed to prune empty sessions:', error);
+    } finally {
+      setIsPruningEmpty(false);
+    }
+  }, [loadChannelBindings, loadHistory, loadSessions]);
 
   const navItems = [
     { to: '/models', icon: <Cpu className="h-[18px] w-[18px]" strokeWidth={2} />, label: t('sidebar.models'), testId: 'sidebar-nav-models' },
@@ -396,6 +514,91 @@ export function Sidebar() {
             )}
           </div>
 
+          <div className="mb-2 rounded-xl border border-black/5 bg-white/55 p-1.5 shadow-[0_1px_0_rgba(0,0,0,0.03)] dark:border-white/8 dark:bg-white/5">
+            <div className="mb-1 px-1.5 text-[11px] font-medium tracking-tight text-foreground/55">
+              {'\u4f1a\u8bdd\u5de5\u5177'}
+            </div>
+            <div className="grid grid-cols-2 gap-1.5">
+              <Button
+                variant={isManageMode ? 'secondary' : 'outline'}
+                size="sm"
+                className={cn(
+                  'h-9 justify-start rounded-lg border-0 px-2.5 text-[12px] shadow-none',
+                  isManageMode
+                    ? 'bg-foreground text-background hover:bg-foreground/90'
+                    : 'bg-black/[0.035] text-foreground/85 hover:bg-black/[0.06] dark:bg-white/[0.06] dark:hover:bg-white/[0.1]',
+                )}
+                onClick={() => {
+                  setIsManageMode((current) => {
+                    const next = !current;
+                    if (!next) {
+                      setSelectedSessionKeys([]);
+                    }
+                    return next;
+                  });
+                }}
+              >
+                <Edit2 className="mr-1.5 h-3.5 w-3.5 shrink-0" />
+                {isManageMode ? '\u5b8c\u6210\u7ba1\u7406' : '\u6279\u91cf\u7ba1\u7406'}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className={cn(
+                  'h-9 justify-start rounded-lg border-0 px-2.5 text-[12px] shadow-none',
+                  isPruningEmpty
+                    ? 'bg-amber-50 text-amber-700 hover:bg-amber-50 dark:bg-amber-500/10 dark:text-amber-300'
+                    : 'bg-[#efe8da] text-foreground/85 hover:bg-[#e8dfce] dark:bg-[#3a3427] dark:text-foreground dark:hover:bg-[#453d2d]',
+                )}
+                disabled={isPruningEmpty}
+                onClick={() => void handlePruneEmptySessions()}
+              >
+                {isPruningEmpty ? (
+                  <Loader2 className="mr-1.5 h-3.5 w-3.5 shrink-0 animate-spin" />
+                ) : (
+                  <Trash2 className="mr-1.5 h-3.5 w-3.5 shrink-0" />
+                )}
+                {isPruningEmpty ? '\u6e05\u7406\u4e2d' : '\u6e05\u7406\u7a7a\u4f1a\u8bdd'}
+              </Button>
+            </div>
+          </div>
+
+          {isManageMode && (
+            <div className="mb-2 rounded-lg border border-border/70 bg-background/50 px-2 py-2">
+              <div className="flex items-center justify-between gap-2">
+                <label className="flex items-center gap-2 text-[12px] text-foreground/80">
+                  <Checkbox
+                    checked={allSelectableChecked}
+                    onCheckedChange={toggleSelectAllVisible}
+                    disabled={selectableSessions.length === 0}
+                  />
+                  <span>{'\u5168\u9009\u5f53\u524d\u5217\u8868'}</span>
+                </label>
+                <span className="text-[12px] text-muted-foreground">{'\u5df2\u9009'} {selectedSessionKeys.length}</span>
+              </div>
+              <div className="mt-2 flex items-center gap-1.5">
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  className="h-7 px-2 text-[12px]"
+                  disabled={!hasSelectedSessions}
+                  onClick={() => setBulkDeleteOpen(true)}
+                >
+                  {'\u6279\u91cf\u5220\u9664'}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 px-2 text-[12px]"
+                  disabled={!hasSelectedSessions}
+                  onClick={() => setSelectedSessionKeys([])}
+                >
+                  {'\u6e05\u7a7a\u9009\u62e9'}
+                </Button>
+              </div>
+            </div>
+          )}
+
           {/* Sessions list */}
           <div className="flex-1 overflow-y-auto overflow-x-hidden space-y-0.5">
             {filteredSessions.length === 0 ? (
@@ -413,6 +616,8 @@ export function Sidebar() {
                       const agentId = getAgentIdFromSession(s);
                       const agentName = agentNameById[agentId] || agentId;
                       const isRenaming = sessionToRename?.key === s.key;
+                      const isSelected = selectedSessionKeySet.has(s.key);
+                      const canSelect = true;
                       
                       return (
                         <div key={s.key} className="group relative flex items-center">
@@ -451,33 +656,54 @@ export function Sidebar() {
                             </div>
                           ) : (
                             <>
+                              {isManageMode && (
+                                <div className="absolute left-2 z-10">
+                                  <Checkbox
+                                    checked={isSelected}
+                                    onCheckedChange={(checked) => toggleSessionSelection(s.key, checked)}
+                                  />
+                                </div>
+                              )}
                               <button
-                                onClick={() => { switchSession(s.key); navigate('/'); }}
+                                onClick={() => {
+                                  if (isManageMode) {
+                                    if (canSelect) {
+                                      toggleSessionSelection(s.key, !isSelected);
+                                    }
+                                    return;
+                                  }
+                                  switchSession(s.key);
+                                  if (!isOnChat) {
+                                    navigate('/');
+                                  }
+                                }}
                                 className={cn(
                                   'w-full text-left rounded-lg px-2.5 py-1.5 text-[13px] transition-colors pr-14',
                                   'hover:bg-black/5 dark:hover:bg-white/5',
                                   isOnChat && currentSessionKey === s.key
                                     ? 'bg-black/5 dark:bg-white/10 text-foreground font-medium'
                                     : 'text-foreground/75',
+                                  isManageMode && 'pl-8',
                                 )}
                               >
                                 <div className="flex min-w-0 items-center gap-2">
                                   <span className="shrink-0 rounded-full bg-black/[0.04] px-2 py-0.5 text-[10px] font-medium text-foreground/70 dark:bg-white/[0.08]">
                                     {agentName}
                                   </span>
-                                  <span className="truncate">{getSessionLabel(s.key, s.displayName, s.label)}</span>
+                                  <span className="truncate">{getSessionLabel(s, agentName)}</span>
                                 </div>
                               </button>
-                              <div className="absolute right-1 flex items-center gap-0.5 opacity-0 group-hover:opacity-100">
+                              {!isManageMode && (
+                                <div className="absolute right-1 flex items-center gap-0.5 opacity-0 group-hover:opacity-100">
                                 <button
                                   aria-label="Rename session"
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     setSessionToRename({
                                       key: s.key,
-                                      label: getSessionLabel(s.key, s.displayName, s.label),
+                                      label: getSessionLabel(s, agentName),
                                     });
-                                    setRenameInput(getSessionLabel(s.key, s.displayName, s.label));
+                                    setRenameInput(getSessionLabel(s, agentName));
                                   }}
                                   className={cn(
                                     'flex items-center justify-center rounded p-0.5 transition-colors',
@@ -492,7 +718,7 @@ export function Sidebar() {
                                     e.stopPropagation();
                                     setSessionToDelete({
                                       key: s.key,
-                                      label: getSessionLabel(s.key, s.displayName, s.label),
+                                      label: getSessionLabel(s, agentName),
                                     });
                                   }}
                                   className={cn(
@@ -502,7 +728,8 @@ export function Sidebar() {
                                 >
                                   <Trash2 className="h-3.5 w-3.5" />
                                 </button>
-                              </div>
+                                </div>
+                              )}
                             </>
                           )}
                         </div>
@@ -610,6 +837,16 @@ export function Sidebar() {
           setSessionToDelete(null);
         }}
         onCancel={() => setSessionToDelete(null)}
+      />
+      <ConfirmDialog
+        open={bulkDeleteOpen}
+        title="批量删除会话"
+        message={`确定删除已选中的 ${selectedSessionKeys.length} 个会话吗？`}
+        confirmLabel={t('common:actions.delete')}
+        cancelLabel={t('common:actions.cancel')}
+        variant="destructive"
+        onConfirm={handleBulkDelete}
+        onCancel={() => setBulkDeleteOpen(false)}
       />
     </aside>
   );

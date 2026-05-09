@@ -239,13 +239,12 @@ function handleGatewayNotification(notification: { method?: string; params?: Rec
         if (matchesCurrentSession || matchesActiveRun) {
           maybeLoadHistory(state);
         }
-        if ((matchesCurrentSession || matchesActiveRun) && state.sending) {
-          useChatStore.setState({
-            sending: false,
-            activeRunId: null,
-            pendingFinal: false,
-            lastUserMessageAt: null,
-            error: null,
+
+        if (resolvedSessionKey != null || runId != null) {
+          state.handleChatEvent({
+            state: 'final',
+            runId,
+            sessionKey: resolvedSessionKey ?? undefined,
           });
         }
       })

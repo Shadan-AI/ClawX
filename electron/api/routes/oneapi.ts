@@ -482,13 +482,13 @@ export async function handleOneApiRoutes(
 
     const body = await parseJsonBody<OneApiRechargeRequest>(req);
     const amount = coerceNumber(body.amount);
-    const amountYuan = amount === null ? null : Math.round(amount);
-    if (amountYuan === null || !Number.isInteger(amountYuan) || amountYuan <= 0) {
+    const amountYuan = amount === null ? null : Math.round(amount * 100) / 100;
+    const amountCents = amountYuan === null ? null : Math.round(amountYuan * 100);
+    if (amountYuan === null || amountCents === null || amountCents < 1) {
       sendJson(res, 400, { success: false, error: '请选择有效的充值金额' });
       return true;
     }
 
-    const amountCents = amountYuan * 100;
     const quota = amountCents * 5000;
 
     try {
@@ -502,7 +502,7 @@ export async function handleOneApiRoutes(
           authToken: tokenKey,
           body: {
             userId: String(ownerUserId),
-            packageId: `oneapi-topup-${amountYuan}`,
+            packageId: `oneapi-topup-${amountCents}`,
             packageName: tokenKey,
             tokenAmount: quota,
             bonusAmount: 0,

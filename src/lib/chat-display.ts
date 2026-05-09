@@ -4,18 +4,19 @@ export function stripGatewayMetadataText(text: string): string {
   // Some failed tool executions were echoed back into the next user message
   // before the real sender metadata block. Drop that prefix if present.
   result = result.replace(
-    /^System:\s*\[[^\]]+\][\s\S]*?\n\n(?=(?:Conversation info|Sender)\s*\([^)]*\):)/i,
+    /^System:\s*\[[^\]]+\][\s\S]*?\n\n(?=\s*(?:Conversation info|Sender)\s*\([^)]*\):)/i,
     '',
   );
 
   // Strip repeated Gateway metadata blocks injected ahead of the real user text.
-  const metadataCodeBlockPattern = /^(?:Conversation info|Sender)\s*\([^)]*\):\s*```[a-z]*\n[\s\S]*?```\s*/i;
-  const metadataInlinePattern = /^(?:Conversation info|Sender)\s*\([^)]*\):\s*\{[\s\S]*?\}\s*/i;
+  const metadataCodeBlockPattern = /^\s*(?:Conversation info|Sender)\s*\([^)]*\):\s*```[a-z]*\n[\s\S]*?```\s*/i;
+  const metadataInlinePattern = /^\s*(?:Conversation info|Sender)\s*\([^)]*\):\s*\{[\s\S]*?\}\s*/i;
 
   let changed = true;
   while (changed) {
     changed = false;
     const next = result
+      .trimStart()
       .replace(metadataCodeBlockPattern, '')
       .replace(metadataInlinePattern, '');
     if (next !== result) {

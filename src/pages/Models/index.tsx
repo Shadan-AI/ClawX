@@ -11,6 +11,7 @@ import {
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { cn } from '@/lib/utils';
 import { useGatewayStore } from '@/stores/gateway';
 import { useSettingsStore } from '@/stores/settings';
 import { hostApiFetch } from '@/lib/host-api';
@@ -135,6 +136,20 @@ function formatQuotaMetric(value: number | null): string {
   return Intl.NumberFormat().format(Math.max(Math.round(value), 0));
 }
 
+function formatRechargeAmount(value: number): string {
+  if (!Number.isFinite(value)) return '0.00';
+  return value.toFixed(2);
+}
+
+function parseRechargeAmountInput(value: string): number | null {
+  const normalized = value.trim().replace(/[^\d.]/g, '');
+  if (!normalized) return null;
+  if (!/^\d+(\.\d{0,2})?$/.test(normalized)) return null;
+  const parsed = Number(normalized);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return Math.round(parsed * 100) / 100;
+}
+
 function buildRechargeUrl(_summary?: OneApiAccountSummary, _amount?: number): string | null {
   return null;
 }
@@ -183,6 +198,7 @@ export function Models() {
   const [redeeming, setRedeeming] = useState(false);
   const [rechargeDialogOpen, setRechargeDialogOpen] = useState(false);
   const [rechargeAmount, setRechargeAmount] = useState<number>(50);
+  const [customRechargeAmount, setCustomRechargeAmount] = useState('');
   const [rechargeLoading, setRechargeLoading] = useState(false);
   const [rechargeOrder, setRechargeOrder] = useState<RechargeOrderResponse | null>(null);
 
@@ -460,6 +476,7 @@ export function Models() {
       toast.error('当前账号暂时无法使用充值');
       return;
     }
+    setCustomRechargeAmount('');
     setRechargeOrder(null);
     setRechargeDialogOpen(true);
   };
@@ -470,11 +487,18 @@ export function Models() {
       return;
     }
 
+    const customAmount = parseRechargeAmountInput(customRechargeAmount);
+    const finalAmount = customRechargeAmount.trim() ? customAmount : rechargeAmount;
+    if (finalAmount === null || finalAmount < 0.01) {
+      toast.error('请输入有效金额，最小支持 0.01 元');
+      return;
+    }
+
     setRechargeLoading(true);
     try {
       const result = await hostApiFetch<RechargeOrderResponse>('/api/oneapi/recharge-order', {
         method: 'POST',
-        body: JSON.stringify({ amount: rechargeAmount }),
+        body: JSON.stringify({ amount: finalAmount }),
       });
       if (!result.success) {
         throw new Error('微信充值失败');
@@ -548,7 +572,7 @@ export function Models() {
   const usedLabel = accountSummary?.displayInCurrency ? '已用金额' : '已用额度';
   const totalLabel = accountSummary?.displayInCurrency ? '总额度' : '总额度';
   const accountErrorMessage = normalizeAccountError(accountSummary);
-  const rechargeAmountOptions = [10, 20, 50, 100, 200, 500];
+  const rechargeAmountOptions = [0.01, 1, 10, 20, 50, 100];
 
   return (
     <div data-testid="models-page" className="flex flex-col -m-6 h-[calc(100vh-2.5rem)] overflow-hidden dark:bg-background">
@@ -928,11 +952,14 @@ export function Models() {
           amount={rechargeAmount}
           amountOptions={rechargeAmountOptions}
           onAmountChange={setRechargeAmount}
+          customAmount={customRechargeAmount}
+          onCustomAmountChange={setCustomRechargeAmount}
           loading={rechargeLoading}
           order={rechargeOrder}
           onClose={() => {
             setRechargeDialogOpen(false);
             setRechargeOrder(null);
+            setCustomRechargeAmount('');
           }}
           onConfirm={() => void startWechatRecharge()}
           onBack={() => {
@@ -1101,7 +1128,7 @@ function UsageContentPopup({
   );
 }
 
-function RechargePopup({
+function _LegacyRechargePopup({
   amount,
   amountOptions,
   onAmountChange,
@@ -1218,6 +1245,182 @@ function RechargePopup({
               <div className="flex-1 rounded-2xl border border-black/10 bg-background/60 px-4 py-3 dark:border-white/10">
                 <p className="text-[12px] text-muted-foreground">支付说明</p>
                 <p className="mt-1 text-sm text-foreground">使用微信扫一扫完成付款，支付成功后再回到这里刷新余额。</p>
+              </div>
+            </div>
+
+            <div className="flex justify-between gap-2">
+              <Button variant="outline" onClick={onBack} className="rounded-2xl">
+                更换金额
+              </Button>
+              <div className="flex gap-2">
+                <Button variant="outline" onClick={onOpenExternal} className="rounded-2xl">
+                  <ExternalLink className="mr-1.5 h-4 w-4" />
+                  浏览器打开
+                </Button>
+                <Button onClick={onClose} className="rounded-2xl">
+                  完成
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function RechargePopup({
+  amount,
+  amountOptions,
+  onAmountChange,
+  customAmount,
+  onCustomAmountChange,
+  loading,
+  order,
+  onConfirm,
+  onBack,
+  onOpenExternal,
+  onClose,
+}: {
+  amount: number;
+  amountOptions: number[];
+  onAmountChange: (value: number) => void;
+  customAmount: string;
+  onCustomAmountChange: (value: string) => void;
+  loading: boolean;
+  order: RechargeOrderResponse | null;
+  onConfirm: () => void;
+  onBack: () => void;
+  onOpenExternal: () => void;
+  onClose: () => void;
+}) {
+  const isReady = !!order;
+  const customValue = parseRechargeAmountInput(customAmount);
+  const effectiveAmount = customAmount.trim() ? customValue : amount;
+  const effectiveAmountDisplay = effectiveAmount !== null ? formatRechargeAmount(effectiveAmount) : '--';
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 px-4 backdrop-blur-sm transition-opacity duration-200" role="dialog" aria-modal="true">
+      <div className="w-full max-w-[620px] transform-gpu overflow-hidden rounded-[36px] border border-black/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(248,247,244,0.98))] shadow-[0_24px_80px_rgba(0,0,0,0.22)] transition-[transform,opacity,box-shadow] duration-200 ease-out will-change-transform dark:border-white/10 dark:bg-[linear-gradient(180deg,rgba(28,28,28,0.98),rgba(20,20,20,0.98))]">
+        <div className="flex items-start justify-between gap-3 border-b border-black/10 px-6 py-5 dark:border-white/10">
+          <div className="min-w-0">
+            <p className="text-base font-semibold text-foreground">余额充值</p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {isReady ? '请使用微信扫码完成支付。' : '选择金额后生成微信支付二维码。'}
+            </p>
+          </div>
+          <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full" onClick={onClose} aria-label="关闭">
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+
+        {!isReady ? (
+          <div className="space-y-5 px-6 py-6">
+            <div className="rounded-[28px] border border-black/10 bg-white/70 p-4 shadow-sm dark:border-white/10 dark:bg-white/[0.03]">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-medium text-foreground">选择金额</p>
+                  <p className="mt-1 text-xs text-muted-foreground">支持快捷金额，也支持自定义到分。</p>
+                </div>
+                <div className="rounded-full bg-black/[0.04] px-3 py-1 text-xs text-muted-foreground dark:bg-white/[0.06]">
+                  最低 0.01 元
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-3">
+                {amountOptions.map((option) => (
+                  <Button
+                    key={option}
+                    variant={customAmount.trim().length === 0 && amount === option ? 'default' : 'outline'}
+                    className={cn(
+                      'h-12 rounded-2xl border transition-all',
+                      customAmount.trim().length === 0 && amount === option
+                        ? 'border-black bg-black text-white hover:bg-black/90 dark:border-white dark:bg-white dark:text-black dark:hover:bg-white/90'
+                        : 'border-black/10 bg-white/90 hover:border-black/20 hover:bg-black/[0.03] dark:border-white/10 dark:bg-background dark:hover:bg-white/[0.05]',
+                    )}
+                    onClick={() => {
+                      onCustomAmountChange('');
+                      onAmountChange(option);
+                    }}
+                    disabled={loading}
+                  >
+                    ¥{formatRechargeAmount(option)}
+                  </Button>
+                ))}
+              </div>
+
+              <div className="mt-4 grid gap-3 md:grid-cols-[1fr_180px]">
+                <div>
+                  <p className="mb-2 text-[13px] font-medium text-foreground/80">自定义金额</p>
+                  <div className="relative">
+                    <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">¥</span>
+                    <Input
+                      inputMode="decimal"
+                      placeholder="比如 0.01"
+                      value={customAmount}
+                      onChange={(event) => onCustomAmountChange(event.target.value)}
+                      className="h-12 rounded-2xl border-black/10 bg-background pl-9 text-base dark:border-white/10"
+                    />
+                  </div>
+                </div>
+                <div className="rounded-3xl border border-black/10 bg-gradient-to-br from-[#f6f3ea] to-white p-4 dark:border-white/10 dark:from-white/[0.06] dark:to-white/[0.02]">
+                  <p className="text-[12px] text-muted-foreground">本次支付</p>
+                  <p className="mt-2 text-3xl font-semibold tracking-tight text-foreground">¥{effectiveAmountDisplay}</p>
+                  <p className="mt-2 text-xs leading-5 text-muted-foreground">自定义金额优先；不填时使用快捷金额。</p>
+                </div>
+              </div>
+            </div>
+
+            {loading && (
+              <div className="rounded-3xl border border-black/10 bg-black/[0.03] px-4 py-6 text-center dark:border-white/10 dark:bg-white/[0.03]">
+                <div className="mx-auto mb-3 h-9 w-9 animate-spin rounded-full border-2 border-black/15 border-t-black dark:border-white/15 dark:border-t-white" />
+                <p className="text-sm font-medium text-foreground">正在生成支付二维码...</p>
+                <p className="mt-1 text-xs text-muted-foreground">通常只需要几秒，网络较慢时会稍微久一点。</p>
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={onClose}>
+                取消
+              </Button>
+              <Button
+                onClick={onConfirm}
+                disabled={loading || effectiveAmount === null || effectiveAmount < 0.01}
+                className="min-w-28 rounded-2xl"
+              >
+                {loading ? '生成中...' : '立即充值'}
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-5 px-6 py-6">
+            <div className="rounded-[30px] border border-black/10 bg-gradient-to-b from-[#f8f6ef] to-white p-6 text-center dark:border-white/10 dark:from-white/[0.06] dark:to-white/[0.02]">
+              <div className="mx-auto flex w-fit items-center rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-[12px] font-medium text-emerald-700 dark:text-emerald-300">
+                支付二维码已生成
+              </div>
+              <div className="mx-auto mt-5 flex h-[280px] w-[280px] items-center justify-center rounded-[30px] bg-white p-4 shadow-[0_10px_30px_rgba(0,0,0,0.08)] transition-transform duration-200 ease-out">
+                <img
+                  src={order.qrCodeDataUrl}
+                  alt="微信支付二维码"
+                  className="h-full w-full rounded-[20px] object-contain"
+                  loading="eager"
+                  decoding="async"
+                />
+              </div>
+              <p className="mt-5 text-4xl font-semibold tracking-tight text-foreground">¥{formatRechargeAmount(order.amount)}</p>
+              {order.orderNo && (
+                <p className="mt-2 text-xs text-muted-foreground">订单号：{order.orderNo}</p>
+              )}
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-2">
+              <div className="rounded-2xl border border-black/10 bg-background/70 px-4 py-3 dark:border-white/10">
+                <p className="text-[12px] text-muted-foreground">支付说明</p>
+                <p className="mt-1 text-sm text-foreground">请使用微信扫一扫完成付款，支付成功后回到这里刷新余额即可。</p>
+              </div>
+              <div className="rounded-2xl border border-black/10 bg-background/70 px-4 py-3 dark:border-white/10">
+                <p className="text-[12px] text-muted-foreground">本次到账</p>
+                <p className="mt-1 text-sm text-foreground">{order.quota ? `${formatQuotaMetric(order.quota)} 点额度` : '以下单结果为准'}</p>
               </div>
             </div>
 

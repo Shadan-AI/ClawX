@@ -46,7 +46,7 @@ function cleanupUnnecessaryFiles(dir) {
   let removedCount = 0;
 
   const REMOVE_DIRS = new Set([
-    'test', 'tests', '__tests__', '.github', 'examples', 'example',
+    'test', 'tests', '__tests__', '.github', 'examples', 'example', 'docs', 'doc',
   ]);
   const REMOVE_FILE_EXTS = ['.d.ts', '.d.ts.map', '.js.map', '.mjs.map', '.ts.map', '.markdown'];
   const REMOVE_FILE_NAMES = new Set([
@@ -874,30 +874,31 @@ exports.default = async function afterPack(context) {
       const original = readFS(extractNsh, 'utf8');
 
       // Only patch once (idempotent check)
-      if (original.includes('CopyFiles') && !original.includes('OpenMe-patched')) {
-        // Replace the extractUsing7za macro body with a direct extraction.
-        // Keep the macro signature so the rest of the template compiles unchanged.
-        const patched = original.replace(
-          /(!macro extractUsing7za FILE[\s\S]*?!macroend)/,
-          [
-            '!macro extractUsing7za FILE',
-            '  ; ClawX-patched: extract directly to $INSTDIR (skip temp + CopyFiles).',
-            '  ; customCheckAppRunning already renamed old $INSTDIR to _stale_X,',
-            '  ; so the target directory is always empty.  Nsis7z streams LZMA2 data',
-            '  ; directly to disk — ~10s vs 3-5 min for CopyFiles with Windows Defender.',
-            '  Nsis7z::Extract "${FILE}"',
-            '!macroend',
-          ].join('\n')
-        );
+      if (original.includes('OpenMe-patched')) {
+        console.log('[after-pack] extractAppPackage.nsh already patched (idempotent skip).');
+      } else if (original.includes('CopyFiles')) {
+        // Replace the macro body so both old and new app-builder-lib templates
+        // skip the temp-folder CopyFiles stage entirely.
+        const replacement = [
+          '!macro extractUsing7za FILE',
+          '  ; OpenMe-patched: extract directly to $OUTDIR and skip CopyFiles.',
+          '  ; customCheckAppRunning already moved the old install directory aside,',
+          '  ; so direct extraction avoids the slow temp-copy path under Defender.',
+          '  Push $OUTDIR',
+          '  ClearErrors',
+          '  Nsis7z::Extract "${FILE}"',
+          '  Pop $R0',
+          '  SetOutPath $R0',
+          '!macroend',
+        ].join('\n');
+        const patched = original.replace(/!macro extractUsing7za FILE[\s\S]*?!macroend/, replacement);
 
         if (patched !== original) {
           writeFS(extractNsh, patched, 'utf8');
-          console.log('[after-pack] ⚡ Patched extractAppPackage.nsh: CopyFiles eliminated, using direct Nsis7z::Extract.');
+          console.log('[after-pack] Patched extractAppPackage.nsh: CopyFiles eliminated, using direct Nsis7z::Extract.');
         } else {
-          console.warn('[after-pack] ⚠️  extractAppPackage.nsh regex did not match — template may have changed.');
+          console.warn('[after-pack] extractAppPackage.nsh macro replacement did not match; template may have changed.');
         }
-      } else if (original.includes('OpenMe-patched')) {
-        console.log('[after-pack] ⚡ extractAppPackage.nsh already patched (idempotent skip).');
       }
     }
   }
