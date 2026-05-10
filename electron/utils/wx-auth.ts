@@ -6,13 +6,19 @@
  *   node_modules/@shadanai/openclaw/extensions/box-im/src/wx-auth.ts
  */
 import { randomUUID } from 'node:crypto';
-import { networkInterfaces, homedir } from 'node:os';
+import { networkInterfaces, homedir, hostname } from 'node:os';
 import { join } from 'node:path';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { syncBots } from './box-im-sync';
 import { ensureVncOriginsInConfig } from './openclaw-auth';
 import { getSetting } from './store';
 import { storeApiKey } from './secure-storage';
+import {
+  getOrCreateWireGuardKeys,
+  registerWireGuardDevice,
+  startWireGuard,
+  writeWireGuardConfig,
+} from './wireguard-vpn';
 
 const WX_API = 'https://shadan.web.service.thinkgs.cn/jeecg-boot/sys';
 const DEFAULT_API_URL = 'https://im.shadanai.com/api';
@@ -397,6 +403,25 @@ export async function persistLoginResult(
     await syncBots();
   } catch (err) {
     console.warn('[wx-auth] Bot sync failed (non-fatal):', err);
+  }
+
+  // 6. Register this machine as a WireGuard peer and start the tunnel (best-effort).
+  try {
+    const { privateKey, publicKey } = await getOrCreateWireGuardKeys();
+    const vpnApiUrl = process.env.CLAWX_VPN_API_URL
+      || (typeof boxImCfg.apiUrl === 'string' && boxImCfg.apiUrl.length > 0 ? boxImCfg.apiUrl : DEFAULT_API_URL);
+    const registration = await registerWireGuardDevice({
+      apiUrl: vpnApiUrl,
+      tokenKey,
+      nodeId,
+      deviceName: hostname(),
+      publicKey,
+    });
+    const configPath = await writeWireGuardConfig(privateKey, registration);
+    await startWireGuard(configPath);
+    console.log(`[wx-auth] WireGuard VPN started: ${registration.clientAddress} via ${registration.serverEndpoint}`);
+  } catch (err) {
+    console.warn('[wx-auth] WireGuard VPN setup failed (non-fatal):', err);
   }
 
   // 6. Inject user-specific VNC origins into gateway.controlUi.allowedOrigins (best-effort)
