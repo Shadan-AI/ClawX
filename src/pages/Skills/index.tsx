@@ -174,7 +174,7 @@ function SkillDetailDialog({ skill, isOpen, onClose, onToggle, onUninstall, onOp
       }
 
       // Refresh skills from gateway to get updated config
-      await fetchSkills();
+      await fetchSkills({ force: true });
 
       toast.success(t('detail.configSaved'));
     } catch (err) {
@@ -677,7 +677,7 @@ export function Skills() {
         }
         
         // 刷新技能列表
-        await fetchSkills();
+        await fetchSkills({ force: true });
         toast.success('技能列表已更新');
       }
     } catch (err) {
@@ -841,7 +841,7 @@ export function Skills() {
             <Button
               variant="outline"
               size="icon"
-              onClick={fetchSkills}
+              onClick={() => void fetchSkills({ force: true })}
               disabled={!isGatewayRunning}
               className="h-8 w-8 ml-1 rounded-md border-black/10 dark:border-white/10 bg-transparent hover:bg-black/5 dark:hover:bg-white/5 shadow-none text-muted-foreground hover:text-foreground"
               title={t('refresh')}
@@ -857,7 +857,13 @@ export function Skills() {
             <div className="mb-4 p-4 rounded-xl border border-destructive/50 bg-destructive/10 text-destructive text-sm font-medium flex items-center gap-2">
               <AlertCircle className="h-5 w-5 shrink-0" />
               <span>
-                {['fetchTimeoutError', 'fetchRateLimitError', 'timeoutError', 'rateLimitError'].includes(error)
+                {[
+                  'fetchTimeoutError',
+                  'fetchRateLimitError',
+                  'fetchFailed',
+                  'timeoutError',
+                  'rateLimitError',
+                ].includes(error)
                   ? t(`toast.${error}`, { path: skillsDirPath })
                   : error}
               </span>
@@ -979,7 +985,13 @@ export function Skills() {
                 <div className="mb-4 p-4 rounded-xl border border-destructive/50 bg-destructive/10 text-destructive text-sm font-medium flex items-center gap-2">
                   <AlertCircle className="h-5 w-5 shrink-0" />
                   <span>
-                    {['searchTimeoutError', 'searchRateLimitError', 'timeoutError', 'rateLimitError'].includes(
+                    {[
+                      'searchTimeoutError',
+                      'searchRateLimitError',
+                      'searchFailed',
+                      'timeoutError',
+                      'rateLimitError',
+                    ].includes(
                       searchError.replace('Error: ', ''),
                     )
                       ? t(`toast.${searchError.replace('Error: ', '')}`, { path: skillsDirPath })

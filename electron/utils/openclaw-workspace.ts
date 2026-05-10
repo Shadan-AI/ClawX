@@ -188,24 +188,38 @@ async function mergeClawXContextOnce(): Promise<number> {
 
 const RETRY_INTERVAL_MS = 2000;
 const MAX_RETRIES = 15;
+let ensureClawXContextPromise: Promise<void> | null = null;
 
 /**
  * Ensure ClawX context snippets are merged into the openclaw workspace
  * bootstrap files.
  */
 export async function ensureClawXContext(): Promise<void> {
-  let skipped = await mergeClawXContextOnce();
-  if (skipped === 0) return;
-
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    await new Promise((r) => setTimeout(r, RETRY_INTERVAL_MS));
-    skipped = await mergeClawXContextOnce();
-    if (skipped === 0) {
-      logger.info(`ClawX context merge completed after ${attempt} retry(ies)`);
-      return;
-    }
-    logger.debug(`ClawX context merge: ${skipped} file(s) still missing (retry ${attempt}/${MAX_RETRIES})`);
+  if (ensureClawXContextPromise) {
+    await ensureClawXContextPromise;
+    return;
   }
 
-  logger.warn(`ClawX context merge: ${skipped} file(s) still missing after ${MAX_RETRIES} retries`);
+  ensureClawXContextPromise = (async () => {
+    let skipped = await mergeClawXContextOnce();
+    if (skipped === 0) return;
+
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      await new Promise((r) => setTimeout(r, RETRY_INTERVAL_MS));
+      skipped = await mergeClawXContextOnce();
+      if (skipped === 0) {
+        logger.info(`ClawX context merge completed after ${attempt} retry(ies)`);
+        return;
+      }
+      logger.debug(`ClawX context merge: ${skipped} file(s) still missing (retry ${attempt}/${MAX_RETRIES})`);
+    }
+
+    logger.warn(`ClawX context merge: ${skipped} file(s) still missing after ${MAX_RETRIES} retries`);
+  })();
+
+  try {
+    await ensureClawXContextPromise;
+  } finally {
+    ensureClawXContextPromise = null;
+  }
 }

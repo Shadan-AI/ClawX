@@ -10,6 +10,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { useChatStore } from '@/stores/chat';
 import { useAgentsStore } from '@/stores/agents';
 import { cn } from '@/lib/utils';
+import { resolveSessionAgentIdByKey } from '@/lib/session-agent';
 import { useTranslation } from 'react-i18next';
 
 export function ChatToolbar() {
@@ -18,11 +19,25 @@ export function ChatToolbar() {
   const showThinking = useChatStore((s) => s.showThinking);
   const toggleThinking = useChatStore((s) => s.toggleThinking);
   const currentAgentId = useChatStore((s) => s.currentAgentId);
+  const currentSessionKey = useChatStore((s) => s.currentSessionKey);
+  const sessions = useChatStore((s) => s.sessions);
+  const channelBindings = useChatStore((s) => s.channelBindings);
   const agents = useAgentsStore((s) => s.agents);
   const { t } = useTranslation('chat');
+  const displayAgentId = useMemo(
+    () => resolveSessionAgentIdByKey(currentSessionKey, sessions, channelBindings) || currentAgentId,
+    [channelBindings, currentAgentId, currentSessionKey, sessions],
+  );
   const currentAgentName = useMemo(
-    () => (agents ?? []).find((agent) => agent.id === currentAgentId)?.name ?? currentAgentId,
-    [agents, currentAgentId],
+    () => {
+      const matchedName = (agents ?? []).find((agent) => agent.id === displayAgentId)?.name;
+      if (matchedName) return matchedName;
+      if (/^bot-[a-z0-9]+$/i.test(displayAgentId)) {
+        return '当前数字员工';
+      }
+      return displayAgentId;
+    },
+    [agents, displayAgentId],
   );
 
   return (

@@ -559,14 +559,29 @@ async function initialize(): Promise<void> {
   const gatewayAutoStart = await getSetting('gatewayAutoStart');
   if (!isE2EMode && gatewayAutoStart) {
     try {
-      await syncAllProviderAuthToRuntime();
-      
+      let gatewayReadyAt = 0;
+      const providerAuthSyncStartedAt = Date.now();
+      const providerAuthSyncPromise = syncAllProviderAuthToRuntime()
+        .then(() => ({ finishedAt: Date.now() }))
+        .catch((error) => {
+          logger.warn('Provider auth runtime sync failed during auto-start:', error);
+          return null;
+        });
+
       logger.debug('Auto-starting Gateway...');
       await gatewayManager.start();
+      gatewayReadyAt = Date.now();
       logger.info('Gateway auto-start succeeded');
-      
-      // Note: Digital employee models will be synced 3 seconds after gateway starts
-      // (see gateway:start handler in ipc-handlers.ts)
+
+      void providerAuthSyncPromise.then((result) => {
+        if (!result) return;
+        const finishedAfterGatewayReady = result.finishedAt > gatewayReadyAt + 250;
+        const tookNoticeableTime = result.finishedAt - providerAuthSyncStartedAt > 1200;
+        if (finishedAfterGatewayReady && tookNoticeableTime && gatewayManager.getStatus().state === 'running') {
+          logger.info('Provider auth sync finished after gateway start; scheduling hot reload');
+          gatewayManager.debouncedReload(1500);
+        }
+      });
     } catch (error) {
       logger.error('Gateway auto-start failed:', error);
       mainWindow?.webContents.send('gateway:error', String(error));

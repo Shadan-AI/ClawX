@@ -39,6 +39,11 @@ type ClawHubListResult = {
 
 /** Coalesce concurrent fetchSkills() (e.g. React Strict Mode + gateway state flips). */
 let fetchSkillsInFlight: Promise<void> | null = null;
+let lastFetchSkillsStartedAt = 0;
+let lastFetchSkillsFailedAt = 0;
+
+const FETCH_SKILLS_MIN_INTERVAL_MS = 1_500;
+const FETCH_SKILLS_ERROR_COOLDOWN_MS = 10_000;
 
 function mapErrorCodeToSkillErrorKey(
   code: AppError['code'],
@@ -58,7 +63,11 @@ function mapErrorCodeToSkillErrorKey(
         ? 'installRateLimitError'
         : 'fetchRateLimitError';
   }
-  return 'rateLimitError';
+  return operation === 'search'
+    ? 'searchFailed'
+    : operation === 'install'
+      ? 'installFailed'
+      : 'fetchFailed';
 }
 
 /** Skill market row (gateway skills.market.search). */
@@ -85,7 +94,7 @@ interface SkillsState {
   marketPage: number;
 
   // Actions
-  fetchSkills: () => Promise<void>;
+  fetchSkills: (options?: { force?: boolean }) => Promise<void>;
   searchSkills: (query: string) => Promise<void>;
   searchMarketSkills: (query: string, append?: boolean) => Promise<void>;
   installSkill: (slug: string, version?: string) => Promise<void>;
@@ -112,11 +121,21 @@ export const useSkillsStore = create<SkillsState>((set, get) => ({
   marketTotal: 0,
   marketPage: 0,
 
-  fetchSkills: async () => {
+  fetchSkills: async (options) => {
+    const force = options?.force === true;
     if (fetchSkillsInFlight) {
       return fetchSkillsInFlight;
     }
+    const now = Date.now();
+    const state = get();
+    if (!force && now - lastFetchSkillsStartedAt < FETCH_SKILLS_MIN_INTERVAL_MS) {
+      return;
+    }
+    if (!force && state.error && now - lastFetchSkillsFailedAt < FETCH_SKILLS_ERROR_COOLDOWN_MS) {
+      return;
+    }
     const doFetch = async (): Promise<void> => {
+      lastFetchSkillsStartedAt = Date.now();
       // Only show loading state if we have no skills yet (initial load)
       if (get().skills.length === 0) {
         set({ loading: true, error: null });
@@ -197,10 +216,12 @@ export const useSkillsStore = create<SkillsState>((set, get) => ({
           });
         }
 
-        set({ skills: combinedSkills, loading: false });
+        lastFetchSkillsFailedAt = 0;
+        set({ skills: combinedSkills, loading: false, error: null });
       } catch (error) {
         console.error('Failed to fetch skills:', error);
         const appError = normalizeAppError(error, { module: 'skills', operation: 'fetch' });
+        lastFetchSkillsFailedAt = Date.now();
         set({ loading: false, error: mapErrorCodeToSkillErrorKey(appError.code, 'fetch') });
       } finally {
         fetchSkillsInFlight = null;
@@ -292,7 +313,7 @@ export const useSkillsStore = create<SkillsState>((set, get) => ({
         throw new Error(mapErrorCodeToSkillErrorKey(appError.code, 'install'));
       }
       // Refresh skills after install
-      await get().fetchSkills();
+      await get().fetchSkills({ force: true });
     } catch (error) {
       console.error('Install error:', error);
       throw error;
@@ -310,7 +331,7 @@ export const useSkillsStore = create<SkillsState>((set, get) => ({
     set((state) => ({ installing: { ...state.installing, [key]: true } }));
     try {
       await useGatewayStore.getState().rpc<{ ok?: boolean }>('skills.market.install', { slug }, 120_000);
-      await get().fetchSkills();
+      await get().fetchSkills({ force: true });
     } finally {
       set((state) => {
         const next = { ...state.installing };
@@ -331,7 +352,7 @@ export const useSkillsStore = create<SkillsState>((set, get) => ({
         throw new Error(result.error || 'Uninstall failed');
       }
       // Refresh skills after uninstall
-      await get().fetchSkills();
+      await get().fetchSkills({ force: true });
     } catch (error) {
       console.error('Uninstall error:', error);
       throw error;

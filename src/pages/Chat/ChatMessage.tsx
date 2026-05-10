@@ -549,12 +549,18 @@ function ImageThumbnail({
   void filePath; void base64; void mimeType;
   return (
     <div
-      className="relative w-36 h-36 rounded-xl border overflow-hidden border-black/10 dark:border-white/10 bg-black/5 dark:bg-white/5 group/img cursor-zoom-in"
+      className="group/img relative h-[168px] w-[168px] cursor-zoom-in overflow-hidden rounded-2xl border border-black/10 bg-black/5 shadow-sm transition-[transform,box-shadow] duration-200 ease-out hover:-translate-y-0.5 hover:shadow-md dark:border-white/10 dark:bg-white/5"
       onClick={onPreview}
     >
-      <img src={src} alt={fileName} className="w-full h-full object-cover" />
-      <div className="absolute inset-0 bg-black/0 group-hover/img:bg-black/25 transition-colors flex items-center justify-center">
-        <ZoomIn className="h-6 w-6 text-white opacity-0 group-hover/img:opacity-100 transition-opacity drop-shadow" />
+      <img
+        src={src}
+        alt={fileName}
+        className="h-full w-full object-cover transition-transform duration-300 ease-out group-hover/img:scale-[1.03]"
+        loading="lazy"
+        decoding="async"
+      />
+      <div className="absolute inset-0 flex items-center justify-center bg-black/0 transition-colors duration-200 group-hover/img:bg-black/25">
+        <ZoomIn className="h-6 w-6 text-white opacity-0 transition-opacity duration-200 group-hover/img:opacity-100 drop-shadow" />
       </div>
     </div>
   );
@@ -580,12 +586,18 @@ function ImagePreviewCard({
   void filePath; void base64; void mimeType;
   return (
     <div
-      className="relative max-w-xs rounded-xl border overflow-hidden border-black/10 dark:border-white/10 bg-black/5 dark:bg-white/5 group/img cursor-zoom-in"
+      className="group/img relative max-w-[min(460px,78vw)] cursor-zoom-in overflow-hidden rounded-2xl border border-black/10 bg-black/5 shadow-sm transition-[transform,box-shadow] duration-200 ease-out hover:-translate-y-0.5 hover:shadow-md dark:border-white/10 dark:bg-white/5"
       onClick={onPreview}
     >
-      <img src={src} alt={fileName} className="block w-full" />
-      <div className="absolute inset-0 bg-black/0 group-hover/img:bg-black/20 transition-colors flex items-center justify-center">
-        <ZoomIn className="h-6 w-6 text-white opacity-0 group-hover/img:opacity-100 transition-opacity drop-shadow" />
+      <img
+        src={src}
+        alt={fileName}
+        className="block max-h-[420px] w-full object-contain transition-transform duration-300 ease-out group-hover/img:scale-[1.01]"
+        loading="lazy"
+        decoding="async"
+      />
+      <div className="absolute inset-0 flex items-center justify-center bg-black/0 transition-colors duration-200 group-hover/img:bg-black/20">
+        <ZoomIn className="h-6 w-6 text-white opacity-0 transition-opacity duration-200 group-hover/img:opacity-100 drop-shadow" />
       </div>
     </div>
   );
@@ -626,18 +638,20 @@ function ImageLightbox({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm transition-opacity duration-200"
       onClick={onClose}
     >
       {/* Image + buttons stacked */}
       <div
-        className="flex flex-col items-center gap-3"
+        className="flex flex-col items-center gap-3 transform-gpu will-change-transform"
         onClick={(e) => e.stopPropagation()}
       >
         <img
           src={src}
           alt={fileName}
-          className="max-w-[90vw] max-h-[85vh] rounded-lg shadow-2xl object-contain"
+          className="max-h-[85vh] max-w-[90vw] rounded-2xl object-contain shadow-2xl"
+          loading="eager"
+          decoding="async"
         />
 
         {/* Action buttons below image */}

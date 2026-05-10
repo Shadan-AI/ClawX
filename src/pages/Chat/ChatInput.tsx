@@ -14,7 +14,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { hostApiFetch } from '@/lib/host-api';
 import { invokeIpc } from '@/lib/api-client';
-import { getAgentIdFromSessionKey } from '@/lib/session-agent';
+import { getAgentIdFromSessionKey, resolveSessionAgentIdByKey } from '@/lib/session-agent';
 import { SKILL_TRIAL_AGENT_ID } from '@/lib/skill-trial';
 import { cn } from '@/lib/utils';
 import { useAgentsStore } from '@/stores/agents';
@@ -124,6 +124,8 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
   const fetchSkills = useSkillsStore((s) => s.fetchSkills);
   const currentSessionKey = useChatStore((s) => s.currentSessionKey);
   const currentAgentId = useChatStore((s) => s.currentAgentId);
+  const sessions = useChatStore((s) => s.sessions);
+  const channelBindings = useChatStore((s) => s.channelBindings);
   const currentSessionAgentId = currentAgentId || getAgentIdFromSessionKey(currentSessionKey);
   const skillOwnerAgentId = targetAgentId || currentSessionAgentId;
   const skillOwnerAgent = useMemo(
@@ -257,6 +259,19 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
     }
   }, [quickUseSkill, onSkillUsed, focusTextarea]);
 
+  useEffect(() => {
+    setInput('');
+    setAttachments([]);
+    setTargetAgentId(null);
+    setActiveSkill(null);
+    setPickerOpen(false);
+    setSkillPickerOpen(false);
+    setSkillSearchQuery('');
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+    }
+  }, [currentSessionKey]);
+
   // 清除技能标签
   const handleClearSkill = useCallback(() => {
     setActiveSkill(null);
@@ -272,13 +287,24 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
     setSkillSearchQuery('');
     focusTextarea();
   }, [focusTextarea]);
+  const displayAgentId = useMemo(
+    () => resolveSessionAgentIdByKey(currentSessionKey, sessions, channelBindings) || currentAgentId,
+    [channelBindings, currentAgentId, currentSessionKey, sessions],
+  );
   const currentAgentName = useMemo(
-    () => (agents ?? []).find((agent) => agent.id === currentAgentId)?.name ?? currentAgentId,
-    [agents, currentAgentId],
+    () => {
+      const matchedName = (agents ?? []).find((agent) => agent.id === displayAgentId)?.name;
+      if (matchedName) return matchedName;
+      if (/^bot-[a-z0-9]+$/i.test(displayAgentId)) {
+        return '当前数字员工';
+      }
+      return displayAgentId;
+    },
+    [agents, displayAgentId],
   );
   const mentionableAgents = useMemo(
-    () => (agents ?? []).filter((agent) => agent.id !== currentAgentId),
-    [agents, currentAgentId],
+    () => (agents ?? []).filter((agent) => agent.id !== displayAgentId),
+    [agents, displayAgentId],
   );
   const selectedTarget = useMemo(
     () => (agents ?? []).find((agent) => agent.id === targetAgentId) ?? null,
@@ -736,34 +762,35 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
       onDrop={handleDrop}
     >
       <div className="w-full">
-        {/* Attachment Previews */}
-        {attachments.length > 0 && (
-          <div
-            className={cn(
-              "mb-3 flex flex-wrap gap-2 overflow-hidden transition-[max-height,opacity,margin] duration-200 ease-out",
-              isExpanded ? "max-h-32 opacity-100" : "mb-0 max-h-0 opacity-0"
-            )}
-          >
-            {attachments.map((att) => (
-              <AttachmentPreview
-                key={att.id}
-                attachment={att}
-                onRemove={() => removeAttachment(att.id)}
-              />
-            ))}
-          </div>
-        )}
-
         {/* Input Box */}
         <div
           ref={inputBoxRef}
           className={cn(
-            "relative overflow-visible rounded-[26px] border border-black/8 bg-white shadow-[0_10px_24px_rgba(15,23,42,0.06)] backdrop-blur-md transition-[box-shadow,border-color] duration-200 ease-out supports-[backdrop-filter]:bg-white/94 dark:border-white/10 dark:bg-card/88",
+            "relative overflow-visible rounded-[26px] border border-black/8 bg-white shadow-[0_10px_24px_rgba(15,23,42,0.06)] backdrop-blur-md transition-[box-shadow,border-color] duration-200 ease-out supports-[backdrop-filter]:bg-white/94 dark:border-white/10 dark:bg-background/90",
             dragOver
               ? 'border-primary ring-2 ring-primary/30'
               : 'focus-within:border-black/20 focus-within:shadow-[0_14px_28px_rgba(15,23,42,0.08)] dark:focus-within:border-white/20 dark:focus-within:shadow-[0_14px_28px_rgba(0,0,0,0.26)]'
           )}
         >
+          {attachments.length > 0 && (
+            <div
+              className={cn(
+                'px-3 pt-3 transition-[max-height,opacity,padding] duration-200 ease-out',
+                isExpanded ? 'max-h-36 opacity-100' : 'max-h-24 opacity-100'
+              )}
+            >
+              <div className="flex flex-wrap gap-2">
+                {attachments.map((att) => (
+                  <AttachmentPreview
+                    key={att.id}
+                    attachment={att}
+                    onRemove={() => removeAttachment(att.id)}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+
           <AnimatePresence mode="wait">
             {selectedTarget && (
               <motion.div
@@ -855,7 +882,7 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                   }
                   disabled={disabled}
                   className={cn(
-                    'w-full resize-none border-0 bg-transparent px-2 shadow-none placeholder:text-muted-foreground/60 transition-[height,min-height,padding] duration-200 ease-out focus-visible:ring-0 focus-visible:ring-offset-0',
+                    'w-full resize-none border-0 bg-transparent px-2 text-foreground caret-foreground shadow-none placeholder:text-muted-foreground/60 selection:bg-primary/20 transition-[height,min-height,padding] duration-200 ease-out focus-visible:ring-0 focus-visible:ring-offset-0',
                     isExpanded
                       ? 'min-h-[56px] max-h-[168px] py-1 text-[15px] leading-relaxed'
                       : '!min-h-[44px] h-[44px] overflow-hidden py-[11px] text-[15px] leading-normal'
@@ -908,7 +935,7 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                 {/* Left: current agent + attach + @ */}
                 <div className="flex items-center gap-1">
                   {/* 当前对话对象 */}
-                  <div className="flex items-center gap-1.5 rounded-full border border-black/6 bg-white px-2.5 py-1 text-[11px] font-medium text-foreground/70 shadow-sm dark:border-white/10 dark:bg-white/8">
+                  <div className="flex items-center gap-1.5 rounded-full border border-black/6 bg-white px-2.5 py-1 text-[11px] font-medium text-foreground/70 shadow-sm dark:border-white/10 dark:bg-background/80 dark:text-foreground/80">
                     <Bot className="h-3 w-3 text-primary" />
                     <span>{currentAgentName}</span>
                   </div>
@@ -1273,19 +1300,20 @@ function AttachmentPreview({
 
   return (
     <div className="relative group">
-      <div className="rounded-lg overflow-hidden border border-border">
+      <div className="overflow-hidden rounded-2xl border border-border bg-background/80 shadow-sm transition-[transform,box-shadow,border-color] duration-200 ease-out group-hover:shadow-md group-hover:border-border/80">
         {isImage ? (
-          // Image thumbnail
-          <div className="w-16 h-16">
+          <div className="h-[88px] w-[88px] bg-muted/30">
             <img
               src={attachment.preview!}
               alt={attachment.fileName}
-              className="w-full h-full object-cover"
+              className="h-full w-full object-cover transition-transform duration-300 ease-out group-hover:scale-[1.03]"
+              loading="lazy"
+              decoding="async"
             />
           </div>
         ) : (
           // Generic file card
-          <div className="flex items-center gap-2 px-3 py-2 bg-muted/50 max-w-[200px]">
+          <div className="flex max-w-[220px] items-center gap-2 bg-muted/50 px-3 py-2.5">
             <FileIcon mimeType={attachment.mimeType} className="h-5 w-5 shrink-0 text-muted-foreground" />
             <div className="min-w-0 overflow-hidden">
               <p className="text-xs font-medium truncate">{attachment.fileName}</p>
@@ -1314,7 +1342,7 @@ function AttachmentPreview({
       {/* Remove button - outside the overflow-hidden container */}
       <button
         onClick={onRemove}
-        className="absolute -top-2 -right-2 bg-destructive text-destructive-foreground rounded-full p-1 shadow-md opacity-0 group-hover:opacity-100 transition-opacity hover:scale-110"
+        className="absolute -right-2 -top-2 rounded-full bg-destructive p-1 text-destructive-foreground shadow-md opacity-0 transition-[opacity,transform] duration-200 group-hover:opacity-100 hover:scale-110"
         aria-label="Remove attachment"
       >
         <X className="h-3 w-3" />

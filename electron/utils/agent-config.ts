@@ -861,7 +861,7 @@ export async function assignChannelAccountToAgent(
  * Sync all digital employee models from box-im accounts to agents.list
  * This should be called on gateway startup to ensure all agents have the correct model
  */
-export async function syncAllDigitalEmployeeModels(): Promise<void> {
+export async function syncAllDigitalEmployeeModels(): Promise<boolean> {
   return withConfigLock(async () => {
     const config = await readOpenClawConfig() as AgentConfigDocument;
     const { agentsConfig, entries } = normalizeAgentsConfig(config);
@@ -869,7 +869,7 @@ export async function syncAllDigitalEmployeeModels(): Promise<void> {
 
     if (!boxImAccounts) {
       logger.debug('No box-im accounts found, skipping digital employee model sync');
-      return;
+      return false;
     }
 
     let updated = false;
@@ -907,6 +907,7 @@ export async function syncAllDigitalEmployeeModels(): Promise<void> {
       await writeOpenClawConfig(config);
       logger.info('Digital employee models synced to agents.list');
     }
+    return updated;
   });
 }
 

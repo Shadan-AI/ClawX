@@ -158,10 +158,14 @@ interface TranscriptLineShape {
     model?: string;
     modelRef?: string;
     provider?: string;
+    stopReason?: string;
+    errorMessage?: string;
     usage?: TranscriptUsageShape;
     details?: {
       provider?: string;
       model?: string;
+      stopReason?: string;
+      errorMessage?: string;
       usage?: TranscriptUsageShape;
       content?: unknown;
       externalContent?: {
@@ -212,6 +216,35 @@ function normalizeUsageContent(value: unknown): string | undefined {
   return undefined;
 }
 
+function hasErrorMarker(value: unknown): boolean {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function shouldSkipZeroTokenErrorEntry(
+  usage: ParsedUsageTokens,
+  message?: TranscriptLineShape['message'],
+): boolean {
+  if (usage.usageStatus !== 'available') return false;
+  if (
+    usage.inputTokens !== 0
+    || usage.outputTokens !== 0
+    || usage.cacheReadTokens !== 0
+    || usage.cacheWriteTokens !== 0
+    || usage.totalTokens !== 0
+  ) {
+    return false;
+  }
+
+  const stopReason = typeof message?.details?.stopReason === 'string'
+    ? message.details.stopReason
+    : message?.stopReason;
+  const normalizedStopReason = stopReason?.trim().toLowerCase();
+
+  return normalizedStopReason === 'error'
+    || hasErrorMarker(message?.errorMessage)
+    || hasErrorMarker(message?.details?.errorMessage);
+}
+
 export function parseUsageEntriesFromJsonl(
   content: string,
   context: { sessionId: string; agentId: string },
@@ -237,6 +270,7 @@ export function parseUsageEntriesFromJsonl(
     if (message.role === 'assistant' && 'usage' in message) {
       const usage = parseUsageFromShape(message.usage);
       if (!usage) continue;
+      if (shouldSkipZeroTokenErrorEntry(usage, message)) continue;
 
       const contentText = normalizeUsageContent((message as Record<string, unknown>).content);
       entries.push({
@@ -258,6 +292,7 @@ export function parseUsageEntriesFromJsonl(
 
     const usage = parseUsageFromShape(details.usage);
     if (!usage) continue;
+    if (shouldSkipZeroTokenErrorEntry(usage, message)) continue;
 
     const provider = details.provider ?? details.externalContent?.provider ?? message.provider;
     const model = details.model ?? message.model ?? message.modelRef;
