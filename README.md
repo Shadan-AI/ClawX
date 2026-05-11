@@ -476,3 +476,7 @@ ClawX is released under the [MIT License](LICENSE). You're free to use, modify, 
 <p align="center">
   <sub>Built with ❤️ by the ValueCell Team</sub>
 </p>
+
+
+# 本地启动
+CLAWX_IM_API_URL=http://127.0.0.1:8888 pnpm dev

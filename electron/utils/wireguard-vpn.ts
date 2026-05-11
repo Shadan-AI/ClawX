@@ -1,8 +1,9 @@
 import { app } from 'electron';
 import { execFile } from 'node:child_process';
+import { createPrivateKey, createPublicKey, generateKeyPairSync } from 'node:crypto';
 import { constants } from 'node:fs';
 import { access, chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 
 export interface WireGuardRegistration {
   vpnIp: string;
@@ -12,6 +13,32 @@ export interface WireGuardRegistration {
   allowedIps: string[];
   persistentKeepalive?: number;
 }
+
+const COMMON_WG_PATHS = [
+  '/opt/homebrew/bin/wg',
+  '/usr/local/bin/wg',
+  '/usr/bin/wg',
+  '/bin/wg',
+  '/snap/bin/wg',
+];
+
+const COMMON_WG_QUICK_PATHS = [
+  '/opt/homebrew/bin/wg-quick',
+  '/usr/local/bin/wg-quick',
+  '/usr/bin/wg-quick',
+  '/bin/wg-quick',
+  '/snap/bin/wg-quick',
+];
+
+const COMMON_WIREGUARD_APP_PATHS = [
+  '/Applications/WireGuard.app',
+  '/Users/david/Downloads/WireGuard.app',
+];
+
+const X25519_PKCS8_PREFIX = Buffer.from('302e020100300506032b656e04220420', 'hex');
+
+let wgCommandPromise: Promise<string> | undefined;
+let wgQuickCommandPromise: Promise<string> | undefined;
 
 function execFileText(command: string, args: string[], input?: string): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -26,12 +53,76 @@ function execFileText(command: string, args: string[], input?: string): Promise<
   });
 }
 
-async function fileExists(path: string): Promise<boolean> {
+async function fileAccessible(path: string, mode = constants.F_OK): Promise<boolean> {
   try {
-    await access(path, constants.F_OK);
+    await access(path, mode);
     return true;
   } catch {
     return false;
+  }
+}
+
+function pathCandidates(command: string, commonPaths: string[]): string[] {
+  const candidates = new Set<string>();
+  for (const pathDir of (process.env.PATH ?? '').split(delimiter)) {
+    if (pathDir) candidates.add(join(pathDir, command));
+  }
+  for (const candidate of commonPaths) candidates.add(candidate);
+  return [...candidates];
+}
+
+async function resolveExecutable(command: string, envName: string, commonPaths: string[]): Promise<string> {
+  const configured = process.env[envName]?.trim();
+  if (configured) {
+    if (await fileAccessible(configured, constants.X_OK)) return configured;
+    throw new Error(`${envName} points to a non-executable file: ${configured}`);
+  }
+
+  const candidates = pathCandidates(command, commonPaths);
+  for (const candidate of candidates) {
+    if (await fileAccessible(candidate, constants.X_OK)) return candidate;
+  }
+
+  throw new Error(
+    `WireGuard command "${command}" was not found. Install wireguard-tools ` +
+    `(macOS: brew install wireguard-tools) or set ${envName}. Checked: ${candidates.join(', ')}`,
+  );
+}
+
+function resolveWgCommand(): Promise<string> {
+  wgCommandPromise ??= resolveExecutable('wg', 'CLAWX_WG_BIN', COMMON_WG_PATHS);
+  return wgCommandPromise;
+}
+
+function resolveWgQuickCommand(): Promise<string> {
+  wgQuickCommandPromise ??= resolveExecutable('wg-quick', 'CLAWX_WG_QUICK_BIN', COMMON_WG_QUICK_PATHS);
+  return wgQuickCommandPromise;
+}
+
+function generateWireGuardPrivateKey(): string {
+  const { privateKey } = generateKeyPairSync('x25519');
+  const der = privateKey.export({ format: 'der', type: 'pkcs8' });
+  return Buffer.from(der).subarray(-32).toString('base64');
+}
+
+async function getWireGuardPublicKey(privateKey: string): Promise<string> {
+  try {
+    const rawPrivateKey = Buffer.from(privateKey, 'base64');
+    if (rawPrivateKey.length !== 32) throw new Error('private key must decode to 32 bytes');
+    const keyObject = createPrivateKey({
+      key: Buffer.concat([X25519_PKCS8_PREFIX, rawPrivateKey]),
+      format: 'der',
+      type: 'pkcs8',
+    });
+    const publicDer = createPublicKey(keyObject).export({ format: 'der', type: 'spki' });
+    return Buffer.from(publicDer).subarray(-32).toString('base64');
+  } catch (nativeError) {
+    const wg = await resolveWgCommand();
+    try {
+      return await execFileText(wg, ['pubkey'], `${privateKey}\n`);
+    } catch {
+      throw nativeError;
+    }
   }
 }
 
@@ -48,14 +139,19 @@ async function privateKeyPath(): Promise<string> {
 export async function getOrCreateWireGuardKeys(): Promise<{ privateKey: string; publicKey: string }> {
   const keyPath = await privateKeyPath();
   let privateKey: string;
-  if (await fileExists(keyPath)) {
+  if (await fileAccessible(keyPath)) {
     privateKey = (await readFile(keyPath, 'utf8')).trim();
   } else {
-    privateKey = await execFileText('wg', ['genkey']);
+    try {
+      privateKey = generateWireGuardPrivateKey();
+    } catch {
+      const wg = await resolveWgCommand();
+      privateKey = await execFileText(wg, ['genkey']);
+    }
     await writeFile(keyPath, `${privateKey}\n`, { mode: 0o600 });
     try { await chmod(keyPath, 0o600); } catch { /* ignore */ }
   }
-  const publicKey = await execFileText('wg', ['pubkey'], `${privateKey}\n`);
+  const publicKey = await getWireGuardPublicKey(privateKey);
   return { privateKey, publicKey };
 }
 
@@ -92,7 +188,7 @@ export async function registerWireGuardDevice(options: {
     if (!payload.data) throw new Error('VPN register failed: empty response data');
     return payload.data;
   }
-  return payload;
+  return payload as WireGuardRegistration;
 }
 
 export async function writeWireGuardConfig(privateKey: string, registration: WireGuardRegistration): Promise<string> {
@@ -116,11 +212,51 @@ PersistentKeepalive = ${keepalive}
   return configPath;
 }
 
-export async function startWireGuard(configPath: string): Promise<void> {
+export async function startWireGuard(configPath: string): Promise<'started' | 'opened-app' | 'config-written'> {
+  if (process.platform === 'win32') {
+    void configPath;
+    return 'config-written';
+  }
+
+  let wgQuick: string | undefined;
   try {
-    await execFileText('wg-quick', ['down', configPath]);
+    wgQuick = await resolveWgQuickCommand();
+  } catch (err) {
+    if (process.platform === 'darwin') {
+      await openWireGuardApp(configPath);
+      return 'opened-app';
+    }
+    throw err;
+  }
+
+  try {
+    await execFileText(wgQuick, ['down', configPath]);
   } catch {
     // The tunnel may not be up yet.
   }
-  await execFileText('wg-quick', ['up', configPath]);
+  try {
+    await execFileText(wgQuick, ['up', configPath]);
+  } catch (err) {
+    if (process.platform === 'darwin') {
+      await openWireGuardApp(configPath);
+      return 'opened-app';
+    }
+    throw err;
+  }
+  return 'started';
+}
+
+async function openWireGuardApp(configPath: string): Promise<void> {
+  const configured = process.env.CLAWX_WIREGUARD_APP_PATH?.trim();
+  const candidates = configured ? [configured] : COMMON_WIREGUARD_APP_PATHS;
+  for (const candidate of candidates) {
+    if (await fileAccessible(candidate)) {
+      await execFileText('open', [candidate]);
+      await execFileText('open', ['-R', configPath]);
+      return;
+    }
+  }
+  throw new Error(
+    `WireGuard.app was not found. Install it in /Applications or set CLAWX_WIREGUARD_APP_PATH. Checked: ${candidates.join(', ')}`,
+  );
 }

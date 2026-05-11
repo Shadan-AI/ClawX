@@ -17,11 +17,18 @@ import {
   getOrCreateWireGuardKeys,
   registerWireGuardDevice,
   startWireGuard,
+  type WireGuardRegistration,
   writeWireGuardConfig,
 } from './wireguard-vpn';
 
 const WX_API = 'https://shadan.web.service.thinkgs.cn/jeecg-boot/sys';
 const DEFAULT_API_URL = 'https://im.shadanai.com/api';
+
+function resolveImApiUrl(configured?: unknown): string {
+  const envUrl = process.env.CLAWX_IM_API_URL?.trim();
+  const configUrl = typeof configured === 'string' ? configured.trim() : '';
+  return (envUrl || configUrl || DEFAULT_API_URL).replace(/\/+$/, '');
+}
 
 // In-memory pending scans, auto-cleaned every 60 s
 const pendingScans = new Map<
@@ -99,7 +106,7 @@ export async function findOrCreateImUser(
   openid: string,
   nickname?: string,
   avatar?: string,
-  apiUrl = DEFAULT_API_URL,
+  apiUrl = resolveImApiUrl(),
 ): Promise<FindOrCreateResult> {
   const res = await fetch(`${apiUrl}/findUserByOpenid`, {
     method: 'POST',
@@ -151,7 +158,7 @@ export async function bindPhoneAndRegister(
   code: string,
   nickname?: string,
   avatar?: string,
-  apiUrl = DEFAULT_API_URL,
+  apiUrl = resolveImApiUrl(),
 ): Promise<{ userId: number; accessToken: string; tokenKey: string }> {
   // 1. Verify SMS code
   const verifyRes = await fetch(`${WX_API}/verifySms`, {
@@ -198,7 +205,7 @@ export async function registerNewUser(
   phone: string,
   code: string,
   avatar?: string,
-  apiUrl = DEFAULT_API_URL,
+  apiUrl = resolveImApiUrl(),
 ): Promise<{ userId: number; accessToken: string; tokenKey: string }> {
   // 1. Verify SMS code
   const verifyRes = await fetch(`${WX_API}/verifySms`, {
@@ -318,6 +325,7 @@ export async function persistLoginResult(
   // 3. Write full ownerAuth + shadan provider + default model to openclaw.json
   const cfg = await readOpenClawConfig();
   const boxImCfg = ((cfg.channels?.[CHANNEL_ID] ?? {}) as Record<string, unknown>);
+  const imApiUrl = resolveImApiUrl(boxImCfg.apiUrl);
   const existingModels = ((cfg as any).models ?? {}) as Record<string, unknown>;
   const existingProviders = (existingModels.providers ?? {}) as Record<string, unknown>;
 
@@ -325,6 +333,7 @@ export async function persistLoginResult(
     ...(cfg.channels ?? {}),
     [CHANNEL_ID]: {
       ...boxImCfg,
+      apiUrl: imApiUrl,
       loggedIn: true,
       ownerAuth: {
         openid: openid ?? '',
@@ -406,20 +415,26 @@ export async function persistLoginResult(
   }
 
   // 6. Register this machine as a WireGuard peer and start the tunnel (best-effort).
+  let vpnRegistration: WireGuardRegistration | undefined;
   try {
     const { privateKey, publicKey } = await getOrCreateWireGuardKeys();
-    const vpnApiUrl = process.env.CLAWX_VPN_API_URL
-      || (typeof boxImCfg.apiUrl === 'string' && boxImCfg.apiUrl.length > 0 ? boxImCfg.apiUrl : DEFAULT_API_URL);
-    const registration = await registerWireGuardDevice({
+    const vpnApiUrl = process.env.CLAWX_VPN_API_URL || imApiUrl;
+    vpnRegistration = await registerWireGuardDevice({
       apiUrl: vpnApiUrl,
       tokenKey,
       nodeId,
       deviceName: hostname(),
       publicKey,
     });
-    const configPath = await writeWireGuardConfig(privateKey, registration);
-    await startWireGuard(configPath);
-    console.log(`[wx-auth] WireGuard VPN started: ${registration.clientAddress} via ${registration.serverEndpoint}`);
+    const configPath = await writeWireGuardConfig(privateKey, vpnRegistration);
+    const startMode = await startWireGuard(configPath);
+    if (startMode === 'opened-app') {
+      console.log(`[wx-auth] WireGuard.app opened and config revealed in Finder for import: ${configPath}`);
+    } else if (startMode === 'config-written') {
+      console.log(`[wx-auth] WireGuard config written for manual import/start: ${configPath}`);
+    } else {
+      console.log(`[wx-auth] WireGuard VPN started: ${vpnRegistration.clientAddress} via ${vpnRegistration.serverEndpoint}`);
+    }
   } catch (err) {
     console.warn('[wx-auth] WireGuard VPN setup failed (non-fatal):', err);
   }
@@ -436,7 +451,7 @@ export async function persistLoginResult(
   // 6. Register device with IM server so it can build the iframe URL:
   //    https://<accessip>:18789/#token=<gatewayToken>
   try {
-    await registerDeviceWithImServer(tokenKey, nodeId, userId);
+    await registerDeviceWithImServer(tokenKey, nodeId, userId, imApiUrl, vpnRegistration);
   } catch (err) {
     console.warn('[wx-auth] Device registration failed (non-fatal):', err);
   }
@@ -471,7 +486,8 @@ async function registerDeviceWithImServer(
   tokenKey: string,
   nodeId: string,
   userId?: number,
-  apiUrl = DEFAULT_API_URL,
+  apiUrl = resolveImApiUrl(),
+  vpnRegistration?: WireGuardRegistration,
 ): Promise<void> {
   // Read the same token that Settings → Gateway displays (electron-store, clawx-<hex> format)
   const gatewayToken = await getSetting('gatewayToken');
@@ -480,6 +496,7 @@ async function registerDeviceWithImServer(
   // Use the same protocol so probeGatewayUrl on the IM side builds the correct URL.
   const protocol = 'https';
   const lanIp = detectLanIp();
+  const vpnIp = normalizeWireGuardIp(vpnRegistration);
 
   // Detect WAN IP (best-effort, short timeout)
   let wanIp: string | undefined;
@@ -497,6 +514,7 @@ async function registerDeviceWithImServer(
     nodeName: nodeId,
     lanIp,
     wanIp,
+    vpnIp,
     openclawPort: GATEWAY_PORT,
     protocol,       // always 'https' — matches buildOpenClawControlUiUrl behavior
     gatewayToken,   // clawx-<hex> from electron-store, same as Settings → Gateway shows
@@ -513,7 +531,13 @@ async function registerDeviceWithImServer(
     const text = await res.text().catch(() => '');
     throw new Error(`Device register failed: ${res.status} ${text}`);
   }
-  console.log(`[wx-auth] Device registered: ${protocol}://${lanIp}:${GATEWAY_PORT}/#token=${gatewayToken}`);
+  console.log(`[wx-auth] Device registered: ${protocol}://${vpnIp ?? lanIp ?? 'unknown'}:${GATEWAY_PORT}/#token=${gatewayToken}`);
+}
+
+function normalizeWireGuardIp(registration?: WireGuardRegistration): string | undefined {
+  const raw = registration?.vpnIp || registration?.clientAddress;
+  if (!raw) return undefined;
+  return raw.split('/')[0]?.trim() || undefined;
 }
 
 // ── OneAPI models ────────────────────────────────────────────────
