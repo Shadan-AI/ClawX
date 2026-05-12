@@ -27,7 +27,7 @@ interface ConfettiPhysicsProps {
 
 export function ConfettiPhysics({ particles: initialParticles, onComplete }: ConfettiPhysicsProps) {
   const [particles, setParticles] = useState<Particle[]>([]);
-  const animationFrameRef = useRef<number>();
+  const animationFrameRef = useRef<number | null>(null);
   const lastTimeRef = useRef<number>(Date.now());
   const processedIdsRef = useRef<Set<number>>(new Set());
 

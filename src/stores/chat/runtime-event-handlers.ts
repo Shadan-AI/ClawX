@@ -9,6 +9,7 @@ import {
   getToolCallFilePath,
   hasErrorRecoveryTimer,
   hasNonToolAssistantContent,
+  isInternalMessage,
   isToolOnlyMessage,
   isToolResultRole,
   makeAttachedFile,
@@ -72,12 +73,23 @@ export function handleRuntimeEventState(
           break;
         }
         case 'final': {
-          console.log('[DEBUG] Received final event, hasOutput:', hasOutput, 'toolOnly:', toolOnly, 'finalMsg:', finalMsg);
           clearErrorRecoveryTimer();
           if (get().error) set({ error: null });
           // Message complete - add to history and clear streaming
           const finalMsg = event.message as RawMessage | undefined;
           if (finalMsg) {
+            if (isInternalMessage(finalMsg)) {
+              set({
+                streamingText: '',
+                streamingMessage: null,
+                streamingTools: [],
+                pendingFinal: false,
+                pendingToolImages: [],
+                sending: false,
+                activeRunId: null,
+              });
+              break;
+            }
             const updates = collectToolUpdates(finalMsg, resolvedState);
             if (isToolResultRole(finalMsg.role)) {
               // Resolve file path from the streaming assistant message's matching tool call
@@ -144,6 +156,7 @@ export function handleRuntimeEventState(
             }
             const toolOnly = isToolOnlyMessage(finalMsg);
             const hasOutput = hasNonToolAssistantContent(finalMsg);
+            console.log('[DEBUG] Received final event, hasOutput:', hasOutput, 'toolOnly:', toolOnly, 'finalMsg:', finalMsg);
             const msgId = finalMsg.id || (toolOnly ? `run-${runId}-tool-${Date.now()}` : `run-${runId}`);
             set((s) => {
               const nextTools = updates.length > 0 ? upsertToolStatuses(s.streamingTools, updates) : s.streamingTools;

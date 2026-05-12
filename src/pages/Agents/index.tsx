@@ -8,7 +8,7 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
-import { Switch } from '@/components/ui/switch';
+import { AgentAvatar } from '@/components/common/AgentAvatar';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 import { useAgentsStore } from '@/stores/agents';
 import { useGatewayStore } from '@/stores/gateway';
@@ -118,7 +118,6 @@ export function Agents() {
     loading,
     error,
     fetchAgents,
-    createAgent,
     deleteAgent,
   } = useAgentsStore();
   const [channelGroups, setChannelGroups] = useState<ChannelGroupItem[]>([]);
@@ -179,7 +178,6 @@ export function Agents() {
     return () => {
       mounted = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // 只在组件挂载时执行一次
 
   useEffect(() => {
@@ -198,7 +196,6 @@ export function Agents() {
     lastGatewayStateRef.current = gatewayStatus.state;
 
     if (previousGatewayState !== 'running' && gatewayStatus.state === 'running') {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       void fetchChannelAccounts();
     }
   }, [fetchChannelAccounts, gatewayStatus.state]);
@@ -206,6 +203,19 @@ export function Agents() {
   const activeAgent = useMemo(
     () => agents.find((agent) => agent.id === activeAgentId) ?? null,
     [activeAgentId, agents],
+  );
+  const employeeAvatarIndexByAgentId = useMemo(
+    () =>
+      Object.fromEntries(
+        [...digitalEmployees]
+          .sort((left, right) =>
+            (left.openclawAgentId || left.nickName || '').localeCompare(
+              right.openclawAgentId || right.nickName || '',
+            ),
+          )
+          .map((employee, index) => [employee.openclawAgentId, index]),
+      ) as Record<string, number>,
+    [digitalEmployees],
   );
 
   // 标记哪些 agent 是数字员工，并使用数字员工的昵称
@@ -289,9 +299,10 @@ export function Agents() {
         // 如果是数字员工，使用 IM 平台的昵称
         name: employee?.nickName || agent.name,
         templateName,
+        avatarIndex: employee ? employeeAvatarIndexByAgentId[employee.openclawAgentId] ?? 0 : undefined,
       };
     });
-  }, [agents, digitalEmployees, templates, skills]); // 添加 templates 和 skills 作为依赖！
+  }, [agents, digitalEmployees, templates, skills, employeeAvatarIndexByAgentId]); // 添加 templates 和 skills 作为依赖！
   
   const visibleChannelGroups = channelGroups;
   const isUsingStableValue = loading && hasCompletedInitialLoad;
@@ -559,11 +570,6 @@ export function Agents() {
       {showAddDialog && (
         <AddAgentDialog
           onClose={() => setShowAddDialog(false)}
-          onCreate={async (name, options) => {
-            await createAgent(name, options);
-            setShowAddDialog(false);
-            toast.success(t('toast.agentCreated'));
-          }}
           onRefresh={fetchChannelAccounts}
         />
       )}
@@ -747,9 +753,14 @@ function AgentCard({
       )}
 
       {/* 头像 */}
-      <div className="h-16 w-16 mx-auto mb-4 flex items-center justify-center text-primary bg-primary/10 rounded-full shadow-sm">
-        <Bot className="h-8 w-8" />
-      </div>
+      <AgentAvatar
+        name={agent.name}
+        seed={agent.id}
+        avatarIndex={agent.avatarIndex}
+        className="mx-auto mb-4 h-[88px] w-[88px]"
+        fallbackClassName="text-[18px]"
+        iconClassName="h-[58px] w-[58px]"
+      />
 
       {/* 名称和标签 */}
       <div className="text-center mb-3">
@@ -890,11 +901,9 @@ function ChannelLogo({ type }: { type: ChannelType }) {
 
 function AddAgentDialog({
   onClose,
-  onCreate,
   onRefresh,
 }: {
   onClose: () => void;
-  onCreate: (name: string, options: { inheritWorkspace: boolean }) => Promise<void>;
   onRefresh: () => Promise<void>;
 }) {
   const { t } = useTranslation('agents');
@@ -1005,7 +1014,8 @@ function AddAgentDialog({
             }
             
             console.log('[AddAgentDialog] Profile files applied successfully');
-            toast.success(`已应用模板 "${template.nameZh}" 的配置文件`);
+            const templateLabel = template?.nameZh || template?.name || '已选模板';
+            toast.success(`已应用模板 "${templateLabel}" 的配置文件`);
           }
         } catch (profileErr) {
           console.error('[AddAgentDialog] Failed to apply profile files:', profileErr);

@@ -10,6 +10,7 @@ import { Input } from '@/components/ui/input';
 import { useSkillsStore } from '@/stores/skills';
 import { useModelsStore } from '@/stores/models';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
+import { AgentAvatar } from '@/components/common/AgentAvatar';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import { Search, X, Plus, Sparkles } from 'lucide-react';
@@ -97,10 +98,12 @@ export function SkillsDialog({ employee, isOpen, onClose, onUpdated }: SkillsDia
         <DialogContent className="max-w-3xl max-h-[80vh] overflow-hidden flex flex-col">
           <DialogHeader>
             <DialogTitle className="text-2xl font-serif flex items-center gap-3">
-              <img
-                src={employee.headImage}
-                alt={employee.nickName}
-                className="w-10 h-10 rounded-full"
+              <AgentAvatar
+                name={employee.nickName}
+                imageUrl={employee.headImage}
+                seed={employee.openclawAgentId || employee.id.toString()}
+                className="h-10 w-10"
+                fallbackClassName="text-[12px]"
               />
               <div>
                 <div>{employee.nickName}</div>

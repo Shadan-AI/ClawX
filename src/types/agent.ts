@@ -12,6 +12,8 @@ export interface AgentSummary {
   channelTypes: string[];
   skills?: string[];
   isDigitalEmployee?: boolean; // 标记是否为数字员工
+  templateName?: string;
+  avatarIndex?: number;
 }
 
 export interface AgentsSnapshot {

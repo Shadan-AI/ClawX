@@ -38,6 +38,8 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { hostApiFetch } from '@/lib/host-api';
 import { useTranslation } from 'react-i18next';
 import logoSvg from '@/assets/logo.svg';
+import { AgentAvatar } from '@/components/common/AgentAvatar';
+import { useModelsStore } from '@/stores/models';
 
 type SessionBucketKey =
   | 'today'
@@ -230,6 +232,7 @@ export function Sidebar() {
   }, [isGatewayRunning, loadHistory, loadSessions, loadChannelBindings]);
   const agents = useAgentsStore((s) => s.agents);
   const fetchAgents = useAgentsStore((s) => s.fetchAgents);
+  const digitalEmployees = useModelsStore((s) => s.digitalEmployees);
 
   const navigate = useNavigate();
   const isOnChat = useLocation().pathname === '/';
@@ -298,18 +301,36 @@ export function Sidebar() {
     () => Object.fromEntries((agents ?? []).map((agent) => [agent.id, agent.name])),
     [agents],
   );
+  const employeeByAgentId = useMemo(
+    () => Object.fromEntries((digitalEmployees ?? []).map((employee) => [employee.openclawAgentId, employee])),
+    [digitalEmployees],
+  );
+  const employeeAvatarIndexByAgentId = useMemo(
+    () =>
+      Object.fromEntries(
+        [...(digitalEmployees ?? [])]
+          .sort((left, right) =>
+            (left.openclawAgentId || left.nickName || '').localeCompare(
+              right.openclawAgentId || right.nickName || '',
+            ),
+          )
+          .map((employee, index) => [employee.openclawAgentId, index]),
+      ) as Record<string, number>,
+    [digitalEmployees],
+  );
 
   // Filter sessions based on search query
   const filteredSessions = useMemo(() => {
     if (!searchQuery.trim()) return sessions;
     const query = searchQuery.toLowerCase();
     return sessions.filter((s) => {
-      const label = getSessionLabel(s.key, s.displayName, s.label).toLowerCase();
+      const label = getSessionLabel(s, s.displayName).toLowerCase();
       const agentId = getAgentIdFromSession(s);
-      const agentName = (agentNameById[agentId] || agentId).toLowerCase();
+      const employee = employeeByAgentId[agentId];
+      const agentName = (employee?.nickName || agentNameById[agentId] || agentId).toLowerCase();
       return label.includes(query) || agentName.includes(query);
     });
-  }, [sessions, searchQuery, agentNameById, getAgentIdFromSession, getSessionLabel]);
+  }, [sessions, searchQuery, agentNameById, employeeByAgentId, getAgentIdFromSession, getSessionLabel]);
 
   useEffect(() => {
     setSelectedSessionKeys((current) => current.filter((key) => sessions.some((session) => session.key === key)));
@@ -614,7 +635,8 @@ export function Sidebar() {
                     </div>
                     {bucket.sessions.map((s) => {
                       const agentId = getAgentIdFromSession(s);
-                      const agentName = agentNameById[agentId] || agentId;
+                      const employee = employeeByAgentId[agentId];
+                      const agentName = employee?.nickName || agentNameById[agentId] || agentId;
                       const isRenaming = sessionToRename?.key === s.key;
                       const isSelected = selectedSessionKeySet.has(s.key);
                       const canSelect = true;
@@ -687,9 +709,14 @@ export function Sidebar() {
                                 )}
                               >
                                 <div className="flex min-w-0 items-center gap-2">
-                                  <span className="shrink-0 rounded-full bg-black/[0.04] px-2 py-0.5 text-[10px] font-medium text-foreground/70 dark:bg-white/[0.08]">
-                                    {agentName}
-                                  </span>
+                                  <AgentAvatar
+                                    name={agentName}
+                                    imageUrl={employee?.headImage}
+                                    seed={employee?.openclawAgentId || agentId || s.key}
+                                    avatarIndex={employee ? employeeAvatarIndexByAgentId[employee.openclawAgentId] ?? 0 : undefined}
+                                    className="h-8 w-8 shrink-0"
+                                    iconClassName="h-[26px] w-[26px]"
+                                  />
                                   <span className="truncate">{getSessionLabel(s, agentName)}</span>
                                 </div>
                               </button>
@@ -771,7 +798,7 @@ export function Sidebar() {
               {!sidebarCollapsed && <span className="text-red-600 dark:text-red-400 font-medium">{t('sidebar.gatewayError')}</span>}
             </>
           )}
-          {(gatewayStatus.state === 'stopped' || gatewayStatus.state === 'idle' || (!gatewayStatus.state)) && (
+          {(gatewayStatus.state === 'stopped' || (!gatewayStatus.state)) && (
             <>
               <span className="h-2 w-2 rounded-full bg-muted-foreground/40 shrink-0" />
               {!sidebarCollapsed && <span className="text-muted-foreground font-medium">{t('sidebar.gatewayStopped')}</span>}

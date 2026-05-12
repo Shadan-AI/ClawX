@@ -1,6 +1,18 @@
 export function stripGatewayMetadataText(text: string): string {
   let result = text;
 
+  // Strip heartbeat boilerplate if it leaked into a visible transcript/title.
+  result = result.replace(
+    /^\s*Read HEARTBEAT\.md if it exists \(workspace context\)\.[\s\S]*?(?:Current time:[^\n]*\n?)?/i,
+    '',
+  );
+
+  // Strip rendered exec/process system summaries that should stay internal.
+  result = result.replace(
+    /^\s*System:\s*\[[^\]]+\]\s*Exec (?:completed|failed|started)[\s\S]*$/i,
+    '',
+  );
+
   // Some failed tool executions were echoed back into the next user message
   // before the real sender metadata block. Drop that prefix if present.
   result = result.replace(

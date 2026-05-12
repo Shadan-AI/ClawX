@@ -1250,13 +1250,21 @@ function isToolResultRole(role: unknown): boolean {
   return normalized === 'toolresult' || normalized === 'tool_result';
 }
 
+function isInternalOnlyText(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  if (/^(HEARTBEAT_OK|NO_REPLY)\s*$/i.test(trimmed)) return true;
+  if (trimmed.startsWith('Read HEARTBEAT.md if it exists (workspace context).')) return true;
+  if (/^System:\s*\[[^\]]+\]\s*Exec (?:completed|failed|started)\b/i.test(trimmed)) return true;
+  return false;
+}
+
 /** True for internal plumbing messages that should never be shown in the UI. */
 function isInternalMessage(msg: { role?: unknown; content?: unknown }): boolean {
   if (msg.role === 'system') return true;
   if (msg.role === 'assistant' || msg.role === 'user') {
     const text = getMessageText(msg.content).trim();
-    if (/^(HEARTBEAT_OK|NO_REPLY)\s*$/.test(text)) return true;
-    if (text.startsWith('Read HEARTBEAT.md if it exists (workspace context).')) return true;
+    if (isInternalOnlyText(text)) return true;
   }
   return false;
 }
@@ -2871,6 +2879,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
             role: finalMsg.role,
             hasContent: !!finalMsg.content,
           });
+          if (isInternalMessage(finalMsg)) {
+            clearPendingFinalTimer(currentSessionKey);
+            set({
+              streamingText: '',
+              streamingMessage: null,
+              streamingTools: [],
+              pendingFinal: false,
+              pendingToolImages: [],
+              sending: false,
+              activeRunId: null,
+            });
+            break;
+          }
           const updates = collectToolUpdates(finalMsg, resolvedState);
           if (isToolResultRole(finalMsg.role)) {
             // Resolve file path from the streaming assistant message's matching tool call
