@@ -1,8 +1,8 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { Department, Assignment, OrgData, NodeRelation } from '../types/organization';
-import { getOrganization, saveOrganization, checkOrganizationUpdate } from '../api/organization';
 import { toast } from 'sonner';
+import { checkOrganizationUpdate, getOrganization, saveOrganization } from '../api/organization';
+import type { Assignment, Department, NodeRelation, OrgData, ParentType } from '../types/organization';
 
 interface OrganizationState {
   departments: Department[];
@@ -14,24 +14,18 @@ interface OrganizationState {
   isLoading: boolean;
   isSaving: boolean;
   isSyncing: boolean;
+  hasLoadedFromServer: boolean;
+  serverHasData: boolean;
   syncStatus: 'idle' | 'syncing' | 'saved' | 'error' | 'conflict';
   lastSyncError: string | null;
-  
-  // 部门操作
-  addDepartment: (name: string, parentId: string | null, parentType?: 'dept' | 'bot') => string;
+  addDepartment: (name: string, parentId: string | null, parentType?: ParentType) => string;
   updateDepartment: (id: string, name: string) => void;
   deleteDepartment: (id: string) => void;
-  moveDepartment: (deptId: string, newParentId: string | null, newParentType?: 'dept' | 'bot') => void;
-  
-  // 员工分配操作
-  assignAgent: (botId: string, parentId: string, parentType?: 'dept' | 'bot') => void;
+  moveDepartment: (deptId: string, newParentId: string | null, newParentType?: ParentType) => void;
+  assignAgent: (botId: string, parentId: string, parentType?: ParentType) => void;
   unassignAgent: (botId: string) => void;
-  
-  // 批量操作
   loadOrgData: (data: OrgData) => void;
   clearAll: () => void;
-  
-  // 服务器同步
   loadFromServer: () => Promise<void>;
   saveToServer: (force?: boolean) => Promise<void>;
   checkUpdate: () => Promise<void>;
@@ -40,6 +34,213 @@ interface OrganizationState {
   markDirty: () => void;
   startAutoSave: () => void;
   stopAutoSave: () => void;
+}
+
+const ORG_SYNC_CLEANUP_KEY = '__orgSyncCleanup';
+const ORG_AUTOSAVE_TIMER_KEY = '__orgAutoSaveTimer';
+const ORG_AUTOSAVE_SCHEDULE_KEY = '__orgScheduleAutoSave';
+const ORG_AUTOSAVE_DELAY_MS = 800;
+
+function nodeKey(type: ParentType | 'bot', id: string): string {
+  return `${type}:${id}`;
+}
+
+function uniqueDepartments(input: Department[]): Department[] {
+  const seen = new Set<string>();
+  const result: Department[] = [];
+  for (const dept of input) {
+    if (!dept?.id || seen.has(dept.id)) continue;
+    seen.add(dept.id);
+    result.push({
+      id: dept.id,
+      name: (dept.name || '未命名部门').trim() || '未命名部门',
+      parentId: dept.parentId ?? null,
+      parentType: dept.parentId ? 'dept' : undefined,
+    });
+  }
+  return result;
+}
+
+function buildRelations(departments: Department[], assignments: Assignment): NodeRelation[] {
+  const relations: NodeRelation[] = [];
+
+  for (const dept of departments) {
+    if (!dept.parentId) continue;
+    relations.push({
+      childId: dept.id,
+      childType: 'dept',
+      parentId: dept.parentId,
+      parentType: 'dept',
+    });
+  }
+
+  for (const [botId, parentId] of Object.entries(assignments)) {
+    if (!botId || !parentId) continue;
+    relations.push({
+      childId: botId,
+      childType: 'bot',
+      parentId,
+      parentType: 'dept',
+    });
+  }
+
+  return relations;
+}
+
+function normalizeOrgData(data: Partial<OrgData> | null | undefined): OrgData {
+  const departments = uniqueDepartments(Array.isArray(data?.departments) ? data!.departments : []);
+  const deptIds = new Set(departments.map((dept) => dept.id));
+  const sanitizedDepartments = departments.map((dept) => {
+    if (!dept.parentId || deptIds.has(dept.parentId)) {
+      return dept;
+    }
+    return { ...dept, parentId: null, parentType: undefined };
+  });
+  const sanitizedDeptIds = new Set(sanitizedDepartments.map((dept) => dept.id));
+  const assignments: Assignment = {};
+
+  for (const [botId, parentId] of Object.entries(data?.assignments ?? {})) {
+    if (typeof botId !== 'string' || !botId.trim()) continue;
+    if (typeof parentId !== 'string' || !parentId.trim()) continue;
+    assignments[botId] = parentId;
+  }
+
+  for (const relation of data?.relations ?? []) {
+    if (!relation || relation.childType !== 'bot') continue;
+    if (relation.childId && relation.parentId && !assignments[relation.childId]) {
+      assignments[relation.childId] = relation.parentId;
+    }
+  }
+
+  const sanitizedAssignments: Assignment = {};
+  for (const [botId, parentId] of Object.entries(assignments)) {
+    if (typeof parentId === 'string' && sanitizedDeptIds.has(parentId)) {
+      sanitizedAssignments[botId] = parentId;
+    }
+  }
+
+  return {
+    departments: sanitizedDepartments,
+    assignments: sanitizedAssignments,
+    relations: buildRelations(sanitizedDepartments, sanitizedAssignments),
+  };
+}
+
+function parseCanvasData(canvasData?: string | null): OrgData {
+  if (!canvasData || canvasData === '{}') {
+    return normalizeOrgData({ departments: [], assignments: {}, relations: [] });
+  }
+  return normalizeOrgData(JSON.parse(canvasData) as OrgData);
+}
+
+function isOrgDataEmpty(data: OrgData): boolean {
+  return data.departments.length === 0 && Object.keys(data.assignments).length === 0;
+}
+
+function getWindowRegistry(): Window & Record<string, unknown> {
+  return window as unknown as Window & Record<string, unknown>;
+}
+
+function buildParentMap(departments: Department[], assignments: Assignment): Map<string, string> {
+  const map = new Map<string, string>();
+
+  for (const dept of departments) {
+    if (!dept.parentId) continue;
+    map.set(nodeKey('dept', dept.id), nodeKey('dept', dept.parentId));
+  }
+
+  for (const [botId, parentId] of Object.entries(assignments)) {
+    map.set(nodeKey('bot', botId), nodeKey('dept', parentId));
+  }
+
+  return map;
+}
+
+function wouldCreateCycle(
+  childId: string,
+  childType: 'dept' | 'bot',
+  parentId: string | null,
+  parentType: ParentType | undefined,
+  departments: Department[],
+  assignments: Assignment,
+): boolean {
+  if (!parentId || !parentType) return false;
+  const target = nodeKey(childType, childId);
+  let current = nodeKey(parentType, parentId);
+  const parentMap = buildParentMap(departments, assignments);
+  const visited = new Set<string>();
+
+  while (current) {
+    if (current === target) return true;
+    if (visited.has(current)) return true;
+    visited.add(current);
+    current = parentMap.get(current) ?? '';
+  }
+
+  return false;
+}
+
+function collectDepartmentSubtree(
+  rootDeptId: string,
+  departments: Department[],
+  assignments: Assignment,
+): { departmentIds: Set<string>; botIds: Set<string> } {
+  const departmentIds = new Set<string>();
+  const botIds = new Set<string>();
+  const deptChildren = new Map<string, string[]>();
+  const botChildren = new Map<string, string[]>();
+
+  for (const dept of departments) {
+    if (!dept.parentId) continue;
+    const list = deptChildren.get(dept.parentId) ?? [];
+    list.push(dept.id);
+    deptChildren.set(dept.parentId, list);
+  }
+
+  for (const [botId, parentId] of Object.entries(assignments)) {
+    if (!parentId) continue;
+    const list = botChildren.get(parentId) ?? [];
+    list.push(botId);
+    botChildren.set(parentId, list);
+  }
+
+  const walkDept = (deptId: string) => {
+    if (departmentIds.has(deptId)) return;
+    departmentIds.add(deptId);
+    for (const childDeptId of deptChildren.get(deptId) ?? []) {
+      walkDept(childDeptId);
+    }
+    for (const childBotId of botChildren.get(deptId) ?? []) {
+      walkBot(childBotId);
+    }
+  };
+
+  const walkBot = (botId: string) => {
+    if (botIds.has(botId)) return;
+    botIds.add(botId);
+    for (const childBotId of botChildren.get(botId) ?? []) {
+      walkBot(childBotId);
+    }
+  };
+
+  walkDept(rootDeptId);
+  return { departmentIds, botIds };
+}
+
+function scheduleAutoSaveFromWindow(): void {
+  const schedule = getWindowRegistry()[ORG_AUTOSAVE_SCHEDULE_KEY];
+  if (typeof schedule === 'function') {
+    (schedule as () => void)();
+  }
+}
+
+function makeStatePatch(departments: Department[], assignments: Assignment) {
+  return {
+    departments,
+    assignments,
+    relations: buildRelations(departments, assignments),
+    hasLocalChanges: true,
+  };
 }
 
 export const useOrganizationStore = create<OrganizationState>()(
@@ -54,441 +255,321 @@ export const useOrganizationStore = create<OrganizationState>()(
       isLoading: false,
       isSaving: false,
       isSyncing: false,
+      hasLoadedFromServer: false,
+      serverHasData: false,
       syncStatus: 'idle',
       lastSyncError: null,
-      
-      addDepartment: (name: string, parentId: string | null, parentType: 'dept' | 'bot' = 'dept') => {
+
+      addDepartment: (name, parentId, _parentType = 'dept') => {
+        const trimmedName = name.trim() || '未命名部门';
         const id = `dept-${Date.now()}`;
-        const newDept: Department = { 
-          id, 
-          name, 
-          parentId,
-          parentType: parentId ? parentType : undefined
-        };
-        
         set((state) => {
-          const newRelations = parentId 
-            ? [...state.relations, { childId: id, childType: 'dept', parentId, parentType }]
-            : state.relations;
-          
-          return {
-            departments: [...state.departments, newDept],
-            relations: newRelations,
-            hasLocalChanges: true,
-          };
+          const validParentId = parentId && state.departments.some((dept) => dept.id === parentId) ? parentId : null;
+          const nextDepartments = [
+            ...state.departments,
+            {
+              id,
+              name: trimmedName,
+              parentId: validParentId,
+              parentType: validParentId ? ('dept' as const) : undefined,
+            },
+          ];
+          return makeStatePatch(nextDepartments, state.assignments);
         });
-        
-        // 触发自动保存
-        setTimeout(() => {
-          const schedule = (window as any).__orgScheduleAutoSave;
-          if (schedule) schedule();
-        }, 0);
-        
+        scheduleAutoSaveFromWindow();
         return id;
       },
-      
-      updateDepartment: (id: string, name: string) => {
-        set((state) => ({
-          departments: state.departments.map((dept) =>
-            dept.id === id ? { ...dept, name } : dept
-          ),
-          hasLocalChanges: true,
-        }));
-        setTimeout(() => {
-          const schedule = (window as any).__orgScheduleAutoSave;
-          if (schedule) schedule();
-        }, 0);
+
+      updateDepartment: (id, name) => {
+        const trimmedName = name.trim() || '未命名部门';
+        set((state) => makeStatePatch(
+          state.departments.map((dept) => (dept.id === id ? { ...dept, name: trimmedName } : dept)),
+          state.assignments,
+        ));
+        scheduleAutoSaveFromWindow();
       },
-      
-      moveDepartment: (deptId: string, newParentId: string | null, newParentType: 'dept' | 'bot' = 'dept') => {
-        set((state) => {
-          // 检查是否会造成循环引用
-          const wouldCreateCycle = (targetId: string | null, sourceId: string): boolean => {
-            if (!targetId) return false;
-            if (targetId === sourceId) return true;
-            
-            const parent = state.departments.find(d => d.id === targetId);
-            if (!parent || !parent.parentId) return false;
-            
-            return wouldCreateCycle(parent.parentId, sourceId);
-          };
-          
-          if (wouldCreateCycle(newParentId, deptId)) {
-            return state; // 不允许循环引用
-          }
-          
-          // 更新部门的父级
-          const newDepartments = state.departments.map((dept) =>
-            dept.id === deptId 
-              ? { ...dept, parentId: newParentId, parentType: newParentId ? newParentType : undefined }
-              : dept
-          );
-          
-          // 更新关系
-          const newRelations = state.relations.filter((rel) => rel.childId !== deptId);
-          if (newParentId) {
-            newRelations.push({
-              childId: deptId,
-              childType: 'dept',
-              parentId: newParentId,
-              parentType: newParentType,
-            });
-          }
-          
-          return {
-            departments: newDepartments,
-            relations: newRelations,
-            hasLocalChanges: true,
-          };
-        });
-        setTimeout(() => {
-          const schedule = (window as any).__orgScheduleAutoSave;
-          if (schedule) schedule();
-        }, 0);
+
+      deleteDepartment: (id) => {
+        const state = get();
+        const { departmentIds, botIds } = collectDepartmentSubtree(id, state.departments, state.assignments);
+        const nextDepartments = state.departments.filter((dept) => !departmentIds.has(dept.id));
+        const nextAssignments: Assignment = {};
+
+        for (const [botId, parentId] of Object.entries(state.assignments)) {
+          if (botIds.has(botId)) continue;
+          if (departmentIds.has(parentId) || botIds.has(parentId)) continue;
+          nextAssignments[botId] = parentId;
+        }
+
+        set(makeStatePatch(nextDepartments, nextAssignments));
+        scheduleAutoSaveFromWindow();
       },
-      
-      deleteDepartment: (id: string) => {
-        const { departments, assignments, relations } = get();
-        
-        // 找到所有子节点（部门和员工）
-        const childIds = new Set<string>();
-        const findChildren = (parentId: string) => {
-          // 查找子部门
-          departments.forEach((dept) => {
-            if (dept.parentId === parentId) {
-              childIds.add(dept.id);
-              findChildren(dept.id);
-            }
-          });
-          
-          // 查找子员工
-          relations.forEach((rel) => {
-            if (rel.parentId === parentId && rel.childType === 'bot') {
-              childIds.add(rel.childId);
-            }
-          });
-        };
-        findChildren(id);
-        
-        // 删除部门及其子部门
-        const idsToDelete = new Set([id, ...childIds]);
-        const newDepartments = departments.filter((dept) => !idsToDelete.has(dept.id));
-        
-        // 取消分配到这些节点的员工
-        const newAssignments = { ...assignments };
-        Object.keys(newAssignments).forEach((botId) => {
-          if (idsToDelete.has(newAssignments[botId])) {
-            delete newAssignments[botId];
-          }
-        });
-        
-        // 删除相关的关系
-        const newRelations = relations.filter(
-          (rel) => !idsToDelete.has(rel.parentId) && !idsToDelete.has(rel.childId)
-        );
-        
-        set({ departments: newDepartments, assignments: newAssignments, relations: newRelations, hasLocalChanges: true });
-        setTimeout(() => {
-          const schedule = (window as any).__orgScheduleAutoSave;
-          if (schedule) schedule();
-        }, 0);
+
+      moveDepartment: (deptId, newParentId, _newParentType = 'dept') => {
+        const state = get();
+        const validParentId = newParentId && state.departments.some((dept) => dept.id === newParentId) ? newParentId : null;
+        if (wouldCreateCycle(deptId, 'dept', validParentId, validParentId ? 'dept' : undefined, state.departments, state.assignments)) {
+          toast.error('不能把部门移动到自己的下级节点下面');
+          return;
+        }
+        const nextDepartments = state.departments.map((dept) => (
+          dept.id === deptId
+            ? { ...dept, parentId: validParentId, parentType: validParentId ? ('dept' as const) : undefined }
+            : dept
+        ));
+        set(makeStatePatch(nextDepartments, state.assignments));
+        scheduleAutoSaveFromWindow();
       },
-      
-      assignAgent: (botId: string, parentId: string, parentType: 'dept' | 'bot' = 'dept') => {
-        set((state) => {
-          // 移除旧的关系
-          const newRelations = state.relations.filter((rel) => rel.childId !== botId);
-          
-          // 添加新的关系
-          newRelations.push({
-            childId: botId,
-            childType: 'bot',
-            parentId,
-            parentType,
-          });
-          
-          return {
-            assignments: { ...state.assignments, [botId]: parentId },
-            relations: newRelations,
-            hasLocalChanges: true,
-          };
-        });
-        setTimeout(() => {
-          const schedule = (window as any).__orgScheduleAutoSave;
-          if (schedule) schedule();
-        }, 0);
+
+      assignAgent: (botId, parentId, _parentType = 'dept') => {
+        const state = get();
+        if (!state.departments.some((dept) => dept.id === parentId)) {
+          toast.error('请将员工分配到部门节点');
+          return;
+        }
+        const nextAssignments = { ...state.assignments, [botId]: parentId };
+        set(makeStatePatch(state.departments, nextAssignments));
+        scheduleAutoSaveFromWindow();
       },
-      
-      unassignAgent: (botId: string) => {
-        set((state) => {
-          const newAssignments = { ...state.assignments };
-          delete newAssignments[botId];
-          
-          // 移除相关的关系
-          const newRelations = state.relations.filter((rel) => rel.childId !== botId);
-          
-          return { 
-            assignments: newAssignments,
-            relations: newRelations,
-            hasLocalChanges: true,
-          };
-        });
-        setTimeout(() => {
-          const schedule = (window as any).__orgScheduleAutoSave;
-          if (schedule) schedule();
-        }, 0);
+
+      unassignAgent: (botId) => {
+        const nextAssignments = { ...get().assignments };
+        delete nextAssignments[botId];
+        set(makeStatePatch(get().departments, nextAssignments));
+        scheduleAutoSaveFromWindow();
       },
-      
-      loadOrgData: (data: OrgData) => {
+
+      loadOrgData: (data) => {
+        const normalized = normalizeOrgData(data);
         set({
-          departments: data.departments,
-          assignments: data.assignments,
-          relations: data.relations || [],
+          departments: normalized.departments,
+          assignments: normalized.assignments,
+          relations: normalized.relations ?? [],
+          hasLocalChanges: false,
         });
       },
-      
+
       clearAll: () => {
-        set({ departments: [], assignments: {}, relations: [] });
+        set({
+          departments: [],
+          assignments: {},
+          relations: [],
+          hasLocalChanges: true,
+        });
+        scheduleAutoSaveFromWindow();
       },
-      
-      // 从服务器加载
+
       loadFromServer: async () => {
-        set({ isLoading: true, syncStatus: 'syncing' });
+        set({ isLoading: true, syncStatus: 'syncing', lastSyncError: null });
         try {
           const response = await getOrganization();
-          
-          // 处理错误响应
           if (response.code !== 200) {
-            const errorMsg = response.message || '加载失败';
-            console.error('加载组织架构失败:', errorMsg);
-            set({ 
-              syncStatus: 'error', 
-              lastSyncError: errorMsg,
-              isLoading: false 
-            });
-            
-            // 如果是未登录错误,不显示 toast
+            const message = response.message || '加载组织架构失败';
+            set({ isLoading: false, syncStatus: 'error', lastSyncError: message });
             if (response.code !== 400) {
-              toast.error(errorMsg);
+              toast.error(message);
             }
             return;
           }
-          
-          // 处理成功响应
-          if (response.data) {
-            const canvasData = response.data.canvasData;
-            if (canvasData && canvasData !== '{}') {
-              const data: OrgData = JSON.parse(canvasData);
-              set({
-                departments: data.departments || [],
-                assignments: data.assignments || {},
-                relations: data.relations || [],
-                version: response.data.version,
-                lastSyncTime: Date.now(),
-                hasLocalChanges: false,
-                syncStatus: 'saved',
-                lastSyncError: null,
-              });
-            }
-          }
+
+          const parsed = parseCanvasData(response.data?.canvasData);
+          set({
+            departments: parsed.departments,
+            assignments: parsed.assignments,
+            relations: parsed.relations ?? [],
+            version: response.data?.version ?? 0,
+            lastSyncTime: Date.now(),
+            hasLocalChanges: false,
+            hasLoadedFromServer: true,
+            serverHasData: !isOrgDataEmpty(parsed),
+            syncStatus: 'saved',
+            lastSyncError: null,
+          });
         } catch (error) {
-          console.error('加载组织架构失败:', error);
-          const errorMsg = error instanceof Error ? error.message : '网络错误';
-          set({ syncStatus: 'error', lastSyncError: errorMsg });
+          const message = error instanceof Error ? error.message : '网络错误';
+          console.error('[organization] load failed:', error);
+          set({ syncStatus: 'error', lastSyncError: message });
           toast.error('加载组织架构失败');
         } finally {
           set({ isLoading: false });
         }
       },
-      
-      // 保存到服务器
+
       saveToServer: async (force = false) => {
-        const { departments, assignments, relations, version } = get();
-        set({ isSaving: true, syncStatus: 'syncing' });
+        const state = get();
+        if (!state.hasLocalChanges && !force) return;
+
+        if (!state.hasLoadedFromServer) {
+          const message = '组织架构尚未从服务器加载完成，已阻止保存';
+          set({ syncStatus: 'error', lastSyncError: message });
+          toast.error(message);
+          return;
+        }
+
         try {
-          const data: OrgData = { departments, assignments, relations };
-          const canvasData = JSON.stringify(data);
-          
-          // 如果是强制保存,先获取最新版本号
-          let saveVersion = version;
-          if (force) {
-            const latest = await getOrganization();
-            if (latest.code === 200 && latest.data) {
-              saveVersion = latest.data.version;
-            }
+          const data = normalizeOrgData({
+            departments: state.departments,
+            assignments: state.assignments,
+            relations: state.relations,
+          });
+
+          if (state.serverHasData && isOrgDataEmpty(data)) {
+            const message = '已阻止空组织架构覆盖服务器已有数据，请刷新后再操作';
+            set({ syncStatus: 'error', lastSyncError: message });
+            toast.error(message);
+            return;
           }
-          
-          const response = await saveOrganization(canvasData, saveVersion);
-          
-          if (response.code === 200) {
-            set({ 
-              version: response.data.version,
-              lastSyncTime: Date.now(),
+
+          if (!state.serverHasData && isOrgDataEmpty(data)) {
+            set({
               hasLocalChanges: false,
               syncStatus: 'saved',
               lastSyncError: null,
             });
-            // 不显示 toast,用状态指示器就够了
-          } else if (response.code === 409) {
-            // 版本冲突
-            set({ syncStatus: 'conflict', lastSyncError: '数据已被其他端修改' });
-            toast.error('数据已被其他端修改', {
+            return;
+          }
+
+          set({ isSaving: true, syncStatus: 'syncing', lastSyncError: null });
+          let version = state.version;
+
+          if (force) {
+            const latest = await getOrganization();
+            if (latest.code === 200 && latest.data) {
+              version = latest.data.version;
+            }
+          }
+
+          const response = await saveOrganization(JSON.stringify(data), version);
+          if (response.code === 200) {
+            set({
+              relations: data.relations ?? [],
+              version: response.data.version,
+              lastSyncTime: Date.now(),
+              hasLocalChanges: false,
+              serverHasData: !isOrgDataEmpty(data),
+              syncStatus: 'saved',
+              lastSyncError: null,
+            });
+            return;
+          }
+
+          if (response.code === 409) {
+            set({ syncStatus: 'conflict', lastSyncError: '组织架构已在其他端被修改' });
+            toast.error('组织架构已在其他端被修改', {
               duration: 5000,
               action: {
                 label: '强制保存',
                 onClick: () => {
-                  get().saveToServer(true);
+                  void get().saveToServer(true);
                 },
               },
             });
-          } else {
-            set({ syncStatus: 'error', lastSyncError: response.message || '保存失败' });
-            toast.error(response.message || '保存失败');
+            return;
           }
+
+          const message = response.message || '保存失败';
+          set({ syncStatus: 'error', lastSyncError: message });
+          toast.error(message);
         } catch (error) {
-          console.error('保存组织架构失败:', error);
+          console.error('[organization] save failed:', error);
           set({ syncStatus: 'error', lastSyncError: '网络错误' });
-          toast.error('保存失败');
+          toast.error('保存组织架构失败');
         } finally {
           set({ isSaving: false });
         }
       },
-      
-      // 检查更新
+
       checkUpdate: async () => {
-        const { version, hasLocalChanges } = get();
-        if (get().isSyncing) return;
-        
+        const state = get();
+        if (state.isSyncing || state.isSaving) return;
+
         set({ isSyncing: true });
         try {
-          const response = await checkOrganizationUpdate(version);
+          const response = await checkOrganizationUpdate(state.version);
           if (response.code === 200 && response.data.hasUpdate) {
-            if (hasLocalChanges) {
-              // 有冲突,提示用户
-              toast.warning('服务器数据已更新,但你有未保存的本地修改', {
-                action: {
-                  label: '查看',
-                  onClick: () => {
-                    // TODO: 显示冲突对话框
-                    console.log('显示冲突对话框');
-                  },
-                },
-              });
+            if (state.hasLocalChanges) {
+              set({ syncStatus: 'conflict', lastSyncError: '服务端有更新，当前页面也有未保存修改' });
+              toast.warning('服务端有新的组织架构变更，请先处理冲突');
             } else {
-              // 无冲突,自动更新
               await get().loadFromServer();
-              toast.info('已同步最新数据');
             }
           }
         } catch (error) {
-          console.error('检查更新失败:', error);
+          console.error('[organization] check update failed:', error);
         } finally {
           set({ isSyncing: false });
         }
       },
-      
-      // 开始自动同步
+
       startSync: () => {
-        // 清理旧的定时器
-        const oldInterval = (window as any).__orgSyncInterval;
-        if (oldInterval) {
-          clearInterval(oldInterval);
+        const win = getWindowRegistry();
+        const oldCleanup = win[ORG_SYNC_CLEANUP_KEY];
+        if (typeof oldCleanup === 'function') {
+          (oldCleanup as () => void)();
         }
-        
-        let lastActivityTime = Date.now();
-        
-        // 监听用户活动
-        const updateActivity = () => {
-          lastActivityTime = Date.now();
-        };
-        
-        // 监听鼠标和键盘活动
-        document.addEventListener('mousedown', updateActivity);
-        document.addEventListener('keydown', updateActivity);
-        
-        const syncInterval = setInterval(() => {
-          // 只在以下条件都满足时才同步:
-          // 1. 页面可见
-          // 2. 用户至少 5 秒没有操作
-          // 3. 没有正在保存
-          const idleTime = Date.now() - lastActivityTime;
-          const shouldSync = !document.hidden && idleTime > 5000 && !get().isSaving;
-          
-          if (shouldSync) {
-            get().checkUpdate();
+
+        const checkNow = () => {
+          if (!document.hidden && !get().hasLocalChanges) {
+            void get().checkUpdate();
           }
-        }, 10000); // 10秒检查一次
-        
-        // 保存到 window 对象
-        (window as any).__orgSyncInterval = syncInterval;
-        (window as any).__orgSyncCleanup = () => {
-          document.removeEventListener('mousedown', updateActivity);
-          document.removeEventListener('keydown', updateActivity);
+        };
+
+        document.addEventListener('visibilitychange', checkNow);
+        window.addEventListener('focus', checkNow);
+        win[ORG_SYNC_CLEANUP_KEY] = () => {
+          document.removeEventListener('visibilitychange', checkNow);
+          window.removeEventListener('focus', checkNow);
         };
       },
-      
-      // 停止自动同步
+
       stopSync: () => {
-        const syncInterval = (window as any).__orgSyncInterval;
-        if (syncInterval) {
-          clearInterval(syncInterval);
-          delete (window as any).__orgSyncInterval;
-        }
-        
-        const cleanup = (window as any).__orgSyncCleanup;
-        if (cleanup) {
-          cleanup();
-          delete (window as any).__orgSyncCleanup;
+        const win = getWindowRegistry();
+        const cleanup = win[ORG_SYNC_CLEANUP_KEY];
+        if (typeof cleanup === 'function') {
+          (cleanup as () => void)();
+          delete win[ORG_SYNC_CLEANUP_KEY];
         }
       },
-      
-      // 标记有本地修改
+
       markDirty: () => {
         set({ hasLocalChanges: true });
       },
-      
-      // 开始自动保存(2秒防抖)
+
       startAutoSave: () => {
-        console.log('[organization] 启动自动保存');
-        // 清理旧的定时器
-        const oldTimer = (window as any).__orgAutoSaveTimer;
-        if (oldTimer) {
-          clearTimeout(oldTimer);
-        }
-        
-        // 监听数据变化,自动保存
-        const scheduleAutoSave = () => {
-          const timer = (window as any).__orgAutoSaveTimer;
-          if (timer) {
-            clearTimeout(timer);
+        const win = getWindowRegistry();
+        win[ORG_AUTOSAVE_SCHEDULE_KEY] = () => {
+          const currentTimer = win[ORG_AUTOSAVE_TIMER_KEY];
+          if (typeof currentTimer === 'number') {
+            window.clearTimeout(currentTimer);
           }
-          
-          console.log('[organization] 计划自动保存(2秒后)');
-          (window as any).__orgAutoSaveTimer = setTimeout(() => {
-            const { hasLocalChanges, isSaving } = get();
-            console.log('[organization] 自动保存触发', { hasLocalChanges, isSaving });
-            if (hasLocalChanges && !isSaving) {
-              get().saveToServer();
+          win[ORG_AUTOSAVE_TIMER_KEY] = window.setTimeout(() => {
+            const state = get();
+            if (state.hasLocalChanges && !state.isSaving) {
+              void state.saveToServer();
             }
-          }, 2000); // 2秒后自动保存
+          }, ORG_AUTOSAVE_DELAY_MS);
         };
-        
-        // 保存调度函数
-        (window as any).__orgScheduleAutoSave = scheduleAutoSave;
       },
-      
-      // 停止自动保存
+
       stopAutoSave: () => {
-        const timer = (window as any).__orgAutoSaveTimer;
-        if (timer) {
-          clearTimeout(timer);
-          delete (window as any).__orgAutoSaveTimer;
+        const win = getWindowRegistry();
+        const timer = win[ORG_AUTOSAVE_TIMER_KEY];
+        if (typeof timer === 'number') {
+          window.clearTimeout(timer);
+          delete win[ORG_AUTOSAVE_TIMER_KEY];
         }
-        delete (window as any).__orgScheduleAutoSave;
+        delete win[ORG_AUTOSAVE_SCHEDULE_KEY];
       },
     }),
     {
       name: 'organization-storage',
-    }
-  )
+      partialize: (state) => ({
+        departments: state.departments,
+        assignments: state.assignments,
+        relations: state.relations,
+        version: state.version,
+        lastSyncTime: state.lastSyncTime,
+      }),
+    },
+  ),
 );

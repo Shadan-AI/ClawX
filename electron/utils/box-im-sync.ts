@@ -167,6 +167,7 @@ const CHANNEL_ID = 'box-im';
 const SYSTEM_AGENTS = new Set(['main', 'dev']);
 const DEFAULT_API_URL = 'https://im.shadanai.com/api';
 const DEFAULT_ONEAPI_BASE_URL = 'https://one-api.shadanai.com';
+const SAFE_FALLBACK_MODEL_ID = 'glm-5';
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -186,6 +187,43 @@ export interface BotInfo {
 export interface BoxImSyncResult {
   bots: BotInfo[];
   error?: string;
+}
+
+async function fetchAvailableOneApiModelIds(tokenKey: string): Promise<Set<string> | null> {
+  try {
+    const resp = await fetch(`${DEFAULT_ONEAPI_BASE_URL}/v1/models`, {
+      headers: { Authorization: `Bearer ${tokenKey}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!resp.ok) {
+      logger.warn(`[box-im] Failed to fetch OneAPI models for validation: ${resp.status}`);
+      return null;
+    }
+    const payload = await resp.json() as { data?: Array<{ id?: unknown }> };
+    const ids = new Set(
+      (payload.data ?? [])
+        .map((model) => typeof model.id === 'string' ? model.id.trim() : '')
+        .filter(Boolean),
+    );
+    return ids.size > 0 ? ids : null;
+  } catch (error) {
+    logger.warn('[box-im] Failed to fetch OneAPI models for validation:', error);
+    return null;
+  }
+}
+
+function resolveSupportedModelId(rawModel: string | undefined, availableModelIds: Set<string> | null): string | undefined {
+  const modelId = rawModel?.replace(/^shadan\//, '').trim();
+  if (!modelId) return undefined;
+  if (!availableModelIds || availableModelIds.has(modelId)) {
+    return modelId;
+  }
+
+  const fallback = availableModelIds.has(SAFE_FALLBACK_MODEL_ID)
+    ? SAFE_FALLBACK_MODEL_ID
+    : [...availableModelIds][0];
+  logger.warn(`[box-im] Bot model "${modelId}" is not available in OneAPI; using "${fallback}" instead`);
+  return fallback;
 }
 
 export interface ProfileFileInfo {
@@ -445,8 +483,7 @@ export async function fetchBotsFromApi(apiUrl: string, tokenKey: string): Promis
   const result = JSON.parse(raw) as { code?: number; data?: any[]; message?: string };
   if (result.code !== 200) throw new Error(`bot list failed: ${result.message}`);
   
-  // 详细日志:打印 API 返回的原始数据
-  logger.info('[box-im] API 返回的原始数据:', JSON.stringify(result.data, null, 2));
+  logger.debug(`[box-im] Bot API returned ${result.data?.length ?? 0} record(s)`);
   
   return (result.data ?? []).map((b: any) => {
     const botInfo = {
@@ -461,7 +498,7 @@ export async function fetchBotsFromApi(apiUrl: string, tokenKey: string): Promis
       skills: b.skills ? (typeof b.skills === 'string' ? JSON.parse(b.skills) : b.skills) : undefined,
       templateId: b.templateId ?? null,
     };
-    logger.info(`[box-im] 解析 bot ${b.id}: model="${b.model}" -> "${botInfo.model}"`);
+    logger.debug(`[box-im] Parsed bot ${b.id}: model="${b.model}" -> "${botInfo.model}"`);
     return botInfo;
   });
 }
@@ -471,13 +508,15 @@ export async function fetchBotsFromApi(apiUrl: string, tokenKey: string): Promis
 function buildAccountsFromBots(
   bots: BotInfo[],
   existing: Record<string, BoxImAccount>,
+  availableModelIds: Set<string> | null = null,
 ): Record<string, BoxImAccount> {
   const accounts: Record<string, BoxImAccount> = {};
   for (const bot of bots) {
     const agentId = bot.openclawAgentId || bot.userName || `bot-${bot.id}`;
-    const modelValue = bot.model && bot.model.length > 0 ? `shadan/${bot.model}` : '';
+    const supportedModelId = resolveSupportedModelId(bot.model, availableModelIds);
+    const modelValue = supportedModelId ? `shadan/${supportedModelId}` : '';
     
-    logger.info(`[box-im-sync] Building account for ${agentId}: bot.model="${bot.model}", final model="${modelValue}"`);
+    logger.debug(`[box-im-sync] Building account for ${agentId}: bot.model="${bot.model}", final model="${modelValue}"`);
     
     accounts[agentId] = {
       enabled: true,
@@ -562,12 +601,12 @@ function reconcileBindings(
   accountIds: string[],
 ): Binding[] {
   const result = oldBindings.filter(b => b.match?.channel !== CHANNEL_ID);
-  logger.info(`[box-im] reconcileBindings: creating bindings for ${accountIds.length} accounts`);
+  logger.debug(`[box-im] reconcileBindings: creating bindings for ${accountIds.length} accounts`);
   for (const agentId of accountIds) {
-    logger.info(`[box-im] Creating binding for agent: ${agentId}`);
+    logger.debug(`[box-im] Creating binding for agent: ${agentId}`);
     result.push({ agentId, match: { channel: CHANNEL_ID, accountId: agentId } });
   }
-  logger.info(`[box-im] Total bindings after reconciliation: ${result.length}`);
+  logger.debug(`[box-im] Total bindings after reconciliation: ${result.length}`);
   return result;
 }
 
@@ -591,8 +630,7 @@ export async function saveBoxImAccounts(accounts: Record<string, BoxImAccount>):
 
   const oldBindings = ((cfg as any).bindings ?? []) as Binding[];
   const accountIds = Object.keys(accounts);
-  logger.info(`[box-im] saveBoxImAccounts: ${accountIds.length} accounts to sync`);
-  logger.info(`[box-im] Account IDs: ${accountIds.join(', ')}`);
+  logger.debug(`[box-im] saveBoxImAccounts: ${accountIds.length} accounts to sync (${accountIds.join(', ')})`);
   (cfg as any).bindings = reconcileBindings(oldBindings, accountIds);
 
   // Pre-create agent directories so Gateway can initialize them on startup.
@@ -730,25 +768,20 @@ export async function syncBots(): Promise<BoxImSyncResult> {
 async function syncBotsInternal(): Promise<BoxImSyncResult> {
   const { tokenKey, apiUrl, accounts } = await getBoxImConfig();
 
-  console.log('[box-im-sync] ========== syncBotsInternal START ==========');
-  console.log('[box-im-sync] tokenKey:', tokenKey ? 'exists' : 'missing');
-  console.log('[box-im-sync] apiUrl:', apiUrl);
+  logger.debug(`[box-im-sync] syncBotsInternal start (tokenKey=${tokenKey ? 'exists' : 'missing'}, apiUrl=${apiUrl})`);
 
   if (!tokenKey) {
-    console.log('[box-im-sync] No tokenKey, returning empty result');
     return { bots: [], error: '未绑定用户' };
   }
 
   try {
     logger.info('[box-im] Starting bot sync...');
-    console.log('[box-im-sync] Fetching bots from API...');
     const bots = await fetchBotsFromApi(apiUrl, tokenKey);
-    console.log('[box-im-sync] Fetched bots:', bots.length);
-    logger.info(`[box-im] Fetched ${bots.length} bots from API:`, bots.map(b => ({ id: b.id, agentId: b.openclawAgentId, nickName: b.nickName })));
+    const availableModelIds = await fetchAvailableOneApiModelIds(tokenKey);
+    logger.info(`[box-im] Fetched ${bots.length} bots from API`);
     
-    const newAccounts = buildAccountsFromBots(bots, accounts);
-    console.log('[box-im-sync] Built accounts:', Object.keys(newAccounts).length);
-    logger.info(`[box-im] Built ${Object.keys(newAccounts).length} accounts:`, Object.keys(newAccounts));
+    const newAccounts = buildAccountsFromBots(bots, accounts, availableModelIds);
+    logger.debug(`[box-im] Built ${Object.keys(newAccounts).length} accounts: ${Object.keys(newAccounts).join(', ')}`);
 
     for (const [agentId, acct] of Object.entries(newAccounts)) {
       if (!acct.accessToken) {

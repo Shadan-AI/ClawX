@@ -122,8 +122,7 @@ export class GatewayManager extends EventEmitter {
         if (!changed || this.status.state !== 'running') {
           return;
         }
-        logger.info('Gateway startup synced digital employee models; scheduling hot reload');
-        this.debouncedReload(1200);
+        logger.info('Gateway startup synced digital employee models; skipping immediate reload to keep startup fast');
       })
       .catch((error) => {
         logger.warn('Post-start digital employee model sync failed:', error);

@@ -26,6 +26,7 @@ import { startOpenClawConfigLanReconciliationWatcher } from '../utils/openclaw-c
 import { getTokenKey, writeBoxImTokenKey } from '../utils/box-im-sync';
 import { buildProxyEnv, resolveProxySettings } from '../utils/proxy';
 import { syncProxyConfigToOpenClaw } from '../utils/openclaw-proxy';
+import { normalizeOpenClawConfigHealthBaseline } from '../utils/openclaw-config-health';
 import { logger } from '../utils/logger';
 import { prependPathEntry } from '../utils/env-path';
 import { copyPluginFromNodeModules, fixupPluginManifest, cpSyncSafe } from '../utils/plugin-install';
@@ -330,6 +331,8 @@ export async function syncGatewayConfigBeforeLaunch(
     logger.warn('Failed to batch sync gateway config:', err);
   }
 
+  await normalizeOpenClawConfigHealthBaseline();
+
   // Start watcher to prevent Gateway from overwriting models.providers baseUrl.
   startOpenClawConfigLanReconciliationWatcher();
 }
@@ -362,9 +365,17 @@ async function batchSyncGatewayConfig(appSettings: Awaited<ReturnType<typeof get
           : {}
       ) as Record<string, unknown>;
 
-      auth.mode = 'token';
-      auth.token = appSettings.gatewayToken;
-      gateway.auth = auth;
+      if (auth.mode !== 'token') {
+        auth.mode = 'token';
+        modified = true;
+      }
+      if (auth.token !== appSettings.gatewayToken) {
+        auth.token = appSettings.gatewayToken;
+        modified = true;
+      }
+      if (gateway.auth !== auth) {
+        gateway.auth = auth;
+      }
 
       const controlUi = (
         gateway.controlUi && typeof gateway.controlUi === 'object'
@@ -378,14 +389,17 @@ async function batchSyncGatewayConfig(appSettings: Awaited<ReturnType<typeof get
         controlUi.allowedOrigins = [...allowedOrigins, 'file://'];
         modified = true;
       }
-      gateway.controlUi = controlUi;
+      if (gateway.controlUi !== controlUi) {
+        gateway.controlUi = controlUi;
+      }
 
       if (!gateway.mode) {
         gateway.mode = 'local';
         modified = true;
       }
-      config.gateway = gateway;
-      modified = true;
+      if (config.gateway !== gateway) {
+        config.gateway = gateway;
+      }
     } catch (err) {
       logger.warn('Failed to sync gateway token in batch:', err);
     }

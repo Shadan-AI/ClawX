@@ -284,7 +284,6 @@ export function Sidebar() {
   const [nowMs, setNowMs] = useState(INITIAL_NOW_MS);
   const [isManageMode, setIsManageMode] = useState(false);
   const [selectedSessionKeys, setSelectedSessionKeys] = useState<string[]>([]);
-  const [isPruningEmpty, setIsPruningEmpty] = useState(false);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -332,13 +331,13 @@ export function Sidebar() {
     });
   }, [sessions, searchQuery, agentNameById, employeeByAgentId, getAgentIdFromSession, getSessionLabel]);
 
-  useEffect(() => {
-    setSelectedSessionKeys((current) => current.filter((key) => sessions.some((session) => session.key === key)));
-  }, [sessions]);
-
+  const activeSelectedSessionKeys = useMemo(
+    () => selectedSessionKeys.filter((key) => sessions.some((session) => session.key === key)),
+    [selectedSessionKeys, sessions],
+  );
   const selectedSessionKeySet = useMemo(
-    () => new Set(selectedSessionKeys),
-    [selectedSessionKeys],
+    () => new Set(activeSelectedSessionKeys),
+    [activeSelectedSessionKeys],
   );
   const selectableSessions = useMemo(
     () => filteredSessions,
@@ -346,7 +345,8 @@ export function Sidebar() {
   );
   const allSelectableChecked = selectableSessions.length > 0
     && selectableSessions.every((session) => selectedSessionKeySet.has(session.key));
-  const hasSelectedSessions = selectedSessionKeys.length > 0;
+  const partiallySelected = activeSelectedSessionKeys.length > 0 && !allSelectableChecked;
+  const hasSelectedSessions = activeSelectedSessionKeys.length > 0;
 
   const sortedFilteredSessions = filteredSessions;
 
@@ -394,41 +394,24 @@ export function Sidebar() {
     });
   }, []);
 
-  const toggleSelectAllVisible = useCallback((checked: boolean) => {
-    if (!checked) {
+  const toggleSelectAllVisible = useCallback(() => {
+    if (allSelectableChecked) {
       setSelectedSessionKeys([]);
       return;
     }
     setSelectedSessionKeys(selectableSessions.map((session) => session.key));
-  }, [selectableSessions]);
+  }, [allSelectableChecked, selectableSessions]);
 
   const handleBulkDelete = useCallback(async () => {
-    const deleteTargets = sessions.filter((session) => selectedSessionKeys.includes(session.key));
-    for (const session of deleteTargets) {
-      await deleteSession(session.key);
-    }
-    if (selectedSessionKeys.includes(currentSessionKey)) {
+    const deleteTargets = sessions.filter((session) => activeSelectedSessionKeys.includes(session.key));
+    await Promise.all(deleteTargets.map((session) => deleteSession(session.key)));
+    if (activeSelectedSessionKeys.includes(currentSessionKey)) {
       navigate('/');
     }
     setSelectedSessionKeys([]);
     setIsManageMode(false);
     setBulkDeleteOpen(false);
-  }, [currentSessionKey, deleteSession, navigate, selectedSessionKeys, sessions]);
-
-  const handlePruneEmptySessions = useCallback(async () => {
-    setIsPruningEmpty(true);
-    try {
-      await hostApiFetch('/api/sessions/prune-empty', { method: 'POST' });
-      await loadSessions();
-      await loadChannelBindings();
-      await loadHistory(useChatStore.getState().messages.length > 0);
-      setSelectedSessionKeys([]);
-    } catch (error) {
-      console.error('Failed to prune empty sessions:', error);
-    } finally {
-      setIsPruningEmpty(false);
-    }
-  }, [loadChannelBindings, loadHistory, loadSessions]);
+  }, [activeSelectedSessionKeys, currentSessionKey, deleteSession, navigate, sessions]);
 
   const navItems = [
     { to: '/models', icon: <Cpu className="h-[18px] w-[18px]" strokeWidth={2} />, label: t('sidebar.models'), testId: 'sidebar-nav-models' },
@@ -535,16 +518,21 @@ export function Sidebar() {
             )}
           </div>
 
-          <div className="mb-2 rounded-xl border border-black/5 bg-white/55 p-1.5 shadow-[0_1px_0_rgba(0,0,0,0.03)] dark:border-white/8 dark:bg-white/5">
-            <div className="mb-1 px-1.5 text-[11px] font-medium tracking-tight text-foreground/55">
-              {'\u4f1a\u8bdd\u5de5\u5177'}
+          <div className="mb-2 rounded-2xl border border-black/5 bg-white/60 p-2 shadow-[0_10px_24px_rgba(15,23,42,0.05)] dark:border-white/8 dark:bg-white/[0.06]">
+            <div className="mb-2 flex items-center justify-between px-1.5">
+              <div className="text-[11px] font-medium tracking-tight text-foreground/55">
+                会话管理
+              </div>
+              <div className="text-[11px] text-muted-foreground">
+                共 {filteredSessions.length} 条
+              </div>
             </div>
-            <div className="grid grid-cols-2 gap-1.5">
+            <div className="grid grid-cols-1 gap-1.5">
               <Button
                 variant={isManageMode ? 'secondary' : 'outline'}
                 size="sm"
                 className={cn(
-                  'h-9 justify-start rounded-lg border-0 px-2.5 text-[12px] shadow-none',
+                  'h-10 justify-start rounded-xl border-0 px-3 text-[12px] shadow-none',
                   isManageMode
                     ? 'bg-foreground text-background hover:bg-foreground/90'
                     : 'bg-black/[0.035] text-foreground/85 hover:bg-black/[0.06] dark:bg-white/[0.06] dark:hover:bg-white/[0.1]',
@@ -562,59 +550,49 @@ export function Sidebar() {
                 <Edit2 className="mr-1.5 h-3.5 w-3.5 shrink-0" />
                 {isManageMode ? '\u5b8c\u6210\u7ba1\u7406' : '\u6279\u91cf\u7ba1\u7406'}
               </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                className={cn(
-                  'h-9 justify-start rounded-lg border-0 px-2.5 text-[12px] shadow-none',
-                  isPruningEmpty
-                    ? 'bg-amber-50 text-amber-700 hover:bg-amber-50 dark:bg-amber-500/10 dark:text-amber-300'
-                    : 'bg-[#efe8da] text-foreground/85 hover:bg-[#e8dfce] dark:bg-[#3a3427] dark:text-foreground dark:hover:bg-[#453d2d]',
-                )}
-                disabled={isPruningEmpty}
-                onClick={() => void handlePruneEmptySessions()}
-              >
-                {isPruningEmpty ? (
-                  <Loader2 className="mr-1.5 h-3.5 w-3.5 shrink-0 animate-spin" />
-                ) : (
-                  <Trash2 className="mr-1.5 h-3.5 w-3.5 shrink-0" />
-                )}
-                {isPruningEmpty ? '\u6e05\u7406\u4e2d' : '\u6e05\u7406\u7a7a\u4f1a\u8bdd'}
-              </Button>
             </div>
           </div>
 
           {isManageMode && (
-            <div className="mb-2 rounded-lg border border-border/70 bg-background/50 px-2 py-2">
+            <div className="mb-2 rounded-2xl border border-border/70 bg-background/70 px-2.5 py-2.5 shadow-[0_8px_20px_rgba(15,23,42,0.04)]">
               <div className="flex items-center justify-between gap-2">
-                <label className="flex items-center gap-2 text-[12px] text-foreground/80">
+                <label className="flex items-center gap-2 text-[12px] text-foreground/85">
                   <Checkbox
                     checked={allSelectableChecked}
-                    onCheckedChange={toggleSelectAllVisible}
+                    onCheckedChange={() => toggleSelectAllVisible()}
                     disabled={selectableSessions.length === 0}
                   />
-                  <span>{'\u5168\u9009\u5f53\u524d\u5217\u8868'}</span>
+                  <span>{allSelectableChecked ? '全不选' : '全选当前列表'}</span>
                 </label>
-                <span className="text-[12px] text-muted-foreground">{'\u5df2\u9009'} {selectedSessionKeys.length}</span>
+                {(allSelectableChecked || partiallySelected) && (
+                  <Badge variant="secondary" className="rounded-full px-2 py-0.5 text-[10px]">
+                    {allSelectableChecked ? '已全选' : '部分选择'}
+                  </Badge>
+                )}
               </div>
-              <div className="mt-2 flex items-center gap-1.5">
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  className="h-7 px-2 text-[12px]"
-                  disabled={!hasSelectedSessions}
-                  onClick={() => setBulkDeleteOpen(true)}
-                >
-                  {'\u6279\u91cf\u5220\u9664'}
-                </Button>
+              <div className="mt-2 text-[11px] text-muted-foreground">
+                已选 {activeSelectedSessionKeys.length} / {selectableSessions.length}
+              </div>
+              <div className="mt-2 grid grid-cols-2 gap-1.5">
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="h-7 px-2 text-[12px]"
+                  className="h-8 justify-center rounded-xl px-2 text-[12px]"
                   disabled={!hasSelectedSessions}
                   onClick={() => setSelectedSessionKeys([])}
                 >
-                  {'\u6e05\u7a7a\u9009\u62e9'}
+                  清空选择
+                </Button>
+              </div>
+              <div className="mt-1.5 flex items-center gap-1.5">
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  className="h-8 flex-1 rounded-xl px-2 text-[12px]"
+                  disabled={!hasSelectedSessions}
+                  onClick={() => setBulkDeleteOpen(true)}
+                >
+                  批量删除
                 </Button>
               </div>
             </div>
@@ -680,10 +658,22 @@ export function Sidebar() {
                             <>
                               {isManageMode && (
                                 <div className="absolute left-2 z-10">
-                                  <Checkbox
-                                    checked={isSelected}
-                                    onCheckedChange={(checked) => toggleSessionSelection(s.key, checked)}
-                                  />
+                                  <button
+                                    type="button"
+                                    aria-pressed={isSelected}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      toggleSessionSelection(s.key, !isSelected);
+                                    }}
+                                    className={cn(
+                                      'flex h-5 w-5 items-center justify-center rounded-md border transition-colors',
+                                      isSelected
+                                        ? 'border-foreground bg-foreground text-background'
+                                        : 'border-border bg-background/90 text-transparent hover:border-foreground/40',
+                                    )}
+                                  >
+                                    <Check className="h-3.5 w-3.5" />
+                                  </button>
                                 </div>
                               )}
                               <button
@@ -868,7 +858,7 @@ export function Sidebar() {
       <ConfirmDialog
         open={bulkDeleteOpen}
         title="批量删除会话"
-        message={`确定删除已选中的 ${selectedSessionKeys.length} 个会话吗？`}
+        message={`确定删除已选中的 ${activeSelectedSessionKeys.length} 个会话吗？`}
         confirmLabel={t('common:actions.delete')}
         cancelLabel={t('common:actions.cancel')}
         variant="destructive"

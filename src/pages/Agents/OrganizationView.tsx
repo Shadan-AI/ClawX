@@ -1,1378 +1,905 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Graph } from '@antv/x6';
 import dagre from 'dagre';
-import { motion, AnimatePresence } from 'framer-motion';
-import { Building2, Plus, Trash2, Edit2, Users, Bot, X, MessageCircle } from 'lucide-react';
+import { Building2, Edit2, MessageCircle, Plus, RefreshCw, Trash2, Users } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { toast } from 'sonner';
+import { AgentAvatar } from '@/components/common/AgentAvatar';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { useOrganizationStore } from '@/stores/organization';
-import { useAgentsStore } from '@/stores/agents';
-import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
+import { useAgentsStore } from '@/stores/agents';
+import { useModelsStore } from '@/stores/models';
+import { useOrganizationStore } from '@/stores/organization';
+import type { ParentType } from '@/types/organization';
 
-const COLORS = ['#5F95FF', '#8b5cf6', '#ec4899', '#f97316', '#22c55e', '#14b8a6', '#e11d48', '#eab308'];
-const EMOJIS = ['🤖', '🧠', '⚡', '🔧', '📊', '💬', '🎯', '🛡️', '📝', '🔍', '🚀', '🎨'];
+type OrgNodeKind = 'dept' | 'bot';
 
-function hashCode(str: string): number {
-  let h = 0;
-  for (let i = 0; i < str.length; i++) {
-    h = ((h << 5) - h) + str.charCodeAt(i);
-    h |= 0;
+type OrgNodeRef = {
+  id: string;
+  type: OrgNodeKind;
+};
+
+type DepartmentDialogState =
+  | { mode: 'create'; parentId: string | null; parentType?: ParentType; value: string }
+  | { mode: 'rename'; deptId: string; value: string };
+
+type ConfirmDialogState = {
+  title: string;
+  message: string;
+  onConfirm: () => void;
+};
+
+type LayoutNode = {
+  key: string;
+  id: string;
+  type: OrgNodeKind;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+type LayoutEdge = {
+  id: string;
+  from: string;
+  to: string;
+};
+
+const DEPT_NODE_SIZE = { width: 238, height: 116 };
+const BOT_NODE_SIZE = { width: 190, height: 112 };
+const DEPT_COLORS = ['#4f7cff', '#14a37f', '#d97706', '#7c3aed', '#db2777', '#0891b2', '#dc2626', '#4d7c0f'];
+
+function nodeKey(type: OrgNodeKind, id: string): string {
+  return `${type}:${id}`;
+}
+
+function hashCode(value: string): number {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = ((hash << 5) - hash) + value.charCodeAt(index);
+    hash |= 0;
   }
-  return Math.abs(h);
+  return Math.abs(hash);
 }
 
-function getEmoji(id: string): string {
-  return EMOJIS[hashCode(id) % EMOJIS.length];
+function getDepartmentColor(id: string): string {
+  return DEPT_COLORS[hashCode(id) % DEPT_COLORS.length];
 }
 
-function getColor(id: string): string {
-  return COLORS[hashCode(id) % COLORS.length];
+function StatusPill({
+  label,
+  tone,
+}: {
+  label: string;
+  tone: 'neutral' | 'success' | 'warning' | 'danger';
+}) {
+  const toneClassName = {
+    neutral: 'bg-black/[0.05] text-foreground/75 dark:bg-white/[0.08]',
+    success: 'bg-emerald-500/12 text-emerald-700 dark:text-emerald-300',
+    warning: 'bg-amber-500/12 text-amber-700 dark:text-amber-300',
+    danger: 'bg-red-500/12 text-red-700 dark:text-red-300',
+  }[tone];
+
+  return (
+    <span className={cn('rounded-full px-2.5 py-1 text-[11px] font-medium', toneClassName)}>
+      {label}
+    </span>
+  );
 }
 
-/**
- * Organization View
- * 组织架构视图 - 可视化部门层级和员工分配
- */
+function getStatusMeta(
+  status: 'idle' | 'syncing' | 'saved' | 'error' | 'conflict',
+  hasLocalChanges: boolean,
+  isSaving: boolean,
+) {
+  if (isSaving || status === 'syncing') {
+    return { label: '保存中', tone: 'warning' as const };
+  }
+  if (status === 'error') {
+    return { label: '保存失败', tone: 'danger' as const };
+  }
+  if (status === 'conflict') {
+    return { label: '存在冲突', tone: 'danger' as const };
+  }
+  if (hasLocalChanges) {
+    return { label: '等待自动保存', tone: 'warning' as const };
+  }
+  if (status === 'saved') {
+    return { label: '已同步', tone: 'success' as const };
+  }
+  return { label: '可编辑', tone: 'neutral' as const };
+}
+
+function formatSyncTime(lastSyncTime: number): string {
+  if (!lastSyncTime) return '尚未同步';
+  const date = new Date(lastSyncTime);
+  return `${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}`;
+}
+
+function buildGraphPath(source: LayoutNode, target: LayoutNode): string {
+  const startX = source.x + source.width / 2;
+  const startY = source.y + source.height;
+  const endX = target.x + target.width / 2;
+  const endY = target.y;
+  const controlY = startY + (endY - startY) / 2;
+  return `M ${startX} ${startY} V ${controlY} H ${endX} V ${endY}`;
+}
+
+function countDepartmentPeople(
+  deptId: string,
+  departmentChildrenByDeptId: Map<string, string[]>,
+  botChildrenByParentId: Map<string, string[]>,
+): number {
+  const countedBots = new Set<string>();
+
+  const visitBot = (botId: string) => {
+    if (countedBots.has(botId)) return;
+    countedBots.add(botId);
+  };
+
+  const visitDept = (currentDeptId: string) => {
+    for (const childDeptId of departmentChildrenByDeptId.get(currentDeptId) ?? []) {
+      visitDept(childDeptId);
+    }
+    for (const childBotId of botChildrenByParentId.get(currentDeptId) ?? []) {
+      visitBot(childBotId);
+    }
+  };
+
+  visitDept(deptId);
+  return countedBots.size;
+}
+
 export function OrganizationView() {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const graphRef = useRef<Graph | null>(null);
   const navigate = useNavigate();
-  const [selectedDept, setSelectedDept] = useState<string | null>(null);
-  const [newDeptName, setNewDeptName] = useState('');
-  const [editingDept, setEditingDept] = useState<{ id: string; name: string } | null>(null);
-  const [draggingBot, setDraggingBot] = useState<string | null>(null);
-  const [dragPosition, setDragPosition] = useState<{ x: number; y: number } | null>(null);
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; deptId: string } | null>(null);
-  const [botContextMenu, setBotContextMenu] = useState<{ x: number; y: number; botId: string } | null>(null);
-  const [dropTarget, setDropTarget] = useState<string | null>(null);
-  const [confirmDialog, setConfirmDialog] = useState<{ 
-    title: string; 
-    message: string; 
-    onConfirm: () => void;
-  } | null>(null);
-  const hasInitialLayoutRef = useRef(false);
-  
-  const { departments, assignments, addDepartment, updateDepartment, deleteDepartment, assignAgent, unassignAgent, loadFromServer, saveToServer, startSync, stopSync, startAutoSave, stopAutoSave, syncStatus, lastSyncTime, hasLocalChanges, isLoading, isSaving } = useOrganizationStore();
-  const { agents } = useAgentsStore();
-  
-  // 组件加载时从服务器加载数据并开始同步
+  const { agents, fetchAgents } = useAgentsStore();
+  const digitalEmployees = useModelsStore((state) => state.digitalEmployees);
+  const {
+    departments,
+    assignments,
+    addDepartment,
+    updateDepartment,
+    deleteDepartment,
+    moveDepartment,
+    assignAgent,
+    unassignAgent,
+    loadFromServer,
+    startSync,
+    stopSync,
+    startAutoSave,
+    stopAutoSave,
+    syncStatus,
+    lastSyncTime,
+    hasLocalChanges,
+    isLoading,
+    isSaving,
+    lastSyncError,
+  } = useOrganizationStore();
+
+  const [selectedNode, setSelectedNode] = useState<OrgNodeRef | null>(null);
+  const [departmentDialog, setDepartmentDialog] = useState<DepartmentDialogState | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
+  const [draggingAgentId, setDraggingAgentId] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<OrgNodeRef | null>(null);
+  const canvasScrollRef = useRef<HTMLDivElement | null>(null);
+  const panStateRef = useRef<{
+    active: boolean;
+    startX: number;
+    startY: number;
+    scrollLeft: number;
+    scrollTop: number;
+  }>({
+    active: false,
+    startX: 0,
+    startY: 0,
+    scrollLeft: 0,
+    scrollTop: 0,
+  });
+
   useEffect(() => {
-    loadFromServer();
+    void fetchAgents();
+  }, [fetchAgents]);
+
+  useEffect(() => {
+    void loadFromServer();
     startSync();
     startAutoSave();
-    
     return () => {
       stopSync();
       stopAutoSave();
     };
-  }, [loadFromServer, startSync, stopSync, startAutoSave, stopAutoSave]);
-  
-  // 获取未分配的员工
-  const unassignedAgents = useMemo(
-    () => agents.filter((agent) => !assignments[agent.id]),
-    [agents, assignments]
+  }, [loadFromServer, startAutoSave, startSync, stopAutoSave, stopSync]);
+
+  const employeeByAgentId = useMemo(
+    () => Object.fromEntries((digitalEmployees ?? []).map((employee) => [employee.openclawAgentId, employee])),
+    [digitalEmployees],
+  );
+  const agentById = useMemo(
+    () => Object.fromEntries(agents.map((agent) => [agent.id, agent])),
+    [agents],
+  );
+  const departmentById = useMemo(
+    () => Object.fromEntries(departments.map((dept) => [dept.id, dept])),
+    [departments],
+  );
+  const employeeAvatarIndexByAgentId = useMemo(
+    () =>
+      Object.fromEntries(
+        [...(digitalEmployees ?? [])]
+          .sort((left, right) =>
+            (left.openclawAgentId || left.nickName || '').localeCompare(
+              right.openclawAgentId || right.nickName || '',
+            ),
+          )
+          .map((employee, index) => [employee.openclawAgentId, index]),
+      ) as Record<string, number>,
+    [digitalEmployees],
   );
 
-  // 注册自定义节点
-  useEffect(() => {
-    // 部门节点 - 使用 HTML 渲染而不是 SVG
-    Graph.registerNode(
-      'dept-node',
-      {
-        inherit: 'rect',
-        width: 240,
-        height: 80,
-        attrs: {
-          body: {
-            strokeWidth: 0,
-            fill: 'transparent',
-          },
-        },
-        markup: [
-          {
-            tagName: 'foreignObject',
-            selector: 'fo',
-            children: [
-              {
-                tagName: 'body',
-                selector: 'foBody',
-                ns: 'http://www.w3.org/1999/xhtml',
-                children: [
-                  {
-                    tagName: 'div',
-                    selector: 'content',
-                  },
-                ],
-              },
-            ],
-          },
-        ],
-        attrs: {
-          fo: {
-            refWidth: '100%',
-            refHeight: '100%',
-          },
-          foBody: {
-            xmlns: 'http://www.w3.org/1999/xhtml',
-            style: {
-              width: '100%',
-              height: '100%',
-              display: 'flex',
-              justifyContent: 'center',
-              alignItems: 'center',
-            },
-          },
-        },
-      },
-      true
-    );
+  const departmentIds = useMemo(() => new Set(departments.map((dept) => dept.id)), [departments]);
 
-    // 员工节点 - 使用 HTML 渲染
-    Graph.registerNode(
-      'bot-node',
-      {
-        inherit: 'rect',
-        width: 180,
-        height: 90,
-        attrs: {
-          body: {
-            strokeWidth: 0,
-            fill: 'transparent',
-          },
-        },
-        markup: [
-          {
-            tagName: 'foreignObject',
-            selector: 'fo',
-            children: [
-              {
-                tagName: 'body',
-                selector: 'foBody',
-                ns: 'http://www.w3.org/1999/xhtml',
-                children: [
-                  {
-                    tagName: 'div',
-                    selector: 'content',
-                  },
-                ],
-              },
-            ],
-          },
-        ],
-        attrs: {
-          fo: {
-            refWidth: '100%',
-            refHeight: '100%',
-          },
-          foBody: {
-            xmlns: 'http://www.w3.org/1999/xhtml',
-            style: {
-              width: '100%',
-              height: '100%',
-              display: 'flex',
-              justifyContent: 'center',
-              alignItems: 'center',
-            },
-          },
-        },
-      },
-      true
-    );
-
-    // 边
-    Graph.registerEdge('org-edge', {
-      inherit: 'edge',
-      zIndex: 0,
-      connector: { name: 'rounded' },
-      router: { name: 'orth' },
-      attrs: {
-        line: {
-          strokeWidth: 2.5,
-          stroke: '#94a3b8',
-          strokeOpacity: 1,
-          sourceMarker: null,
-          targetMarker: null,
-        },
-      },
-    }, true);
-  }, []);
-  
-  // 初始化图形
-  useEffect(() => {
-    if (!containerRef.current) return;
-    
-    const graph = new Graph({
-      container: containerRef.current,
-      autoResize: true,
-      panning: true,
-      mousewheel: {
-        enabled: true,
-        modifiers: ['ctrl', 'meta'],
-        minScale: 0.3,
-        maxScale: 2,
-      },
-      background: {
-        color: '#f8f6f0',
-      },
-      grid: false,
-      interacting: {
-        nodeMovable: false, // 禁用简单移动，我们用拖放来改变层级
-        edgeMovable: false,
-        edgeLabelMovable: false,
-        arrowheadMovable: false,
-        vertexMovable: false,
-        vertexAddable: false,
-        vertexDeletable: false,
-      },
-    });
-    
-    graphRef.current = graph;
-    
-    // 监听节点点击事件
-    graph.on('node:click', ({ node }) => {
-      const data = node.getData();
-      if (data?.type === 'dept' || data?.type === 'bot') {
-        setSelectedDept(data.id);
-      }
-    });
-    
-    // 监听员工节点拖动开始 - 禁用画布上的拖动
-    graph.on('node:mousedown', ({ node, e }) => {
-      const data = node.getData();
-      if (data?.type === 'bot') {
-        // 禁用画布上员工节点的拖动
-        e.preventDefault();
-        e.stopPropagation();
-      }
-    });
-    
-    // 监听右键菜单
-    graph.on('node:contextmenu', ({ node, e }) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const data = node.getData();
-      if (data?.type === 'dept') {
-        setBotContextMenu(null); // 关闭员工菜单
-        setContextMenu({ x: e.clientX, y: e.clientY, deptId: data.id });
-      } else if (data?.type === 'bot') {
-        setContextMenu(null); // 关闭部门菜单
-        setBotContextMenu({ x: e.clientX, y: e.clientY, botId: data.id });
-      }
-    });
-    
-    // 监听画布空白区域右键菜单
-    graph.on('blank:contextmenu', ({ e }) => {
-      e.preventDefault();
-      e.stopPropagation();
-      // 空白区域不显示任何菜单
-    });
-    
-    // 监听画布点击事件（取消选择）
-    graph.on('blank:click', () => {
-      setSelectedDept(null);
-    });
-    
-    // 监听容器大小变化，自动适配画布
-    const resizeObserver = new ResizeObserver(() => {
-      if (graph.getNodes().length > 0) {
-        // 使用 requestAnimationFrame 确保在下一帧执行
-        requestAnimationFrame(() => {
-          graph.zoomToFit({ 
-            padding: 60, 
-            maxScale: 1,
-          });
-        });
-      }
-    });
-    
-    if (containerRef.current) {
-      resizeObserver.observe(containerRef.current);
+  const departmentChildrenByDeptId = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const dept of departments) {
+      if (!dept.parentId) continue;
+      const list = map.get(dept.parentId) ?? [];
+      list.push(dept.id);
+      map.set(dept.parentId, list);
     }
-    
-    return () => {
-      resizeObserver.disconnect();
-      graph.dispose();
-    };
+    return map;
+  }, [departments]);
+
+  const botChildrenByParentId = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const [botId, parentId] of Object.entries(assignments)) {
+      if (!parentId) continue;
+      const list = map.get(parentId) ?? [];
+      list.push(botId);
+      map.set(parentId, list);
+    }
+    return map;
+  }, [assignments]);
+
+  const unassignedAgents = useMemo(
+    () =>
+      agents.filter((agent) => {
+        const parentId = assignments[agent.id];
+        if (!parentId) return true;
+        return !departmentIds.has(parentId);
+      }),
+    [agents, assignments, departmentIds],
+  );
+
+  const getAgentName = useCallback(
+    (agentId: string) => employeeByAgentId[agentId]?.nickName || agentById[agentId]?.name || agentId,
+    [agentById, employeeByAgentId],
+  );
+
+  const getAgentAvatarIndex = useCallback(
+    (agentId: string) => employeeAvatarIndexByAgentId[agentId] ?? 0,
+    [employeeAvatarIndexByAgentId],
+  );
+
+  const getDepartmentPeopleCount = useCallback(
+    (deptId: string) =>
+      countDepartmentPeople(
+        deptId,
+        departmentChildrenByDeptId,
+        botChildrenByParentId,
+      ),
+    [botChildrenByParentId, departmentChildrenByDeptId],
+  );
+
+  const openCreateDepartment = useCallback((parentId: string | null, parentType?: ParentType) => {
+    setDepartmentDialog({ mode: 'create', parentId, parentType, value: '' });
   }, []);
 
-  // 关闭右键菜单
-  useEffect(() => {
-    const handleClick = () => {
-      setContextMenu(null);
-      setBotContextMenu(null);
-    };
-    document.addEventListener('click', handleClick);
-    return () => document.removeEventListener('click', handleClick);
-  }, []);
-  
-  // 递归计算部门总人数(包括所有子孙节点)
-  const getDepartmentTotalCount = useCallback((deptId: string): number => {
-    let total = 0;
-    
-    // 1. 找到所有直接分配给该部门的员工
-    const directAgents = Object.entries(assignments)
-      .filter(([_, assignedTo]) => assignedTo === deptId)
-      .map(([botId]) => botId);
-    
-    total += directAgents.length;
-    
-    // 2. 递归计算分配给这些员工的下级员工
-    const countAgentSubordinates = (botId: string): number => {
-      const subordinates = Object.entries(assignments)
-        .filter(([_, assignedTo]) => assignedTo === botId)
-        .map(([subBotId]) => subBotId);
-      
-      let count = subordinates.length;
-      subordinates.forEach(subBotId => {
-        count += countAgentSubordinates(subBotId);
-      });
-      return count;
-    };
-    
-    directAgents.forEach(botId => {
-      total += countAgentSubordinates(botId);
-    });
-    
-    // 3. 递归计算子部门的人数
-    const childDepts = departments.filter(d => d.parentId === deptId);
-    childDepts.forEach(child => {
-      total += getDepartmentTotalCount(child.id);
-    });
-    
-    return total;
-  }, [assignments, departments]);
+  const openRenameDepartment = useCallback(
+    (deptId: string) => {
+      const dept = departmentById[deptId];
+      if (!dept) return;
+      setDepartmentDialog({ mode: 'rename', deptId, value: dept.name });
+    },
+    [departmentById],
+  );
 
-  // 渲染组织架构图
-  const renderGraph = useCallback(() => {
-    if (!graphRef.current) return;
-    
-    const graph = graphRef.current;
-    
-    if (departments.length === 0) {
-      graph.clearCells();
+  const submitDepartmentDialog = useCallback(() => {
+    if (!departmentDialog) return;
+    const value = departmentDialog.value.trim();
+    if (!value) {
+      toast.error('请输入部门名称');
       return;
     }
-    
-    // 获取现有节点和边
-    const existingNodes = new Map(graph.getNodes().map(n => [n.id, n]));
-    const existingEdges = new Map(graph.getEdges().map(e => [e.id, e]));
-    
-    const newNodeIds = new Set<string>();
-    const newEdgeIds = new Set<string>();
-    
-    // 创建或更新部门节点
-    departments.forEach((dept) => {
-      const nodeId = `dept-${dept.id}`;
-      newNodeIds.add(nodeId);
-      
-      const assignedCount = getDepartmentTotalCount(dept.id);
-      const color = getColor(dept.id);
-      const isDropTarget = dropTarget === dept.id;
-      
-      const existingNode = existingNodes.get(nodeId);
-      
-      if (existingNode) {
-        // 更新现有节点
-        existingNode.setAttrs({
-          content: {
-            html: `
-              <div style="
-                width: 240px;
-                height: 80px;
-                background: ${isDropTarget ? 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)' : color};
-                border: ${isDropTarget ? '3px' : '2px'} solid ${isDropTarget ? '#60a5fa' : color};
-                border-radius: 16px;
-                display: flex;
-                flex-direction: column;
-                align-items: center;
-                justify-content: center;
-                color: white;
-                font-family: Georgia, Cambria, 'Times New Roman', Times, serif;
-                box-shadow: ${isDropTarget ? '0 8px 16px -2px rgba(59, 130, 246, 0.4), 0 0 0 4px rgba(59, 130, 246, 0.2)' : '0 4px 6px -1px rgba(0, 0, 0, 0.1)'};
-                transition: all 0.2s ease;
-                transform: ${isDropTarget ? 'scale(1.05)' : 'scale(1)'};
-              ">
-                <div style="font-size: 16px; font-weight: 700; margin-bottom: 4px;">${dept.name}</div>
-                <div style="font-size: 13px; font-weight: 500;">${assignedCount} 人</div>
-                ${isDropTarget ? '<div style="font-size: 11px; margin-top: 4px; opacity: 0.9;">📍 释放以分配</div>' : ''}
-              </div>
-            `,
-          },
-        });
-      } else {
-        // 创建新节点
-        const node = graph.addNode({
-          id: nodeId,
-          shape: 'dept-node',
-          x: 100,
-          y: 100,
-          data: { type: 'dept', id: dept.id },
-          attrs: {
-            content: {
-              html: `
-                <div style="
-                  width: 240px;
-                  height: 80px;
-                  background: ${color};
-                  border: 2px solid ${color};
-                  border-radius: 16px;
-                  display: flex;
-                  flex-direction: column;
-                  align-items: center;
-                  justify-content: center;
-                  color: white;
-                  font-family: Georgia, Cambria, 'Times New Roman', Times, serif;
-                  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-                  animation: nodeEnter 0.4s ease-out;
-                ">
-                  <div style="font-size: 16px; font-weight: 700; margin-bottom: 4px;">${dept.name}</div>
-                  <div style="font-size: 13px; font-weight: 500;">${assignedCount} 人</div>
-                </div>
-                <style>
-                  @keyframes nodeEnter {
-                    from {
-                      opacity: 0;
-                      transform: translateY(-20px) scale(0.95);
-                    }
-                    to {
-                      opacity: 1;
-                      transform: translateY(0) scale(1);
-                    }
-                  }
-                  @keyframes nodeExit {
-                    from {
-                      opacity: 1;
-                      transform: translateY(0) scale(1);
-                    }
-                    to {
-                      opacity: 0;
-                      transform: translateY(20px) scale(0.95);
-                    }
-                  }
-                </style>
-              `,
-            },
-          },
-        });
-      }
-    });
-    
-    // 创建或更新员工节点
-    agents.forEach((agent) => {
-      const parentId = assignments[agent.id];
-      if (!parentId) return;
-      
-      const nodeId = `bot-${agent.id}`;
-      newNodeIds.add(nodeId);
-      
-      const color = getColor(agent.id);
-      const emoji = getEmoji(agent.id);
-      const isDropTarget = dropTarget === agent.id;
-      
-      const existingNode = existingNodes.get(nodeId);
-      
-      const nodeHtml = `
-        <div style="
-          width: 180px;
-          height: 90px;
-          background: ${isDropTarget ? 'linear-gradient(135deg, #10b981 0%, #059669 100%)' : '#f3f1e9'};
-          border: ${isDropTarget ? '3px' : '2px'} solid ${isDropTarget ? '#34d399' : color};
-          border-radius: 14px;
-          display: flex;
-          align-items: center;
-          padding: 12px;
-          font-family: Georgia, Cambria, 'Times New Roman', Times, serif;
-          box-shadow: ${isDropTarget ? '0 8px 16px -2px rgba(16, 185, 129, 0.4), 0 0 0 4px rgba(16, 185, 129, 0.2)' : '0 2px 4px rgba(0, 0, 0, 0.1)'};
-          animation: nodeEnter 0.4s ease-out;
-          transform: ${isDropTarget ? 'scale(1.05)' : 'scale(1)'};
-          transition: all 0.2s ease;
-        ">
-          <div style="
-            width: 36px;
-            height: 36px;
-            border-radius: 50%;
-            background: ${isDropTarget ? '#fff' : '#f8f6f0'};
-            border: 2px solid ${isDropTarget ? '#34d399' : color};
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 20px;
-            flex-shrink: 0;
-          ">${emoji}</div>
-          <div style="margin-left: 12px; flex: 1; min-width: 0;">
-            <div style="font-size: 14px; font-weight: 600; color: ${isDropTarget ? '#fff' : '#1a1a2e'}; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-              ${agent.name.length > 10 ? agent.name.slice(0, 10) + '…' : agent.name}
-            </div>
-            <div style="font-size: 12px; color: ${isDropTarget ? 'rgba(255,255,255,0.8)' : '#9ca3af'}; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-              ${isDropTarget ? '📍 释放以分配' : 'ID: ' + agent.id.slice(0, 8)}
-            </div>
-          </div>
-        </div>
-        <style>
-          @keyframes nodeEnter {
-            from {
-              opacity: 0;
-              transform: translateY(-20px) scale(0.95);
-            }
-            to {
-              opacity: 1;
-              transform: translateY(0) scale(1);
-            }
-          }
-          @keyframes nodeExit {
-            from {
-              opacity: 1;
-              transform: translateY(0) scale(1);
-            }
-            to {
-              opacity: 0;
-              transform: translateY(20px) scale(0.95);
-            }
-          }
-        </style>
-      `;
-      
-      if (existingNode) {
-        // 更新现有节点
-        existingNode.setAttrs({
-          content: {
-            html: nodeHtml,
-          },
-        });
-      } else {
-        // 创建新节点
-        graph.addNode({
-          id: nodeId,
-          shape: 'bot-node',
-          x: 100,
-          y: 100,
-          data: { type: 'bot', id: agent.id, parentId },
-          attrs: {
-            content: {
-              html: nodeHtml,
-            },
-          },
-        });
-      }
-    });
-    
-    // 创建部门层级边
-    departments.forEach((dept) => {
-      if (!dept.parentId) return;
-      
-      const parentNodeId = dept.parentType === 'bot' 
-        ? `bot-${dept.parentId}` 
-        : `dept-${dept.parentId}`;
-      const edgeId = `edge-dept-${dept.parentId}-${dept.id}`;
-      newEdgeIds.add(edgeId);
-      
-      if (!existingEdges.has(edgeId)) {
-        graph.addEdge({
-          id: edgeId,
-          shape: 'org-edge',
-          source: { cell: parentNodeId },
-          target: { cell: `dept-${dept.id}` },
-        });
-      }
-    });
-    
-    // 创建员工到父节点的边
-    agents.forEach((agent) => {
-      const parentId = assignments[agent.id];
-      if (!parentId) return;
-      
-      // 判断父节点类型
-      const isParentBot = agents.some((a) => a.id === parentId);
-      const parentNodeId = isParentBot ? `bot-${parentId}` : `dept-${parentId}`;
-      
-      const edgeId = `edge-bot-${agent.id}-${parentId}`;
-      newEdgeIds.add(edgeId);
-      
-      if (!existingEdges.has(edgeId)) {
-        graph.addEdge({
-          id: edgeId,
-          shape: 'org-edge',
-          source: { cell: parentNodeId },
-          target: { cell: `bot-${agent.id}` },
-          attrs: {
-            line: {
-              stroke: '#d1d5db',
-              strokeWidth: 1,
-              strokeOpacity: 1,
-              strokeDasharray: '4 3',
-            },
-          },
-        });
-      }
-    });
-    
-    // 移除不再需要的节点（立即删除，不用动画）
-    existingNodes.forEach((node, id) => {
-      if (!newNodeIds.has(id)) {
-        node.remove();
-      }
-    });
-    
-    // 移除不再需要的边（立即删除）
-    existingEdges.forEach((edge, id) => {
-      if (!newEdgeIds.has(id)) {
-        edge.remove();
-      }
-    });
-    
-    // 布局所有节点
-    const allNodes = graph.getNodes();
-    const allEdges = graph.getEdges();
-    
-    if (allNodes.length === 0) return;
-    
-    const g = new dagre.graphlib.Graph();
-    g.setGraph({ rankdir: 'TB', nodesep: 50, ranksep: 80 });
-    g.setDefaultEdgeLabel(() => ({}));
-    
-    allNodes.forEach((node) => {
-      const size = node.getSize();
-      g.setNode(node.id, { width: size.width, height: size.height });
-    });
-    
-    allEdges.forEach((edge) => {
-      const src = edge.getSource();
-      const tgt = edge.getTarget();
-      if (src.cell && tgt.cell) {
-        g.setEdge(src.cell as string, tgt.cell as string);
-      }
-    });
-    
-    dagre.layout(g);
-    
-    // 更新所有节点位置
-    allNodes.forEach((node) => {
-      const pos = g.node(node.id);
-      if (pos) {
-        const targetX = pos.x - pos.width / 2;
-        const targetY = pos.y - pos.height / 2;
-        
-        // 直接设置位置，不使用动画（避免 API 问题）
-        node.setPosition(targetX, targetY);
-      }
-    });
-    
-    // 缩放到合适大小
-    if (allNodes.length > 0) {
-      // 如果是第一次布局，或者节点数量发生了显著变化，重新缩放
-      const shouldZoom = !hasInitialLayoutRef.current;
-      
-      if (shouldZoom) {
-        setTimeout(() => {
-          graph.zoomToFit({ 
-            padding: 60, 
-            maxScale: 1,
-          });
-          hasInitialLayoutRef.current = true;
-        }, 100);
-      }
+    if (departmentDialog.mode === 'create') {
+      addDepartment(value, departmentDialog.parentId, departmentDialog.parentType ?? 'dept');
+      toast.success('部门已创建');
     } else {
-      // 如果没有节点了，重置标记
-      hasInitialLayoutRef.current = false;
+      updateDepartment(departmentDialog.deptId, value);
+      toast.success('部门名称已更新');
     }
-  }, [departments, assignments, agents, dropTarget, getDepartmentTotalCount]);
-  
-  useEffect(() => {
-    renderGraph();
-  }, [renderGraph]);
-  
-  // 添加部门
-  const handleAddDepartment = useCallback(() => {
-    if (!newDeptName.trim()) return;
-    
-    // 判断父节点类型
-    let parentType: 'dept' | 'bot' = 'dept';
-    if (selectedDept) {
-      // 检查是否是员工 ID
-      const isBot = agents.some((agent) => agent.id === selectedDept);
-      if (isBot) {
-        parentType = 'bot';
-      }
-    }
-    
-    addDepartment(newDeptName.trim(), selectedDept, parentType);
-    setNewDeptName('');
-    toast.success('部门已添加');
-  }, [newDeptName, selectedDept, addDepartment, agents]);
-  
-  // 删除部门
-  const handleDeleteDepartment = useCallback((deptId: string) => {
-    const dept = departments.find((d) => d.id === deptId);
-    if (!dept) return;
-    
-    setConfirmDialog({
-      title: '删除部门',
-      message: `确定要删除"${dept.name}"吗？子部门和员工分配也会被清除。`,
-      onConfirm: () => {
-        deleteDepartment(deptId);
-        if (selectedDept === deptId) {
-          setSelectedDept(null);
-        }
-        toast.success('部门已删除');
-        setConfirmDialog(null);
-      },
-    });
-  }, [departments, deleteDepartment, selectedDept]);
-  
-  // 重命名部门
-  const handleRenameDepartment = useCallback(() => {
-    if (!editingDept || !editingDept.name.trim()) return;
-    updateDepartment(editingDept.id, editingDept.name.trim());
-    setEditingDept(null);
-    toast.success('部门已重命名');
-  }, [editingDept, updateDepartment]);
-  
-  // 取消分配员工
-  const handleUnassignAgent = useCallback((botId: string) => {
-    const agent = agents.find((a) => a.id === botId);
-    if (!agent) return;
-    
-    unassignAgent(botId);
-    toast.success('员工已移除');
-  }, [agents, unassignAgent]);
-  
-  // 跳转到对话界面
-  const handleChatWithAgent = useCallback((agentId: string) => {
-    // 跳转到对话页面，并通过 state 传递需要创建新会话的 agentId
-    navigate('/', { state: { createNewSessionFor: agentId } });
-  }, [navigate]);
-  
-  // 拖拽开始
-  const handleDragStart = useCallback((e: React.DragEvent, botId: string) => {
-    e.dataTransfer.setData('botId', botId);
-    e.dataTransfer.effectAllowed = 'move';
-    
-    // 隐藏浏览器默认的拖动预览
-    const img = new Image();
-    img.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
-    e.dataTransfer.setDragImage(img, 0, 0);
-    
-    setDraggingBot(botId);
-    setDragPosition({ x: e.clientX, y: e.clientY });
-  }, []);
-  
-  // 拖拽结束
-  const handleDragEnd = useCallback(() => {
-    setDraggingBot(null);
-    setDragPosition(null);
-    setDropTarget(null);
-  }, []);
-  
-  // 拖拽到画布
-  const handleCanvasDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    if (!draggingBot || !graphRef.current) return;
-    
-    const graph = graphRef.current;
-    const p = graph.clientToLocal(e.clientX, e.clientY);
-    const targetNode = graph.getNodes().find((n) => {
-      const data = n.getData();
-      if (data?.type !== 'dept' && data?.type !== 'bot') return false;
-      return n.getBBox().containsPoint(p);
-    });
-    
-    if (targetNode) {
-      const nodeData = targetNode.getData();
-      const parentId = nodeData.id;
-      const parentType = nodeData.type as 'dept' | 'bot';
-      
-      // 防止将员工拖到自己身上
-      if (parentType === 'bot' && parentId === draggingBot) {
-        toast.error('不能将员工分配到自己下面');
-        setDraggingBot(null);
-        setDragPosition(null);
-        setDropTarget(null);
-        return;
-      }
-      
-      assignAgent(draggingBot, parentId, parentType);
-      toast.success('员工已分配');
-    }
-    
-    setDraggingBot(null);
-    setDragPosition(null);
-    setDropTarget(null);
-  }, [draggingBot, assignAgent]);
-  
-  // 拖拽经过画布时高亮目标部门
-  const handleCanvasDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    
-    setDragPosition({ x: e.clientX, y: e.clientY });
-    
-    if (!draggingBot || !graphRef.current) return;
-    
-    const graph = graphRef.current;
-    const p = graph.clientToLocal(e.clientX, e.clientY);
-    const targetNode = graph.getNodes().find((n) => {
-      const data = n.getData();
-      if (data?.type !== 'dept' && data?.type !== 'bot') return false;
-      // 排除自己
-      if (data?.type === 'bot' && data?.id === draggingBot) return false;
-      return n.getBBox().containsPoint(p);
-    });
-    
-    const newTarget = targetNode ? targetNode.getData().id : null;
-    
-    // 只在目标改变时更新状态，减少重渲染
-    if (dropTarget !== newTarget) {
-      setDropTarget(newTarget);
-    }
-  }, [draggingBot, dropTarget]);
+    setDepartmentDialog(null);
+  }, [addDepartment, departmentDialog, updateDepartment]);
 
+  const confirmDeleteDepartment = useCallback(
+    (deptId: string) => {
+      const dept = departmentById[deptId];
+      if (!dept) return;
+      setConfirmDialog({
+        title: '删除部门',
+        message: `确定删除“${dept.name}”及其下属层级吗？这会同时移除这条分支上的员工归属关系。`,
+        onConfirm: () => {
+          deleteDepartment(deptId);
+          setConfirmDialog(null);
+          if (selectedNode?.type === 'dept' && selectedNode.id === deptId) {
+            setSelectedNode(null);
+          }
+          toast.success('部门已删除');
+        },
+      });
+    },
+    [deleteDepartment, departmentById, selectedNode],
+  );
+
+  const handleChatWithAgent = useCallback(
+    (agentId: string) => {
+      navigate('/', { state: { createNewSessionFor: agentId } });
+    },
+    [navigate],
+  );
+
+  const beginAgentDrag = useCallback((agentId: string) => {
+    setDraggingAgentId(agentId);
+  }, []);
+
+  const endAgentDrag = useCallback(() => {
+    setDraggingAgentId(null);
+    setDropTarget(null);
+  }, []);
+
+  const handleDropOnTarget = useCallback(
+    (targetId: string) => {
+      if (!draggingAgentId) return;
+      assignAgent(draggingAgentId, targetId, 'dept');
+      setDraggingAgentId(null);
+      setDropTarget(null);
+    },
+    [assignAgent, draggingAgentId],
+  );
+
+  const handlePromoteDepartment = useCallback(
+    (deptId: string) => {
+      moveDepartment(deptId, null);
+      toast.success('部门已移动到顶层');
+    },
+    [moveDepartment],
+  );
+
+  const graphLayout = useMemo(() => {
+    const graph = new dagre.graphlib.Graph();
+    graph.setGraph({
+      rankdir: 'TB',
+      nodesep: 16,
+      ranksep: 24,
+      marginx: 28,
+      marginy: 28,
+    });
+    graph.setDefaultEdgeLabel(() => ({}));
+
+    const nodeMap = new Map<string, LayoutNode>();
+    const edges: LayoutEdge[] = [];
+
+    for (const dept of departments) {
+      const key = nodeKey('dept', dept.id);
+      graph.setNode(key, { ...DEPT_NODE_SIZE });
+      nodeMap.set(key, {
+        key,
+        id: dept.id,
+        type: 'dept',
+        x: 0,
+        y: 0,
+        width: DEPT_NODE_SIZE.width,
+        height: DEPT_NODE_SIZE.height,
+      });
+    }
+
+    for (const agent of agents) {
+      if (!assignments[agent.id]) continue;
+      const key = nodeKey('bot', agent.id);
+      graph.setNode(key, { ...BOT_NODE_SIZE });
+      nodeMap.set(key, {
+        key,
+        id: agent.id,
+        type: 'bot',
+        x: 0,
+        y: 0,
+        width: BOT_NODE_SIZE.width,
+        height: BOT_NODE_SIZE.height,
+      });
+    }
+
+    for (const dept of departments) {
+      if (!dept.parentId || !departmentIds.has(dept.parentId)) continue;
+      const fromKey = nodeKey('dept', dept.parentId);
+      const toKey = nodeKey('dept', dept.id);
+      if (!nodeMap.has(fromKey) || !nodeMap.has(toKey)) continue;
+      graph.setEdge(fromKey, toKey);
+      edges.push({ id: `${fromKey}->${toKey}`, from: fromKey, to: toKey });
+    }
+
+    for (const [botId, parentId] of Object.entries(assignments)) {
+      if (!departmentIds.has(parentId)) continue;
+      const fromKey = nodeKey('dept', parentId);
+      const toKey = nodeKey('bot', botId);
+      if (!nodeMap.has(fromKey) || !nodeMap.has(toKey)) continue;
+      graph.setEdge(fromKey, toKey);
+      edges.push({ id: `${fromKey}->${toKey}`, from: fromKey, to: toKey });
+    }
+
+    dagre.layout(graph);
+
+    let maxX = 0;
+    let maxY = 0;
+    const nodes = Array.from(nodeMap.values()).map((node) => {
+      const layoutNode = graph.node(node.key);
+      const x = (layoutNode?.x ?? 0) - node.width / 2;
+      const y = (layoutNode?.y ?? 0) - node.height / 2;
+      maxX = Math.max(maxX, x + node.width);
+      maxY = Math.max(maxY, y + node.height);
+      return { ...node, x, y };
+    });
+
+    return {
+      nodes,
+      edges,
+      width: Math.max(maxX + 120, 1100),
+      height: Math.max(maxY + 120, 640),
+      nodeMap: new Map(nodes.map((node) => [node.key, node])),
+    };
+  }, [agents, assignments, departmentIds, departments]);
+
+  const statusMeta = getStatusMeta(syncStatus, hasLocalChanges, isSaving);
   return (
-    <div className="flex h-full gap-6">
-      {/* 左侧面板 */}
-      <motion.div
-        initial={{ opacity: 0, x: -20 }}
-        animate={{ opacity: 1, x: 0 }}
-        className="w-72 flex flex-col gap-6"
-      >
-        {/* 部门管理 */}
-        <div className="rounded-2xl bg-black/[0.02] dark:bg-white/[0.02] border border-black/5 dark:border-white/5 p-5">
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2">
-              <Building2 className="w-5 h-5 text-blue-600 dark:text-blue-400" />
-              <h3 className="text-[15px] font-semibold text-foreground">组织架构</h3>
+    <div className="grid h-full min-h-0 grid-cols-1 gap-3 lg:grid-cols-[248px_minmax(0,1fr)]">
+      <div className="flex min-h-0 flex-col rounded-2xl border border-black/5 bg-white p-3 shadow-sm dark:border-white/8 dark:bg-[#181b20]">
+        <div className="rounded-2xl border border-black/5 bg-[#fbfaf7] p-3 shadow-sm dark:border-white/8 dark:bg-white/[0.04]">
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-blue-500/10 text-blue-600 dark:text-blue-300">
+              <Building2 className="h-[18px] w-[18px]" />
             </div>
-            <div className="flex items-center gap-2">
-              {/* 同步状态指示器 */}
-              <div className="flex items-center gap-1.5 text-[11px]">
-                {syncStatus === 'syncing' && (
-                  <>
-                    <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
-                    <span className="text-muted-foreground">同步中</span>
-                  </>
-                )}
-                {syncStatus === 'saved' && (
-                  <>
-                    <div className="w-2 h-2 rounded-full bg-green-500" />
-                    <span className="text-muted-foreground">已保存</span>
-                  </>
-                )}
-                {syncStatus === 'error' && (
-                  <>
-                    <div className="w-2 h-2 rounded-full bg-red-500" />
-                    <span className="text-red-500">错误</span>
-                  </>
-                )}
-                {syncStatus === 'conflict' && (
-                  <>
-                    <div className="w-2 h-2 rounded-full bg-yellow-500" />
-                    <span className="text-yellow-600">冲突</span>
-                  </>
-                )}
-                {hasLocalChanges && syncStatus === 'idle' && (
-                  <>
-                    <div className="w-2 h-2 rounded-full bg-orange-500" />
-                    <span className="text-muted-foreground">未保存</span>
-                  </>
-                )}
-              </div>
-              
-              {/* 手动刷新按钮 */}
-              <Button
-                onClick={() => loadFromServer()}
-                disabled={isLoading}
-                size="sm"
-                variant="ghost"
-                className="h-7 w-7 p-0"
-                title="刷新数据"
-              >
-                <svg 
-                  xmlns="http://www.w3.org/2000/svg" 
-                  width="14" 
-                  height="14" 
-                  viewBox="0 0 24 24" 
-                  fill="none" 
-                  stroke="currentColor" 
-                  strokeWidth="2" 
-                  strokeLinecap="round" 
-                  strokeLinejoin="round"
-                  className={isLoading ? 'animate-spin' : ''}
-                >
-                  <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"></path>
-                  <path d="M21 3v5h-5"></path>
-                </svg>
-              </Button>
+            <div className="min-w-0">
+              <h2 className="truncate text-[15px] font-semibold text-foreground">组织架构图</h2>
+              <p className="mt-0.5 truncate text-[11px] text-muted-foreground">自动保存，同步到 ai-im</p>
             </div>
           </div>
-          
-          <div className="space-y-3">
-            <Input
-              value={newDeptName}
-              onChange={(e) => setNewDeptName(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleAddDepartment()}
-              placeholder={
-                selectedDept 
-                  ? (agents.some((a) => a.id === selectedDept) 
-                      ? '添加子部门到员工' 
-                      : '添加子部门')
-                  : '添加根部门'
-              }
-              className="h-10 text-[13px] rounded-xl"
-            />
-            <div className="flex gap-2">
-              <Button
-                onClick={handleAddDepartment}
-                disabled={!newDeptName.trim()}
-                className="flex-1 h-10 text-[13px] font-medium rounded-xl"
-              >
-                <Plus className="w-4 h-4 mr-2" />
-                添加{selectedDept ? '子' : '根'}部门
-              </Button>
-              <Button
-                variant="outline"
-                onClick={() => {
-                  hasInitialLayoutRef.current = false;
-                  renderGraph();
-                  toast.success('布局已重置');
-                }}
-                className="h-10 text-[13px] font-medium rounded-xl px-3"
-                title="重置布局"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4">
-                  <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"></path>
-                  <path d="M21 3v5h-5"></path>
-                </svg>
-              </Button>
-            </div>
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            <StatusPill label={statusMeta.label} tone={statusMeta.tone} />
+            <StatusPill label={`部门 ${departments.length}`} tone="neutral" />
+            <StatusPill label={`员工 ${agents.length}`} tone="neutral" />
           </div>
-          
-          <AnimatePresence>
-            {selectedDept && (
-              <motion.div
-                initial={{ opacity: 0, height: 0 }}
-                animate={{ opacity: 1, height: 'auto' }}
-                exit={{ opacity: 0, height: 0 }}
-                className="mt-4 pt-4 border-t border-black/5 dark:border-white/5"
-              >
-                <div className="text-[13px] text-muted-foreground mb-3">
-                  当前选中: {
-                    departments.find((d) => d.id === selectedDept)?.name || 
-                    agents.find((a) => a.id === selectedDept)?.name ||
-                    '未知节点'
-                  }
-                </div>
-                <div className="flex gap-2">
-                  {departments.find((d) => d.id === selectedDept) && (
-                    <>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => {
-                          const dept = departments.find((d) => d.id === selectedDept);
-                          if (dept) setEditingDept({ id: dept.id, name: dept.name });
-                        }}
-                        className="flex-1 h-9 text-[13px] rounded-xl"
-                      >
-                        <Edit2 className="w-3.5 h-3.5 mr-1.5" />
-                        重命名
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handleDeleteDepartment(selectedDept)}
-                        className="flex-1 h-9 text-[13px] rounded-xl text-destructive hover:text-destructive"
-                      >
-                        <Trash2 className="w-3.5 h-3.5 mr-1.5" />
-                        删除
-                      </Button>
-                    </>
-                  )}
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
+          <div className="mt-2 text-[10px] text-muted-foreground">最近同步：{formatSyncTime(lastSyncTime)}</div>
         </div>
-        
-        {/* 未分配员工 */}
-        <div className="flex-1 rounded-2xl bg-black/[0.02] dark:bg-white/[0.02] border border-black/5 dark:border-white/5 p-5 overflow-hidden flex flex-col min-h-0">
-          <div className="flex items-center gap-2 mb-4 shrink-0">
-            <Users className="w-5 h-5 text-green-600 dark:text-green-400" />
-            <h3 className="text-[15px] font-semibold text-foreground">
-              员工列表
-            </h3>
+
+        {lastSyncError && (
+          <div className="mt-2 rounded-xl bg-red-500/10 px-3 py-2 text-[11px] text-red-700 dark:text-red-300">
+            {lastSyncError}
           </div>
-          
-          <div className="flex-1 overflow-y-auto -mr-2 pr-2 space-y-3 min-h-0">
-            {/* 未分配员工 */}
-            {unassignedAgents.length > 0 && (
-              <div>
-                <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-2">
-                  未分配 ({unassignedAgents.length})
-                </div>
-                <div className="space-y-2">
-                  <AnimatePresence>
-                    {unassignedAgents.map((agent) => (
-                      <motion.div
-                        key={agent.id}
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: -10 }}
-                        draggable
-                        onDragStart={(e) => handleDragStart(e, agent.id)}
-                        onDragEnd={handleDragEnd}
-                        className={cn(
-                          'group p-3 rounded-xl border cursor-grab active:cursor-grabbing transition-all',
-                          'bg-[#f8f6f0] dark:bg-white/[0.02] border-black/5 dark:border-white/5',
-                          'hover:border-primary/40 hover:bg-[#f3f1e9] dark:hover:bg-white/[0.06] hover:shadow-md',
-                          draggingBot === agent.id && 'opacity-30'
-                        )}
+        )}
+
+        <div className="mt-3">
+          <Button
+            variant="outline"
+            onClick={() => void loadFromServer()}
+            disabled={isLoading}
+            className="h-9 w-full rounded-xl px-2 text-[12px]"
+          >
+            <RefreshCw className={cn('mr-1 h-3.5 w-3.5', isLoading && 'animate-spin')} />
+            刷新
+          </Button>
+        </div>
+
+        <div className="mt-4 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-300">
+              <Users className="h-4 w-4" />
+            </div>
+            <div>
+              <h3 className="text-[14px] font-semibold text-foreground">未归属员工</h3>
+              <p className="text-[11px] text-muted-foreground">拖到部门上分配</p>
+            </div>
+          </div>
+          <span className="rounded-full bg-black/[0.04] px-2 py-1 text-[11px] text-foreground/70 dark:bg-white/[0.06]">
+            {unassignedAgents.length}
+          </span>
+        </div>
+
+        <div className="mt-3 min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+            {unassignedAgents.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-black/10 px-4 py-8 text-center text-[13px] text-muted-foreground dark:border-white/10">
+                当前没有未归属员工
+              </div>
+            ) : (
+              unassignedAgents.map((agent) => {
+                const employee = employeeByAgentId[agent.id];
+                return (
+                  <div
+                    key={agent.id}
+                    draggable
+                    onDragStart={(event) => {
+                      event.dataTransfer.effectAllowed = 'move';
+                      beginAgentDrag(agent.id);
+                    }}
+                    onDragEnd={endAgentDrag}
+                    className={cn(
+                      'group rounded-xl border bg-[#f8f6f0] p-3 shadow-sm transition-all dark:bg-white/[0.04]',
+                      'hover:border-primary/40 hover:bg-[#f3f1e9] hover:shadow-md dark:hover:bg-white/[0.06]',
+                      draggingAgentId === agent.id && 'opacity-60',
+                    )}
+                  >
+                    <div className="flex items-center gap-3">
+                      <AgentAvatar
+                        name={getAgentName(agent.id)}
+                        imageUrl={employee?.headImage}
+                        seed={agent.id}
+                        avatarIndex={getAgentAvatarIndex(agent.id)}
+                        className="h-10 w-10 shrink-0"
+                        iconClassName="h-[28px] w-[28px]"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-[13px] font-semibold text-foreground">{getAgentName(agent.id)}</div>
+                        <div className="truncate text-[11px] text-muted-foreground">{agent.id}</div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleChatWithAgent(agent.id)}
+                        className="rounded-lg p-2 text-muted-foreground transition-colors hover:bg-black/5 hover:text-foreground dark:hover:bg-white/10"
+                        title="开始对话"
                       >
-                        <div className="flex items-center gap-3">
-                          <div 
-                            className="w-9 h-9 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white text-[15px] font-bold shrink-0"
-                          >
-                            {getEmoji(agent.id)}
+                        <MessageCircle className="h-4 w-4" />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+
+        <div className="relative min-h-0 overflow-hidden rounded-2xl border border-black/5 bg-[#f8f6f0] shadow-sm dark:border-white/8 dark:bg-[#11151b]">
+          <div
+            ref={canvasScrollRef}
+            className="h-full min-h-[640px] cursor-grab overflow-auto active:cursor-grabbing"
+            onMouseDown={(event) => {
+              if (draggingAgentId || event.button !== 0) return;
+              const target = event.target as HTMLElement;
+              if (target.closest('button, input, select, [draggable="true"]')) return;
+              const canvas = canvasScrollRef.current;
+              if (!canvas) return;
+              panStateRef.current = {
+                active: true,
+                startX: event.clientX,
+                startY: event.clientY,
+                scrollLeft: canvas.scrollLeft,
+                scrollTop: canvas.scrollTop,
+              };
+            }}
+            onMouseMove={(event) => {
+              const panState = panStateRef.current;
+              const canvas = canvasScrollRef.current;
+              if (!panState.active || !canvas) return;
+              event.preventDefault();
+              canvas.scrollLeft = panState.scrollLeft - (event.clientX - panState.startX);
+              canvas.scrollTop = panState.scrollTop - (event.clientY - panState.startY);
+            }}
+            onMouseUp={() => {
+              panStateRef.current.active = false;
+            }}
+            onMouseLeave={() => {
+              panStateRef.current.active = false;
+            }}
+            style={{
+              backgroundImage:
+                'linear-gradient(rgba(15,23,42,0.045) 1px, transparent 1px), linear-gradient(90deg, rgba(15,23,42,0.045) 1px, transparent 1px)',
+              backgroundSize: '28px 28px',
+            }}
+          >
+            {graphLayout.nodes.length === 0 ? (
+              <div className="flex h-[520px] items-center justify-center">
+                <div className="text-center">
+                  <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-3xl bg-gradient-to-br from-blue-500/10 to-cyan-500/10 text-blue-500">
+                    <Building2 className="h-8 w-8" />
+                  </div>
+                  <div className="text-[16px] font-semibold text-foreground">还没有组织架构图</div>
+                  <div className="mt-2 text-[13px] text-muted-foreground">
+                    先创建一个顶层部门，再把左侧员工拖进来即可。
+                  </div>
+                  <Button
+                    onClick={() => openCreateDepartment(null)}
+                    className="mt-5 h-10 rounded-xl px-4 text-[13px]"
+                  >
+                    <Plus className="mr-1.5 h-4 w-4" />
+                    创建顶层部门
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div
+                className="relative min-w-full"
+                style={{ width: Math.max(graphLayout.width, 920), height: graphLayout.height }}
+              >
+                <svg className="absolute inset-0 h-full w-full">
+                  {graphLayout.edges.map((edge) => {
+                    const source = graphLayout.nodeMap.get(edge.from);
+                    const target = graphLayout.nodeMap.get(edge.to);
+                    if (!source || !target) return null;
+                    return (
+                      <path
+                        key={edge.id}
+                        d={buildGraphPath(source, target)}
+                        fill="none"
+                        stroke="rgba(100, 116, 139, 0.78)"
+                        strokeWidth={2}
+                        strokeLinecap="round"
+                      />
+                    );
+                  })}
+                </svg>
+
+                {graphLayout.nodes.map((node) => {
+                  if (node.type === 'dept') {
+                    const dept = departmentById[node.id];
+                    if (!dept) return null;
+                    const deptColor = getDepartmentColor(dept.id);
+                    const peopleCount = getDepartmentPeopleCount(dept.id);
+                    const isDropTarget = dropTarget?.type === 'dept' && dropTarget.id === dept.id;
+                    const isSelected = selectedNode?.type === 'dept' && selectedNode.id === dept.id;
+
+                    return (
+                      <div
+                        key={node.key}
+                        onClick={() => setSelectedNode({ id: dept.id, type: 'dept' })}
+                        onDragOver={(event) => {
+                          event.preventDefault();
+                          if (draggingAgentId) {
+                            setDropTarget({ id: dept.id, type: 'dept' });
+                          }
+                        }}
+                        onDragLeave={() => {
+                          if (dropTarget?.type === 'dept' && dropTarget.id === dept.id) {
+                            setDropTarget(null);
+                          }
+                        }}
+                        onDrop={(event) => {
+                          event.preventDefault();
+                          handleDropOnTarget(dept.id);
+                        }}
+                        className={cn(
+                          'absolute rounded-2xl border p-4 text-white shadow-[0_10px_24px_rgba(15,23,42,0.14)] transition-all',
+                          isSelected && 'ring-4 ring-white/60',
+                          isDropTarget && 'scale-[1.04] ring-4 ring-blue-300/60',
+                        )}
+                        style={{
+                          left: node.x,
+                          top: node.y,
+                          width: node.width,
+                          height: node.height,
+                          background: `linear-gradient(135deg, ${deptColor}, ${deptColor}dd)`,
+                          borderColor: deptColor,
+                        }}
+                      >
+                        <div className="flex items-start gap-3">
+                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/18 text-white shadow-sm">
+                            <Building2 className="h-5 w-5" />
                           </div>
-                          <div className="flex-1 min-w-0">
-                            <div className="text-[13px] font-semibold text-foreground truncate">
-                              {agent.name}
-                            </div>
-                            <div className="text-[11px] text-muted-foreground truncate">
-                              {agent.id.slice(0, 12)}
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate text-[15px] font-semibold text-white">{dept.name}</div>
+                            <div className="mt-1 flex flex-wrap items-center gap-2">
+                              <span className="rounded-full bg-white/18 px-2.5 py-1 text-[11px] font-medium text-white/90">
+                                {peopleCount} 名员工
+                              </span>
+                              {dept.parentId && (
+                                <span className="rounded-full bg-white/18 px-2.5 py-1 text-[11px] font-medium text-white/90">
+                                  子部门
+                                </span>
+                              )}
                             </div>
                           </div>
+                        </div>
+                        <div className="mt-3 flex items-center justify-end gap-1">
                           <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleChatWithAgent(agent.id);
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              openCreateDepartment(dept.id, 'dept');
                             }}
-                            className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg hover:bg-primary/10 text-primary transition-all"
-                            title="开始对话"
+                            className="rounded-lg p-2 text-white/80 transition-colors hover:bg-white/15 hover:text-white"
+                            title="添加子部门"
                           >
-                            <MessageCircle className="w-4 h-4" />
+                            <Plus className="h-4 w-4" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              openRenameDepartment(dept.id);
+                            }}
+                            className="rounded-lg p-2 text-white/80 transition-colors hover:bg-white/15 hover:text-white"
+                            title="重命名"
+                          >
+                            <Edit2 className="h-4 w-4" />
+                          </button>
+                          {dept.parentId && (
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                handlePromoteDepartment(dept.id);
+                              }}
+                              className="rounded-lg p-2 text-white/80 transition-colors hover:bg-white/15 hover:text-white"
+                              title="提升到顶层"
+                            >
+                              <RefreshCw className="h-4 w-4" />
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              confirmDeleteDepartment(dept.id);
+                            }}
+                            className="rounded-lg p-2 text-white/80 transition-colors hover:bg-white/15 hover:text-white"
+                            title="删除部门"
+                          >
+                            <Trash2 className="h-4 w-4" />
                           </button>
                         </div>
-                      </motion.div>
-                    ))}
-                  </AnimatePresence>
-                </div>
+                        {isDropTarget && (
+                          <div className="absolute -bottom-9 left-3 right-3 rounded-xl bg-slate-950/80 px-3 py-2 text-center text-[11px] text-white shadow-lg backdrop-blur">
+                            松开鼠标后，这名员工会被分配到这个部门
+                          </div>
+                        )}
+                      </div>
+                    );
+                  }
+
+                  const employee = employeeByAgentId[node.id];
+                  const isSelected = selectedNode?.type === 'bot' && selectedNode.id === node.id;
+
+                  return (
+                    <div
+                      key={node.key}
+                      draggable
+                      onDragStart={(event) => {
+                        event.dataTransfer.effectAllowed = 'move';
+                        beginAgentDrag(node.id);
+                      }}
+                      onDragEnd={endAgentDrag}
+                      onClick={() => setSelectedNode({ id: node.id, type: 'bot' })}
+                      className={cn(
+                        'absolute rounded-2xl border bg-[#f3f1e9] p-3 shadow-[0_8px_20px_rgba(15,23,42,0.12)] transition-all dark:bg-[#1d2027]',
+                        isSelected && 'border-primary/60 ring-2 ring-primary/15',
+                        draggingAgentId === node.id && 'opacity-70',
+                      )}
+                      style={{ left: node.x, top: node.y, width: node.width, height: node.height }}
+                    >
+                      <div className="flex items-center gap-3">
+                        <AgentAvatar
+                          name={getAgentName(node.id)}
+                          imageUrl={employee?.headImage}
+                          seed={node.id}
+                          avatarIndex={getAgentAvatarIndex(node.id)}
+                          className="h-11 w-11 shrink-0"
+                          iconClassName="h-[30px] w-[30px]"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-[14px] font-semibold text-foreground">{getAgentName(node.id)}</div>
+                          <div className="truncate text-[11px] text-muted-foreground">{node.id}</div>
+                        </div>
+                      </div>
+                      <div className="mt-3 flex items-center justify-end gap-1">
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            handleChatWithAgent(node.id);
+                          }}
+                          className="rounded-lg p-2 text-muted-foreground transition-colors hover:bg-black/5 hover:text-foreground dark:hover:bg-white/10"
+                          title="开始对话"
+                        >
+                          <MessageCircle className="h-4 w-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            unassignAgent(node.id);
+                            toast.success('员工归属已移除');
+                          }}
+                          className="rounded-lg p-2 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                          title="移除归属"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             )}
-            
-
-            
-            {unassignedAgents.length === 0 && agents.length === 0 && (
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                className="text-[13px] text-muted-foreground text-center py-8"
-              >
-                还没有员工
-              </motion.div>
-            )}
           </div>
-          
-          <div className="mt-4 pt-4 border-t border-black/5 dark:border-white/5 text-[11px] text-muted-foreground space-y-1 shrink-0">
-            <div>💡 拖拽员工到部门或其他员工节点</div>
-            <div>❌ 点击 X 按钮移除分配</div>
-            <div>🖱 右键节点查看更多操作</div>
+
+          <div className="absolute bottom-4 right-4 z-20 rounded-2xl border border-black/10 bg-white/88 px-4 py-2.5 text-[12px] text-muted-foreground shadow-lg backdrop-blur dark:border-white/10 dark:bg-[#181b20]/88">
+            拖拽员工到节点上分配，横向或纵向滚动画布查看完整结构
           </div>
         </div>
-      </motion.div>
-      
-      {/* 画布区域 */}
-      <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        className="flex-1 rounded-2xl overflow-hidden relative bg-[#f8f6f0] dark:bg-gray-900 border border-black/5 dark:border-white/5"
-        onDrop={handleCanvasDrop}
-        onDragOver={handleCanvasDragOver}
-        onDragEnd={handleDragEnd}
-        onDragEnter={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-        }}
-        onDragLeave={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-        }}
-      >
-        <div ref={containerRef} className="w-full h-full relative z-0" />
-        
-        {departments.length === 0 && (
-          <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
-            <div className="text-center">
-              <div className="w-24 h-24 mx-auto mb-6 rounded-3xl bg-gradient-to-br from-blue-500/10 via-purple-500/10 to-pink-500/10 flex items-center justify-center backdrop-blur-sm border border-white/20 shadow-xl">
-                <Building2 className="w-12 h-12 text-blue-500/50" />
-              </div>
-              <div className="text-[17px] font-serif font-semibold text-foreground/80 mb-2" style={{ fontFamily: 'Georgia, Cambria, "Times New Roman", Times, serif' }}>
-                还没有部门
-              </div>
-              <div className="text-[14px] text-muted-foreground/70 max-w-xs">在左侧添加第一个部门开始构建组织架构</div>
+
+      {departmentDialog && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4"
+          onClick={() => setDepartmentDialog(null)}
+        >
+          <div
+            className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl dark:bg-[#181b20]"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h3 className="text-[20px] font-semibold tracking-tight text-foreground">
+              {departmentDialog.mode === 'create' ? '新增部门' : '重命名部门'}
+            </h3>
+            <p className="mt-2 text-[13px] text-muted-foreground">
+              {departmentDialog.mode === 'create'
+                ? departmentDialog.parentId
+                  ? '这个部门会创建在当前部门下面，并自动保存到组织架构。'
+                  : '创建第一个顶层部门后，就可以在部门卡片上继续添加子部门。'
+                : '修改名称后会自动保存，并同步到组织架构图。'}
+            </p>
+            <Input
+              autoFocus
+              value={departmentDialog.value}
+              onChange={(event) => setDepartmentDialog({ ...departmentDialog, value: event.target.value })}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  submitDepartmentDialog();
+                }
+              }}
+              className={cn('h-11 rounded-xl text-[13px]', departmentDialog.mode === 'create' ? 'mt-3' : 'mt-4')}
+              placeholder="请输入部门名称"
+            />
+            <div className="mt-5 flex justify-end gap-2">
+              <Button variant="outline" className="h-10 rounded-xl px-4 text-[13px]" onClick={() => setDepartmentDialog(null)}>
+                取消
+              </Button>
+              <Button className="h-10 rounded-xl px-4 text-[13px]" onClick={submitDepartmentDialog}>
+                确认
+              </Button>
             </div>
           </div>
-        )}
-        
-        {/* 操作提示 */}
-        <div className="absolute bottom-5 right-5 bg-[#f3f1e9]/90 dark:bg-gray-800/90 backdrop-blur-md rounded-2xl px-5 py-3 text-[12px] text-muted-foreground border border-black/10 dark:border-white/10 shadow-xl z-10">
-          <div className="flex items-center gap-5">
-            <span className="flex items-center gap-1.5">
-              <span className="text-[14px]">🖱</span>
-              <span>拖动画布</span>
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className="text-[14px]">⌘</span>
-              <span>+ 滚轮缩放</span>
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className="text-[14px]">🖱</span>
-              <span>右键部门操作</span>
-            </span>
+        </div>
+      )}
+
+      {confirmDialog && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4"
+          onClick={() => setConfirmDialog(null)}
+        >
+          <div
+            className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl dark:bg-[#181b20]"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h3 className="text-[20px] font-semibold tracking-tight text-foreground">{confirmDialog.title}</h3>
+            <p className="mt-3 text-[13px] leading-6 text-muted-foreground">{confirmDialog.message}</p>
+            <div className="mt-5 flex justify-end gap-2">
+              <Button variant="outline" className="h-10 rounded-xl px-4 text-[13px]" onClick={() => setConfirmDialog(null)}>
+                取消
+              </Button>
+              <Button
+                className="h-10 rounded-xl bg-red-600 px-4 text-[13px] hover:bg-red-700"
+                onClick={confirmDialog.onConfirm}
+              >
+                确认删除
+              </Button>
+            </div>
           </div>
         </div>
-        
-        {/* 拖动提示 */}
-        <AnimatePresence>
-          {draggingBot && (
-            <motion.div
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 10 }}
-              className="absolute top-5 left-1/2 -translate-x-1/2 bg-blue-500 text-white px-6 py-3 rounded-2xl shadow-2xl font-medium text-[13px] flex items-center gap-2 z-20"
-            >
-              <motion.span
-                animate={{ rotate: [0, 10, -10, 0] }}
-                transition={{ duration: 0.5, repeat: Infinity }}
-              >
-                👆
-              </motion.span>
-              拖动到部门或员工节点上释放
-            </motion.div>
-          )}
-        </AnimatePresence>
-        
-        {/* 拖动预览 */}
-        <AnimatePresence>
-          {draggingBot && dragPosition && (
-            <motion.div
-              initial={{ opacity: 0, scale: 0.9 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.9 }}
-              transition={{ type: "spring", stiffness: 500, damping: 30 }}
-              style={{
-                position: 'fixed',
-                left: dragPosition.x,
-                top: dragPosition.y,
-                pointerEvents: 'none',
-                zIndex: 9999,
-                willChange: 'transform',
-              }}
-              className="transform -translate-x-1/2 -translate-y-1/2"
-            >
-              <div className="p-3 rounded-xl border-2 border-blue-500 bg-white dark:bg-gray-800 shadow-2xl">
-                <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white text-[15px] font-bold">
-                    {getEmoji(draggingBot)}
-                  </div>
-                  <div className="text-[13px] font-semibold text-foreground">
-                    {agents.find((a) => a.id === draggingBot)?.name}
-                  </div>
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </motion.div>
-      
-      {/* 重命名对话框 */}
-      <AnimatePresence>
-        {editingDept && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
-            onClick={() => setEditingDept(null)}
-          >
-            <motion.div
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              onClick={(e) => e.stopPropagation()}
-              className="bg-[#f3f1e9] dark:bg-gray-800 rounded-3xl p-6 w-full max-w-md shadow-2xl"
-            >
-              <h3 className="text-xl font-serif font-normal tracking-tight text-foreground mb-4">
-                重命名部门
-              </h3>
-              <Input
-                value={editingDept.name}
-                onChange={(e) => setEditingDept({ ...editingDept, name: e.target.value })}
-                onKeyDown={(e) => e.key === 'Enter' && handleRenameDepartment()}
-                className="h-11 text-[13px] rounded-xl mb-4"
-                autoFocus
-              />
-              <div className="flex gap-2 justify-end">
-                <Button
-                  variant="outline"
-                  onClick={() => setEditingDept(null)}
-                  className="h-9 text-[13px] font-medium rounded-full px-4"
-                >
-                  取消
-                </Button>
-                <Button
-                  onClick={handleRenameDepartment}
-                  disabled={!editingDept.name.trim()}
-                  className="h-9 text-[13px] font-medium rounded-full px-4"
-                >
-                  确定
-                </Button>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* 确认对话框 */}
-      <AnimatePresence>
-        {confirmDialog && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
-            onClick={() => setConfirmDialog(null)}
-          >
-            <motion.div
-              initial={{ scale: 0.9, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.9, opacity: 0 }}
-              onClick={(e) => e.stopPropagation()}
-              className="bg-[#f3f1e9] dark:bg-gray-800 rounded-3xl p-6 w-full max-w-md shadow-2xl"
-            >
-              <h3 className="text-xl font-serif font-normal tracking-tight text-foreground mb-3">
-                {confirmDialog.title}
-              </h3>
-              <p className="text-[14px] text-muted-foreground mb-6">
-                {confirmDialog.message}
-              </p>
-              <div className="flex gap-3 justify-end">
-                <Button
-                  variant="outline"
-                  onClick={() => setConfirmDialog(null)}
-                  className="h-10 text-[13px] font-medium rounded-full px-6"
-                >
-                  取消
-                </Button>
-                <Button
-                  onClick={confirmDialog.onConfirm}
-                  className="h-10 text-[13px] font-medium rounded-full px-6 bg-red-600 hover:bg-red-700"
-                >
-                  确定删除
-                </Button>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* 右键菜单 */}
-      <AnimatePresence>
-        {contextMenu && (
-          <motion.div
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.95 }}
-            style={{ left: contextMenu.x, top: contextMenu.y }}
-            className="fixed z-50 bg-white dark:bg-gray-800 rounded-xl border border-black/10 dark:border-white/10 shadow-2xl overflow-hidden min-w-[160px]"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                setContextMenu(null);
-                setTimeout(() => {
-                  const dept = departments.find((d) => d.id === contextMenu.deptId);
-                  if (dept) setEditingDept({ id: dept.id, name: dept.name });
-                }, 0);
-              }}
-              className="w-full px-4 py-2.5 text-left text-[13px] text-foreground hover:bg-black/5 dark:hover:bg-white/5 transition-colors flex items-center gap-2"
-            >
-              <Edit2 className="w-3.5 h-3.5" />
-              重命名
-            </button>
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                setContextMenu(null);
-                // 使用 setTimeout 确保菜单先关闭
-                setTimeout(() => {
-                  setSelectedDept(contextMenu.deptId);
-                }, 0);
-              }}
-              className="w-full px-4 py-2.5 text-left text-[13px] text-foreground hover:bg-black/5 dark:hover:bg-white/5 transition-colors flex items-center gap-2"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              添加子部门
-            </button>
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                const deptId = contextMenu.deptId;
-                setContextMenu(null);
-                setTimeout(() => {
-                  handleDeleteDepartment(deptId);
-                }, 0);
-              }}
-              className="w-full px-4 py-2.5 text-left text-[13px] text-destructive hover:bg-destructive/10 transition-colors flex items-center gap-2"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-              删除部门
-            </button>
-          </motion.div>
-        )}
-      </AnimatePresence>
-      {/* 右键菜单 - 员工 */}
-      <AnimatePresence>
-        {botContextMenu && (
-          <motion.div
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.95 }}
-            style={{ left: botContextMenu.x, top: botContextMenu.y }}
-            className="fixed z-50 bg-white dark:bg-gray-800 rounded-xl border border-black/10 dark:border-white/10 shadow-2xl overflow-hidden min-w-[160px]"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                const botId = botContextMenu.botId;
-                setBotContextMenu(null);
-                setTimeout(() => {
-                  setSelectedDept(botId);
-                }, 0);
-              }}
-              className="w-full px-4 py-2.5 text-left text-[13px] text-foreground hover:bg-black/5 dark:hover:bg-white/5 transition-colors flex items-center gap-2"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              添加子部门
-            </button>
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                const botId = botContextMenu.botId;
-                setBotContextMenu(null);
-                setTimeout(() => {
-                  handleUnassignAgent(botId);
-                }, 0);
-              }}
-              className="w-full px-4 py-2.5 text-left text-[13px] text-destructive hover:bg-destructive/10 transition-colors flex items-center gap-2"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-              移除分配
-            </button>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      )}
     </div>
   );
 }

@@ -1139,6 +1139,14 @@ function mergeSessionLists(primarySessions: ChatSession[], supplementSessions: C
   return Array.from(merged.values());
 }
 
+function filterDeletedSessions(sessions: ChatSession[], deletedSessionKeys: readonly string[]): ChatSession[] {
+  if (deletedSessionKeys.length === 0) {
+    return sessions;
+  }
+  const deleted = new Set(deletedSessionKeys);
+  return sessions.filter((session) => !deleted.has(session.key));
+}
+
 function buildSessionSwitchPatch(
   state: Pick<
     ChatState,
@@ -1631,6 +1639,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   currentAgentId: 'main',
   sessionLabels: {},
   sessionLastActivity: {},
+  deletedSessionKeys: [],
   channelBindings: {},
 
   showThinking: true,
@@ -1681,8 +1690,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
           });
           const sortedDedupedSessions = sortSessionsByActivity(dedupedSessions, discoveredActivity);
 
-          const { currentSessionKey, sessions: existingSessions, sessionLabels: currentSessionLabels } = get();
-          const visibleSessions = sortedDedupedSessions.filter((session) => !shouldHideIncompleteSession(session, currentSessionLabels));
+          const {
+            currentSessionKey,
+            sessions: existingSessions,
+            sessionLabels: currentSessionLabels,
+            deletedSessionKeys,
+          } = get();
+          const visibleSessions = filterDeletedSessions(
+            sortedDedupedSessions.filter((session) => !shouldHideIncompleteSession(session, currentSessionLabels)),
+            deletedSessionKeys,
+          );
           let nextSessionKey = currentSessionKey || DEFAULT_SESSION_KEY;
           if (!nextSessionKey.startsWith('agent:')) {
             const canonicalMatch = canonicalBySuffix.get(nextSessionKey);
@@ -2032,6 +2049,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           sessions: remaining,
           sessionLabels: Object.fromEntries(Object.entries(s.sessionLabels).filter(([k]) => k !== key)),
           sessionLastActivity: Object.fromEntries(Object.entries(s.sessionLastActivity).filter(([k]) => k !== key)),
+          deletedSessionKeys: s.deletedSessionKeys.includes(key) ? s.deletedSessionKeys : [...s.deletedSessionKeys, key],
           messages: [],
         streamingText: '',
         streamingMessage: null,
@@ -2052,6 +2070,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         sessions: remaining,
         sessionLabels: Object.fromEntries(Object.entries(s.sessionLabels).filter(([k]) => k !== key)),
         sessionLastActivity: Object.fromEntries(Object.entries(s.sessionLastActivity).filter(([k]) => k !== key)),
+        deletedSessionKeys: s.deletedSessionKeys.includes(key) ? s.deletedSessionKeys : [...s.deletedSessionKeys, key],
       }));
     }
   },

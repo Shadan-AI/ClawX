@@ -1,6 +1,6 @@
 {
     "name": "openme",
-    "version": "0.6.24",
+    "version": "0.6.25",
     "pnpm": {
         "onlyBuiltDependencies": [
             "@discordjs/opus",
@@ -34,7 +34,7 @@
     "private": true,
     "scripts": {
         "init": "pnpm install && pnpm run uv:download",
-        "predev": "zx scripts/prepare-preinstalled-skills-dev.mjs",
+        "predev": "node scripts/prepare-preinstalled-skills-dev.mjs",
         "dev": "vite",
         "prebuild": "",
         "build": "vite build && zx scripts/bundle-openclaw.mjs && zx scripts/bundle-openclaw-plugins.mjs && zx scripts/bundle-preinstalled-skills.mjs && electron-builder",
