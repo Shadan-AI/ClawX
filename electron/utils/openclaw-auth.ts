@@ -8,7 +8,7 @@
  * equivalents could stall for 500 ms – 2 s+ per call, causing "Not
  * Responding" hangs.
  */
-import { access, mkdir, readFile, writeFile } from 'fs/promises';
+import { access, mkdir, readFile, writeFile, rename, unlink } from 'fs/promises';
 import { constants, readdirSync, readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir, networkInterfaces } from 'os';
@@ -25,6 +25,7 @@ import {
   isOpenClawOAuthPluginProviderKey,
 } from './provider-keys';
 import { withConfigLock } from './config-mutex';
+import { stampOpenClawConfigMeta } from './openclaw-config-meta';
 
 const AUTH_STORE_VERSION = 1;
 const AUTH_PROFILE_FILENAME = 'auth-profiles.json';
@@ -66,7 +67,14 @@ async function readJsonFile<T>(filePath: string): Promise<T | null> {
 /** Write a JSON file, creating parent directories if needed. */
 async function writeJsonFile(filePath: string, data: unknown): Promise<void> {
   await ensureDir(join(filePath, '..'));
-  await writeFile(filePath, JSON.stringify(data, null, 2), 'utf-8');
+  const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  await writeFile(tmpPath, JSON.stringify(data, null, 2), 'utf-8');
+  try {
+    await rename(tmpPath, filePath);
+  } catch (error) {
+    await unlink(tmpPath).catch(() => undefined);
+    throw error;
+  }
 }
 
 // ── Types ────────────────────────────────────────────────────────
@@ -380,6 +388,7 @@ export async function writeOpenClawJson(config: Record<string, unknown>): Promis
   ) as Record<string, unknown>;
   commands.restart = true;
   config.commands = commands;
+  stampOpenClawConfigMeta(config);
 
   await writeJsonFile(OPENCLAW_CONFIG_PATH, config);
 }

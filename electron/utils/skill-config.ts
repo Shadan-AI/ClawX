@@ -267,7 +267,13 @@ function resolvePreinstalledSkillsSourceRoot(): string | null {
         join(__dirname, '../../build/preinstalled-skills'),
     ];
 
-    const root = candidates.find((dir) => existsSync(dir));
+    const root = candidates.find((dir) => {
+        if (!existsSync(dir)) return false;
+        if (dir.includes(join('build', 'preinstalled-skills'))) {
+            return existsSync(join(dir, '.preinstalled-lock.json'));
+        }
+        return true;
+    });
     return root || null;
 }
 
@@ -328,7 +334,7 @@ export async function ensurePreinstalledSkillsInstalled(): Promise<void> {
 
     const sourceRoot = resolvePreinstalledSkillsSourceRoot();
     if (!sourceRoot) {
-        logger.warn('Preinstalled skills source root not found; skipping preinstall.');
+        logger.debug('Preinstalled skills source root not found; skipping preinstall.');
         return;
     }
     const lockVersions = await readPreinstalledLockVersions(sourceRoot);

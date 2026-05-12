@@ -1,4 +1,6 @@
-const API_URL = 'https://im.shadanai.com/api';
+import { invokeIpc } from '@/lib/api-client';
+
+const DEFAULT_API_URL = 'https://im.shadanai.com/api';
 
 export interface OrganizationData {
   id?: number;
@@ -15,78 +17,76 @@ interface ApiResponse<T> {
   message?: string;
 }
 
-/**
- * 获取 token (从 Electron 主进程)
- */
-async function getTokenKey(): Promise<string | null> {
+async function getBoxImAuth(): Promise<{ tokenKey: string | null; apiUrl: string }> {
   try {
-    const result = await window.electron.ipcRenderer.invoke('box-im:getTokenKey');
-    return result as string | null;
+    const result = await invokeIpc<{
+      tokenKey?: string | null;
+      apiUrl?: string | null;
+    } | null>('box-im:getConfig');
+
+    return {
+      tokenKey: result?.tokenKey ?? null,
+      apiUrl: (result?.apiUrl || DEFAULT_API_URL).replace(/\/+$/, ''),
+    };
   } catch (error) {
-    console.error('Failed to get token key:', error);
-    return null;
+    console.warn('[organization] Failed to get full BoxIM config, falling back to tokenKey:', error);
+    try {
+      const tokenKey = await invokeIpc<string | null>('box-im:getTokenKey');
+      return { tokenKey, apiUrl: DEFAULT_API_URL };
+    } catch (tokenError) {
+      console.error('[organization] Failed to get tokenKey:', tokenError);
+      return { tokenKey: null, apiUrl: DEFAULT_API_URL };
+    }
   }
 }
 
-/**
- * 获取组织架构
- */
 export async function getOrganization(): Promise<ApiResponse<OrganizationData>> {
-  const token = await getTokenKey();
-  
-  const response = await fetch(`${API_URL}/organization/get`, {
+  const { tokenKey, apiUrl } = await getBoxImAuth();
+
+  const response = await fetch(`${apiUrl}/organization/get`, {
     method: 'GET',
     headers: {
       'Content-Type': 'application/json',
-      'Token-Key': token || '',
+      'Token-Key': tokenKey || '',
     },
   });
-  
+
   if (!response.ok) {
     throw new Error(`HTTP error! status: ${response.status}`);
   }
-  
+
   return response.json();
 }
 
-/**
- * 保存组织架构
- */
 export async function saveOrganization(canvasData: string, version: number): Promise<ApiResponse<OrganizationData>> {
-  const token = await getTokenKey();
-  
-  const response = await fetch(`${API_URL}/organization/save`, {
+  const { tokenKey, apiUrl } = await getBoxImAuth();
+
+  const response = await fetch(`${apiUrl}/organization/save`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Token-Key': token || '',
+      'Token-Key': tokenKey || '',
     },
     body: JSON.stringify({ canvasData, version }),
   });
-  
-  const data = await response.json();
-  
-  // 不管状态码,都返回 JSON,让调用方处理
-  return data;
+
+  return response.json();
 }
 
-/**
- * 检查是否有更新
- */
 export async function checkOrganizationUpdate(version: number): Promise<ApiResponse<{ hasUpdate: boolean; latestVersion: number }>> {
-  const token = await getTokenKey();
-  
-  const response = await fetch(`${API_URL}/organization/check-update?version=${version}`, {
+  const { tokenKey, apiUrl } = await getBoxImAuth();
+
+  const response = await fetch(`${apiUrl}/organization/check-update?version=${version}`, {
     method: 'GET',
     headers: {
       'Content-Type': 'application/json',
-      'Token-Key': token || '',
+      'Token-Key': tokenKey || '',
     },
   });
-  
+
   if (!response.ok) {
     throw new Error(`HTTP error! status: ${response.status}`);
   }
-  
+
   return response.json();
 }

@@ -101,6 +101,7 @@ export interface ChatState {
   sessionLabels: Record<string, string>;
   /** Last message timestamp (ms) per session key, used for sorting */
   sessionLastActivity: Record<string, number>;
+  deletedSessionKeys: string[];
   /** Channel account ID → Agent ID bindings */
   channelBindings: Record<string, string>;
 

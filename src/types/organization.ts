@@ -1,28 +1,25 @@
-/**
- * 组织架构类型定义
- */
+export type ParentType = 'dept' | 'bot';
 
 export interface Department {
   id: string;
   name: string;
   parentId: string | null;
-  parentType?: 'dept' | 'bot'; // 父节点类型
+  parentType?: ParentType;
 }
 
 export interface Assignment {
-  [botId: string]: string; // botId -> deptId or parentBotId
+  [botId: string]: string;
 }
 
-// 新增：节点关系类型
 export interface NodeRelation {
   childId: string;
-  childType: 'dept' | 'bot';
+  childType: ParentType;
   parentId: string;
-  parentType: 'dept' | 'bot';
+  parentType: ParentType;
 }
 
 export interface OrgData {
   departments: Department[];
   assignments: Assignment;
-  relations?: NodeRelation[]; // 新增：节点关系
+  relations?: NodeRelation[];
 }

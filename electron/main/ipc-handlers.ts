@@ -69,7 +69,7 @@ import {
   type AppRequest,
   type AppResponse,
 } from './ipc/request-helpers';
-import { getTokenKey as getBoxImTokenKey, logoutBoxIm, syncBots, checkProfileSync, syncProfileFiles, downloadProfileFile, uploadProfileFile_Single } from '../utils/box-im-sync';
+import { getBoxImConfig, getTokenKey as getBoxImTokenKey, logoutBoxIm, syncBots, checkProfileSync, syncProfileFiles, downloadProfileFile, uploadProfileFile_Single } from '../utils/box-im-sync';
 import {
   createWxScene,
   pollWxScan,
@@ -880,6 +880,16 @@ function registerSkillConfigHandlers(): void {
 }
 
 function registerBoxImConfigHandlers(): void {
+  ipcMain.handle('box-im:getConfig', async () => {
+    try {
+      const { tokenKey, apiUrl, ownerUserId } = await getBoxImConfig();
+      return { tokenKey, apiUrl, ownerUserId };
+    } catch (err) {
+      logger.warn('[box-im] Failed to read config:', err);
+      return { tokenKey: null, apiUrl: 'https://im.shadanai.com/api', ownerUserId: null };
+    }
+  });
+
   ipcMain.handle('box-im:getTokenKey', async () => {
     try {
       return await getBoxImTokenKey();
@@ -1457,7 +1467,9 @@ function registerGatewayHandlers(
       const result = await gatewayManager.rpc(method, params, timeoutMs);
       return { success: true, result };
     } catch (error) {
-      logger.warn(`[gateway:rpc] ${method} failed (timeoutMs=${timeoutMs ?? 30000}): ${String(error)}`);
+      const message = String(error);
+      const log = /Gateway not connected/i.test(message) ? logger.debug : logger.warn;
+      log(`[gateway:rpc] ${method} failed (timeoutMs=${timeoutMs ?? 30000}): ${message}`);
       return { success: false, error: String(error) };
     }
   });

@@ -4,7 +4,7 @@
  *
  * All file I/O uses async fs/promises to avoid blocking the main thread.
  */
-import { access, mkdir, readFile, writeFile, readdir, stat, rm } from 'fs/promises';
+import { access, mkdir, readFile, writeFile, readdir, stat, rm, rename, unlink } from 'fs/promises';
 import { constants } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -18,6 +18,7 @@ import {
     normalizeOpenClawAccountId,
     toOpenClawChannelType,
 } from './channel-alias';
+import { stampOpenClawConfigMeta } from './openclaw-config-meta';
 
 const OPENCLAW_DIR = join(homedir(), '.openclaw');
 const CONFIG_FILE = join(OPENCLAW_DIR, 'openclaw.json');
@@ -355,6 +356,17 @@ async function ensureConfigDir(): Promise<void> {
     }
 }
 
+async function writeJsonAtomic(filePath: string, data: unknown): Promise<void> {
+    const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    await writeFile(tmpPath, JSON.stringify(data, null, 2), 'utf-8');
+    try {
+        await rename(tmpPath, filePath);
+    } catch (error) {
+        await unlink(tmpPath).catch(() => undefined);
+        throw error;
+    }
+}
+
 export async function readOpenClawConfig(): Promise<OpenClawConfig> {
     await ensureConfigDir();
 
@@ -383,8 +395,9 @@ export async function writeOpenClawConfig(config: OpenClawConfig): Promise<void>
                 : {};
         commands.restart = true;
         config.commands = commands;
+        stampOpenClawConfigMeta(config as Record<string, unknown>);
 
-        await writeFile(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf-8');
+        await writeJsonAtomic(CONFIG_FILE, config);
     } catch (error) {
         logger.error('Failed to write OpenClaw config', error);
         console.error('Failed to write OpenClaw config:', error);
