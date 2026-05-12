@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process';
 import { createPrivateKey, createPublicKey, generateKeyPairSync } from 'node:crypto';
 import { constants } from 'node:fs';
 import { access, chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
-import { delimiter, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 
 export interface WireGuardRegistration {
   vpnIp: string;
@@ -40,9 +40,9 @@ const X25519_PKCS8_PREFIX = Buffer.from('302e020100300506032b656e04220420', 'hex
 let wgCommandPromise: Promise<string> | undefined;
 let wgQuickCommandPromise: Promise<string> | undefined;
 
-function execFileText(command: string, args: string[], input?: string): Promise<string> {
+function execFileText(command: string, args: string[], input?: string, timeout = 15_000): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = execFile(command, args, { timeout: 15_000 }, (error, stdout, stderr) => {
+    const child = execFile(command, args, { timeout }, (error, stdout, stderr) => {
       if (error) {
         reject(new Error(`${command} ${args.join(' ')} failed: ${stderr || error.message}`));
         return;
@@ -214,8 +214,7 @@ PersistentKeepalive = ${keepalive}
 
 export async function startWireGuard(configPath: string): Promise<'started' | 'opened-app' | 'config-written'> {
   if (process.platform === 'win32') {
-    void configPath;
-    return 'config-written';
+    return await startWireGuardWindows(configPath);
   }
 
   let wgQuick: string | undefined;
@@ -244,6 +243,54 @@ export async function startWireGuard(configPath: string): Promise<'started' | 'o
     throw err;
   }
   return 'started';
+}
+
+async function startWireGuardWindows(configPath: string): Promise<'started' | 'config-written'> {
+  const helperPath = await resolveWindowsVpnHelperPath();
+  if (!helperPath) {
+    return 'config-written';
+  }
+
+  const powershell = getWindowsPowerShellPath();
+  await execFileText(
+    powershell,
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+      helperPath,
+      '-Action',
+      'install-start',
+      '-ConfigPath',
+      configPath,
+    ],
+    undefined,
+    180_000,
+  );
+  return 'started';
+}
+
+async function resolveWindowsVpnHelperPath(): Promise<string | null> {
+  const candidates = app.isPackaged
+    ? [join(process.resourcesPath, 'bin', 'openme-vpn-helper.ps1')]
+    : [
+        join(process.cwd(), 'resources', 'bin', `win32-${process.arch}`, 'openme-vpn-helper.ps1'),
+        join(dirname(process.execPath), 'resources', 'bin', `win32-${process.arch}`, 'openme-vpn-helper.ps1'),
+      ];
+
+  for (const candidate of candidates) {
+    if (await fileAccessible(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function getWindowsPowerShellPath(): string {
+  const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+  return join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 }
 
 async function openWireGuardApp(configPath: string): Promise<void> {

@@ -54,7 +54,10 @@ test-results/
 *.deb
 *.rpm
 
-resources/bin
+resources/bin/*
+!resources/bin/win32-x64/
+!resources/bin/win32-x64/openme-vpn-helper.ps1
+!resources/bin/win32-x64/wireguard-amd64-0.6.1.msi
 
 # Secrets
 *.p12
