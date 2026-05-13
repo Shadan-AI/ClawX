@@ -55,8 +55,8 @@ const BANNED_MODEL_IDS = new Set(['step-3.5-flash']);
 const SAFE_FALLBACK_MODEL_ID = 'glm-5';
 
 function modelIdFromRef(modelRef: string): string {
-  const separatorIndex = modelRef.indexOf('/');
-  return separatorIndex >= 0 ? modelRef.slice(separatorIndex + 1) : modelRef;
+  const trimmed = modelRef.trim();
+  return trimmed.startsWith('shadan/') ? trimmed.slice('shadan/'.length) : trimmed;
 }
 
 function isBannedModelId(modelId: string | null | undefined): boolean {
@@ -159,7 +159,7 @@ function toSessionModelRef(modelValue: string | null | undefined): string | null
   if (!sanitizedModelValue) return null;
   const sanitizedModelId = sanitizeModelId(sanitizedModelValue);
   if (!sanitizedModelId) return null;
-  return sanitizedModelValue.includes('/') ? sanitizedModelValue : `shadan/${sanitizedModelId}`;
+  return sanitizedModelValue.startsWith('shadan/') ? sanitizedModelValue : `shadan/${sanitizedModelId}`;
 }
 
 function toCurrentModelId(modelRef: string, models: OneApiModel[]): string {

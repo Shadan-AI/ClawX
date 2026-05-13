@@ -46,6 +46,7 @@ export class AppUpdater extends EventEmitter {
   private status: UpdateStatus = { status: 'idle' };
   private autoInstallTimer: NodeJS.Timeout | null = null;
   private autoInstallCountdown = 0;
+  private installTriggered = false;
 
   /** Delay (in seconds) before auto-installing a downloaded update. */
   private static readonly AUTO_INSTALL_DELAY_SECONDS = 5;
@@ -60,7 +61,11 @@ export class AppUpdater extends EventEmitter {
     });
     
     autoUpdater.autoDownload = false;
-    autoUpdater.autoInstallOnAppQuit = true;
+    // We handle install-on-quit ourselves so Windows always restarts the app.
+    // electron-updater's built-in NSIS quit handler installs silently with
+    // isForceRunAfter=false, which can leave the user with the app closed and
+    // no newly launched version after a downloaded update.
+    autoUpdater.autoInstallOnAppQuit = false;
     
     autoUpdater.logger = {
       info: (msg: string) => logger.info('[Updater]', msg),
@@ -138,6 +143,7 @@ export class AppUpdater extends EventEmitter {
     });
 
     autoUpdater.on('error', (error: Error) => {
+      this.installTriggered = false;
       this.updateStatus({ status: 'error', error: error.message });
       this.emit('error', error);
     });
@@ -224,10 +230,20 @@ export class AppUpdater extends EventEmitter {
    * BEFORE calling quitAndInstall(). This lets the native quit flow close
    * the window cleanly while ShipIt runs independently to replace the app.
    */
-  quitAndInstall(): void {
+  quitAndInstall(isSilent = true, isForceRunAfter = true): void {
+    if (this.installTriggered) {
+      logger.info('[Updater] quitAndInstall ignored; install already triggered');
+      return;
+    }
     logger.info('[Updater] quitAndInstall called');
+    this.installTriggered = true;
+    this.clearAutoInstallTimer();
     setQuitting();
-    autoUpdater.quitAndInstall();
+    autoUpdater.quitAndInstall(isSilent, isForceRunAfter);
+  }
+
+  shouldInstallDownloadedUpdateOnQuit(): boolean {
+    return this.status.status === 'downloaded' && !this.installTriggered;
   }
 
   /**

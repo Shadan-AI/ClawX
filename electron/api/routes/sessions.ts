@@ -20,7 +20,9 @@ type LocalSessionIndexEntry = {
 
 type TranscriptSidebarMeta = {
   messageCount: number;
+  visibleMessageCount: number;
   firstUserText?: string;
+  firstVisibleUserText?: string;
   lastTimestamp?: number;
 };
 
@@ -206,6 +208,15 @@ function extractTranscriptText(content: unknown): string {
   return '';
 }
 
+function isInternalTranscriptText(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  if (/^(HEARTBEAT_OK|NO_REPLY)\s*$/i.test(trimmed)) return true;
+  if (trimmed.startsWith('Read HEARTBEAT.md if it exists (workspace context).')) return true;
+  if (/^System:\s*\[[^\]]+\]\s*Exec (?:completed|failed|started)\b/i.test(trimmed)) return true;
+  return false;
+}
+
 async function readTranscriptSidebarMeta(
   fsP: typeof import('node:fs/promises'),
   sessionFile: string | undefined,
@@ -217,7 +228,9 @@ async function readTranscriptSidebarMeta(
     const raw = await fsP.readFile(sessionFile, 'utf8');
     const lines = raw.split(/\r?\n/).filter(Boolean);
     let messageCount = 0;
+    let visibleMessageCount = 0;
     let firstUserText: string | undefined;
+    let firstVisibleUserText: string | undefined;
     let lastTimestamp: number | undefined;
 
     for (const line of lines) {
@@ -231,10 +244,17 @@ async function readTranscriptSidebarMeta(
         if (typeof timestamp === 'number') {
           lastTimestamp = Math.max(lastTimestamp ?? 0, timestamp);
         }
-        if (!firstUserText && entry.message.role === 'user') {
-          const text = extractTranscriptText(entry.message.content);
+        const text = extractTranscriptText(entry.message.content);
+        const isInternal = isInternalTranscriptText(text) || entry.message.role === 'system';
+        if (!isInternal) {
+          visibleMessageCount += 1;
+        }
+        if (entry.message.role === 'user') {
           if (text) {
-            firstUserText = text;
+            firstUserText ??= text;
+            if (!isInternal) {
+              firstVisibleUserText ??= text;
+            }
           }
         }
       } catch {
@@ -242,7 +262,7 @@ async function readTranscriptSidebarMeta(
       }
     }
 
-    return { messageCount, firstUserText, lastTimestamp };
+    return { messageCount, visibleMessageCount, firstUserText, firstVisibleUserText, lastTimestamp };
   } catch {
     return null;
   }
@@ -266,7 +286,7 @@ async function shouldPruneEmptyTranscriptSessionEntry(
   }
 
   const transcriptMeta = await readTranscriptSidebarMeta(fsP, session.sessionFile);
-  return (transcriptMeta?.messageCount ?? 0) <= 0;
+  return (transcriptMeta?.visibleMessageCount ?? 0) <= 0;
 }
 
 function resolveLocalSessionEntry(
@@ -343,7 +363,7 @@ async function shouldPruneDanglingSessionEntry(
   try {
     await fsP.access(session.sessionFile);
     const transcriptMeta = await readTranscriptSidebarMeta(fsP, session.sessionFile);
-    return (transcriptMeta?.messageCount ?? 0) <= 0;
+    return (transcriptMeta?.visibleMessageCount ?? 0) <= 0;
   } catch {
     return true;
   }
@@ -523,11 +543,12 @@ async function listLocalSessionIndexes(): Promise<LocalSessionIndexEntry[]> {
     const transcriptMeta = await readTranscriptSidebarMeta(fsP, session.sessionFile);
     if (!transcriptMeta) continue;
 
-    if (transcriptMeta.firstUserText && shouldPreferTranscriptTitle) {
-      const compactTitle = transcriptMeta.firstUserText.replace(/\s+/g, ' ').trim();
+    const titleText = transcriptMeta.firstVisibleUserText;
+    if (titleText && shouldPreferTranscriptTitle) {
+      const compactTitle = titleText.replace(/\s+/g, ' ').trim();
       session.displayName = compactTitle.length > 50 ? `${compactTitle.slice(0, 50)}...` : compactTitle;
-    } else if (needsTitle && transcriptMeta.firstUserText) {
-      const compactTitle = transcriptMeta.firstUserText.replace(/\s+/g, ' ').trim();
+    } else if (needsTitle && titleText) {
+      const compactTitle = titleText.replace(/\s+/g, ' ').trim();
       session.displayName = compactTitle.length > 50 ? `${compactTitle.slice(0, 50)}...` : compactTitle;
     }
     if (needsTimestamp && transcriptMeta.lastTimestamp) {
@@ -639,15 +660,26 @@ export async function handleSessionRoutes(
       const sessionsDir = join(getOpenClawConfigDir(), 'agents', agentId, 'sessions');
       const sessionsJsonPath = join(sessionsDir, 'sessions.json');
       const fsP = await import('node:fs/promises');
-      const raw = await fsP.readFile(sessionsJsonPath, 'utf8');
+      let raw: string;
+      try {
+        raw = await fsP.readFile(sessionsJsonPath, 'utf8');
+      } catch (error) {
+        if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') {
+          sendJson(res, 200, { success: true, deleted: false, alreadyDeleted: true });
+          return true;
+        }
+        throw error;
+      }
       const sessionsJson = JSON.parse(raw) as Record<string, unknown>;
 
       let uuidFileName: string | undefined;
       let resolvedSrcPath: string | undefined;
+      let hasIndexEntry = false;
       if (Array.isArray(sessionsJson.sessions)) {
         const entry = (sessionsJson.sessions as Array<Record<string, unknown>>)
           .find((s) => s.key === sessionKey || s.sessionKey === sessionKey);
         if (entry) {
+          hasIndexEntry = true;
           uuidFileName = (entry.file ?? entry.fileName ?? entry.path) as string | undefined;
           if (!uuidFileName && typeof entry.id === 'string') {
             uuidFileName = `${entry.id}.jsonl`;
@@ -655,6 +687,7 @@ export async function handleSessionRoutes(
         }
       }
       if (!uuidFileName && sessionsJson[sessionKey] != null) {
+        hasIndexEntry = true;
         const val = sessionsJson[sessionKey];
         if (typeof val === 'string') {
           uuidFileName = val;
@@ -674,30 +707,46 @@ export async function handleSessionRoutes(
         }
       }
       if (!uuidFileName && !resolvedSrcPath) {
-        sendJson(res, 404, { success: false, error: `Cannot resolve file for session: ${sessionKey}` });
-        return true;
-      }
-      if (!resolvedSrcPath) {
+        if (!hasIndexEntry) {
+          sendJson(res, 200, { success: true, deleted: false, alreadyDeleted: true });
+          return true;
+        }
+      } else if (!resolvedSrcPath) {
         if (!uuidFileName!.endsWith('.jsonl')) uuidFileName = `${uuidFileName}.jsonl`;
         resolvedSrcPath = join(sessionsDir, uuidFileName!);
       }
-      const dstPath = resolvedSrcPath.replace(/\.jsonl$/, '.deleted.jsonl');
-      try {
-        await fsP.access(resolvedSrcPath);
-        await fsP.rename(resolvedSrcPath, dstPath);
-      } catch {
-        // Non-fatal; still try to update sessions.json.
+      let transcriptDeleted = false;
+      if (resolvedSrcPath) {
+        const dstPath = resolvedSrcPath.replace(/\.jsonl$/, '.deleted.jsonl');
+        try {
+          await fsP.access(resolvedSrcPath);
+          await fsP.rename(resolvedSrcPath, dstPath);
+          transcriptDeleted = true;
+        } catch {
+          // Non-fatal; still try to update sessions.json.
+        }
       }
       const raw2 = await fsP.readFile(sessionsJsonPath, 'utf8');
       const json2 = JSON.parse(raw2) as Record<string, unknown>;
+      let indexDeleted = false;
       if (Array.isArray(json2.sessions)) {
+        const before = json2.sessions.length;
         json2.sessions = (json2.sessions as Array<Record<string, unknown>>)
           .filter((s) => s.key !== sessionKey && s.sessionKey !== sessionKey);
+        indexDeleted = json2.sessions.length !== before;
       } else if (json2[sessionKey]) {
         delete json2[sessionKey];
+        indexDeleted = true;
       }
-      await fsP.writeFile(sessionsJsonPath, JSON.stringify(json2, null, 2), 'utf8');
-      sendJson(res, 200, { success: true });
+      if (indexDeleted) {
+        await fsP.writeFile(sessionsJsonPath, JSON.stringify(json2, null, 2), 'utf8');
+      }
+      sendJson(res, 200, {
+        success: true,
+        deleted: transcriptDeleted || indexDeleted,
+        transcriptDeleted,
+        indexDeleted,
+      });
     } catch (error) {
       sendJson(res, 500, { success: false, error: String(error) });
     }

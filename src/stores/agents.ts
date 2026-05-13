@@ -45,8 +45,7 @@ function saveAgentTemplates(templates: Record<string, number | null>) {
 function modelIdFromRef(modelRef: string | null | undefined): string {
   const trimmed = (modelRef || '').trim();
   if (!trimmed) return '';
-  const separatorIndex = trimmed.indexOf('/');
-  return separatorIndex >= 0 ? trimmed.slice(separatorIndex + 1) : trimmed;
+  return trimmed.startsWith('shadan/') ? trimmed.slice('shadan/'.length) : trimmed;
 }
 
 function applySnapshot(snapshot: AgentsSnapshot | undefined) {

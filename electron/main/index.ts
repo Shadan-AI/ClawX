@@ -708,6 +708,11 @@ if (gotTheLock) {
   });
 
   app.on('before-quit', (event) => {
+    if (appUpdater.shouldInstallDownloadedUpdateOnQuit()) {
+      logger.info('Downloaded update detected during quit; launching installer and restarting after update');
+      appUpdater.quitAndInstall(true, true);
+    }
+
     setQuitting();
     const action = requestQuitLifecycleAction(quitLifecycleState);
 

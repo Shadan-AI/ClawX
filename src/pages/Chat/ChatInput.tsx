@@ -55,8 +55,7 @@ interface ChatInputProps {
 function modelIdFromRef(modelValue: string | null | undefined): string | null {
   const trimmed = (modelValue || '').trim();
   if (!trimmed) return null;
-  const separatorIndex = trimmed.indexOf('/');
-  return separatorIndex >= 0 ? trimmed.slice(separatorIndex + 1) : trimmed;
+  return trimmed.startsWith('shadan/') ? trimmed.slice('shadan/'.length) : trimmed;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -315,10 +314,11 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
   const models = useModelsStore((s) => s.models);
   const currentModelId = useModelsStore((s) => s.currentModelId);
   const setCurrentModel = useModelsStore((s) => s.setCurrentModel);
-  const getSessionModel = useModelsStore((s) => s.getSessionModel);
   const getAgentDefaultModel = useModelsStore((s) => s.getAgentDefaultModel);
   const normalizedCurrentModelId = modelIdFromRef(currentModelId);
-  const currentSessionModelId = currentSessionKey ? getSessionModel(currentSessionKey) : null;
+  const currentSessionModelId = useModelsStore((s) => (
+    currentSessionKey ? s.sessionModels[currentSessionKey] || null : null
+  ));
   const agentDefaultModelId = getAgentDefaultModel(currentSessionAgentId);
   const effectiveModelId =
     modelIdFromRef(currentSessionModelId)
