@@ -102,8 +102,8 @@ importers:
         specifier: ^1.2.8
         version: 1.2.8(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@shadanai/openclaw':
-        specifier: 2026.5.10
-        version: 2026.5.10(@napi-rs/canvas@0.1.97)(encoding@0.1.13)
+        specifier: 2026.5.13
+        version: 2026.5.13(@napi-rs/canvas@0.1.97)(encoding@0.1.13)
       '@soimy/dingtalk':
         specifier: ^3.5.1
         version: 3.5.1(openclaw@2026.4.1(@napi-rs/canvas@0.1.97)(encoding@0.1.13))
@@ -2109,8 +2109,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@shadanai/openclaw@2026.5.10':
-    resolution: {integrity: sha512-p/EuR0wVLTp3vojOjRI1x2IPyCp70tn7KhLvtH4LemdliCkyXdR475LEpcTkuwTsY/WZ1U1Un7gqO+HqxPWaHw==}
+  '@shadanai/openclaw@2026.5.13':
+    resolution: {integrity: sha512-SKssOV/finwTgV9DQlUjWVvCBZnJBzzzVJJoRUoSbnTNcqFD4zWXMSi2KH2hTWTKWWcDknN+DF2wzqsNLz20JQ==}
     engines: {node: '>=22.16.0'}
     hasBin: true
     peerDependencies:
@@ -8378,7 +8378,7 @@ snapshots:
 
   '@rollup/rollup-win32-x64-msvc@4.60.1': {}
 
-  '@shadanai/openclaw@2026.5.10(@napi-rs/canvas@0.1.97)(encoding@0.1.13)':
+  '@shadanai/openclaw@2026.5.13(@napi-rs/canvas@0.1.97)(encoding@0.1.13)':
     dependencies:
       '@agentclientprotocol/sdk': 0.16.1(zod@4.3.6)
       '@anthropic-ai/vertex-sdk': 0.14.4(encoding@0.1.13)(zod@4.3.6)
