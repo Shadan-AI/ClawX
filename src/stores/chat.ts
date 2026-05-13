@@ -63,6 +63,8 @@ const HISTORY_POLL_SILENCE_WINDOW_MS = 2_500;
 const CHAT_EVENT_DEDUPE_TTL_MS = 30_000;
 const SESSION_SIDEBAR_META_CONCURRENCY = 2;
 const ACTIVE_HISTORY_RPC_TIMEOUT_MS = 60_000;
+const DELETED_SESSION_KEYS_STORAGE_KEY = 'clawx-deleted-session-keys';
+const MAX_DELETED_SESSION_KEYS = 500;
 const _chatEventDedupe = new Map<string, number>();
 
 type SessionRuntimeSnapshot = Pick<
@@ -800,6 +802,34 @@ function ensureSessionEntry(sessions: ChatSession[], sessionKey: string): ChatSe
 
 function clearSessionEntryFromMap<T extends Record<string, unknown>>(entries: T, sessionKey: string): T {
   return Object.fromEntries(Object.entries(entries).filter(([key]) => key !== sessionKey)) as T;
+}
+
+function loadDeletedSessionKeys(): string[] {
+  try {
+    const raw = localStorage.getItem(DELETED_SESSION_KEYS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((key): key is string => typeof key === 'string' && key.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+function saveDeletedSessionKeys(keys: readonly string[]): string[] {
+  const uniqueKeys = Array.from(new Set(keys.filter((key) => key.length > 0)));
+  const trimmedKeys = uniqueKeys.slice(-MAX_DELETED_SESSION_KEYS);
+  try {
+    localStorage.setItem(DELETED_SESSION_KEYS_STORAGE_KEY, JSON.stringify(trimmedKeys));
+  } catch {
+    // Persistence is best-effort; in-memory filtering still works for this run.
+  }
+  return trimmedKeys;
+}
+
+function appendDeletedSessionKey(keys: readonly string[], key: string): string[] {
+  if (keys.includes(key)) return [...keys];
+  return saveDeletedSessionKeys([...keys, key]);
 }
 
 function isFinitePositiveTimestamp(value: unknown): value is number {
@@ -1639,7 +1669,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   currentAgentId: 'main',
   sessionLabels: {},
   sessionLastActivity: {},
-  deletedSessionKeys: [],
+  deletedSessionKeys: loadDeletedSessionKeys(),
   channelBindings: {},
 
   showThinking: true,
@@ -2011,14 +2041,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   // ── Delete session ──
   //
-  // NOTE: The OpenClaw Gateway does NOT expose a sessions.delete (or equivalent)
-  // RPC — confirmed by inspecting client.ts, protocol.ts and the full codebase.
-  // Deletion is therefore a local-only UI operation: the session is removed from
-  // the sidebar list and its labels/activity maps are cleared.  The underlying
-  // JSONL history file on disk is intentionally left intact, consistent with the
-  // newSession() design that avoids sessions.reset to preserve history.
+  // Current deletion is layered: Gateway RPC, local file cleanup, then persisted
+  // tombstone filtering. Keep the old local cleanup path for older gateways.
 
   deleteSession: async (key: string) => {
+    if (!key) return;
+
+    if (!key.endsWith(':main') && useGatewayStore.getState().status.state === 'running') {
+      try {
+        await useGatewayStore.getState().rpc('sessions.delete', {
+          key,
+          deleteTranscript: true,
+        });
+      } catch (err) {
+        console.debug(`[deleteSession] Gateway delete unavailable for ${key}; falling back to local cleanup:`, err);
+      }
+    }
     // Soft-delete the session's JSONL transcript on disk.
     // The main process renames <suffix>.jsonl → <suffix>.deleted.jsonl so that
     // sessions.list skips it automatically.
@@ -2031,10 +2069,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
         body: JSON.stringify({ sessionKey: key }),
       });
       if (!result.success) {
-        console.warn(`[deleteSession] IPC reported failure for ${key}:`, result.error);
+        console.debug(`[deleteSession] Local cleanup reported failure for ${key}:`, result.error);
       }
     } catch (err) {
-      console.warn(`[deleteSession] IPC call failed for ${key}:`, err);
+      console.debug(`[deleteSession] Local cleanup failed for ${key}:`, err);
     }
 
     const { currentSessionKey, sessions } = get();
@@ -2045,23 +2083,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (currentSessionKey === key) {
       // Switched away from deleted session — pick the first remaining or create new
       const next = remaining[0];
-        set((s) => ({
-          sessions: remaining,
-          sessionLabels: Object.fromEntries(Object.entries(s.sessionLabels).filter(([k]) => k !== key)),
-          sessionLastActivity: Object.fromEntries(Object.entries(s.sessionLastActivity).filter(([k]) => k !== key)),
-          deletedSessionKeys: s.deletedSessionKeys.includes(key) ? s.deletedSessionKeys : [...s.deletedSessionKeys, key],
-          messages: [],
+      set((s) => ({
+        sessions: remaining,
+        sessionLabels: Object.fromEntries(Object.entries(s.sessionLabels).filter(([k]) => k !== key)),
+        sessionLastActivity: Object.fromEntries(Object.entries(s.sessionLastActivity).filter(([k]) => k !== key)),
+        deletedSessionKeys: appendDeletedSessionKey(s.deletedSessionKeys, key),
+        messages: [],
         streamingText: '',
         streamingMessage: null,
         streamingTools: [],
         activeRunId: null,
         error: null,
-          pendingFinal: false,
-          lastUserMessageAt: null,
-          pendingToolImages: [],
-          currentSessionKey: next?.key ?? DEFAULT_SESSION_KEY,
-          currentAgentId: resolveSessionAgentIdByKey(next?.key ?? DEFAULT_SESSION_KEY, remaining, s.channelBindings),
-        }));
+        pendingFinal: false,
+        lastUserMessageAt: null,
+        pendingToolImages: [],
+        currentSessionKey: next?.key ?? DEFAULT_SESSION_KEY,
+        currentAgentId: resolveSessionAgentIdByKey(next?.key ?? DEFAULT_SESSION_KEY, remaining, s.channelBindings),
+      }));
       if (next) {
         get().loadHistory();
       }
@@ -2070,7 +2108,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         sessions: remaining,
         sessionLabels: Object.fromEntries(Object.entries(s.sessionLabels).filter(([k]) => k !== key)),
         sessionLastActivity: Object.fromEntries(Object.entries(s.sessionLastActivity).filter(([k]) => k !== key)),
-        deletedSessionKeys: s.deletedSessionKeys.includes(key) ? s.deletedSessionKeys : [...s.deletedSessionKeys, key],
+        deletedSessionKeys: appendDeletedSessionKey(s.deletedSessionKeys, key),
       }));
     }
   },
