@@ -24,6 +24,18 @@ const ROOT = path.resolve(__dirname, '..');
 const OUTPUT_ROOT = path.join(ROOT, 'build', 'openclaw-plugins');
 const NODE_MODULES = path.join(ROOT, 'node_modules');
 
+const OPENCLAW_ROOT = [
+  path.join(NODE_MODULES, '@shadanai', 'openclaw'),
+  path.join(NODE_MODULES, 'openclaw'),
+].find((candidate) => fs.existsSync(candidate));
+
+const BOX_IM_SOURCE = OPENCLAW_ROOT
+  ? [
+      path.join(OPENCLAW_ROOT, 'dist', 'extensions', 'box-im'),
+      path.join(OPENCLAW_ROOT, 'extensions', 'box-im'),
+    ].find((candidate) => fs.existsSync(candidate))
+  : null;
+
 // On Windows, pnpm virtual store paths can exceed MAX_PATH (260 chars).
 // Adding \\?\ prefix bypasses the limit for Win32 fs calls.
 // Node.js 18.17+ also handles this transparently when LongPathsEnabled=1,
@@ -44,7 +56,7 @@ const PLUGINS = [
   {
     npmName: '@openclaw/box-im',
     pluginId: 'box-im',
-    sourcePath: path.join(NODE_MODULES, '@shadanai', 'openclaw', 'extensions', 'box-im'),
+    sourcePath: BOX_IM_SOURCE,
   },
 ];
 
@@ -86,6 +98,82 @@ function listPackages(nodeModulesDir) {
     }
   }
   return result;
+}
+
+function getDirSize(dir) {
+  let total = 0;
+  try {
+    for (const entry of fs.readdirSync(normWin(dir), { withFileTypes: true })) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) total += getDirSize(fullPath);
+      else if (entry.isFile()) total += fs.statSync(normWin(fullPath)).size;
+    }
+  } catch {
+    // Best-effort size reporting only.
+  }
+  return total;
+}
+
+function formatSize(bytes) {
+  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024 / 1024).toFixed(1)}G`;
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)}M`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)}K`;
+  return `${bytes}B`;
+}
+
+function rmSafe(target) {
+  try {
+    const stat = fs.lstatSync(normWin(target));
+    if (stat.isDirectory()) fs.rmSync(normWin(target), { recursive: true, force: true });
+    else fs.rmSync(normWin(target), { force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function cleanupPluginBundle(pluginDir) {
+  let removedCount = 0;
+  const removeDirs = new Set([
+    'test', 'tests', '__tests__', '.github', 'docs', 'doc', 'examples', 'example',
+    'coverage', '.nyc_output',
+  ]);
+  const removeFileExts = ['.d.ts', '.map', '.markdown'];
+  const removeFileNames = new Set([
+    '.DS_Store', 'README.md', 'CHANGELOG.md', 'LICENSE.md', 'CONTRIBUTING.md',
+    'tsconfig.json', '.npmignore', '.eslintrc', '.prettierrc', '.editorconfig',
+  ]);
+
+  function shouldKeepRuntimeDir(fullPath, name) {
+    if (name !== 'doc') return false;
+    const normalized = fullPath.replace(/\\/g, '/');
+    return /\/node_modules\/yaml\/dist\/doc$/.test(normalized);
+  }
+
+  function walk(dir) {
+    let entries;
+    try { entries = fs.readdirSync(normWin(dir), { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (shouldKeepRuntimeDir(fullPath, entry.name)) {
+          walk(fullPath);
+        } else if (removeDirs.has(entry.name)) {
+          if (rmSafe(fullPath)) removedCount++;
+        } else {
+          walk(fullPath);
+        }
+      } else if (entry.isFile()) {
+        const name = entry.name;
+        if (removeFileNames.has(name) || removeFileExts.some((ext) => name.endsWith(ext))) {
+          if (rmSafe(fullPath)) removedCount++;
+        }
+      }
+    }
+  }
+
+  walk(pluginDir);
+  return removedCount;
 }
 
 function bundleOnePlugin({ npmName, pluginId, sourcePath }) {
@@ -186,8 +274,13 @@ function bundleOnePlugin({ npmName, pluginId, sourcePath }) {
   //    their JS output than what openclaw.plugin.json declares.  The Gateway
   //    validates that these match, so we fix it post-copy.
   patchPluginId(outputDir, pluginId);
+  const sizeBeforeCleanup = getDirSize(outputDir);
+  const removedCount = cleanupPluginBundle(outputDir);
+  const sizeAfterCleanup = getDirSize(outputDir);
+  const savedSize = sizeBeforeCleanup - sizeAfterCleanup;
 
   echo`   ✅ ${pluginId}: copied ${copiedCount} deps (skipped dupes: ${skippedDupes})`;
+  echo`   Cleaned ${removedCount} dev artifact(s): ${formatSize(sizeBeforeCleanup)} -> ${formatSize(sizeAfterCleanup)} (saved ${formatSize(savedSize)})`;
 }
 
 /**

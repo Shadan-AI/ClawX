@@ -1,6 +1,6 @@
 import { app } from 'electron';
 import path from 'path';
-import { existsSync, readFileSync, mkdirSync, readdirSync, rmSync, symlinkSync } from 'fs';
+import { existsSync, readFileSync, mkdirSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 
@@ -21,9 +21,8 @@ import { getProviderEnvVar, getKeyableProviderTypes } from '../utils/provider-re
 import { getOpenClawDir, getOpenClawEntryPath, isOpenClawPresent } from '../utils/paths';
 import { getUvMirrorEnv } from '../utils/uv-env';
 import { cleanupDanglingWeChatPluginState, listConfiguredChannels, readOpenClawConfig } from '../utils/channel-config';
-import { syncGatewayTokenToConfig, syncBrowserConfigToOpenClaw, syncSessionIdleMinutesToOpenClaw, sanitizeOpenClawConfig, ensureGatewayTlsEnabledInConfig, ensureLanOriginsInConfig, ensureStaticOriginsInConfig } from '../utils/openclaw-auth';
+import { sanitizeOpenClawConfig } from '../utils/openclaw-auth';
 import { startOpenClawConfigLanReconciliationWatcher } from '../utils/openclaw-config-watch';
-import { getTokenKey, writeBoxImTokenKey } from '../utils/box-im-sync';
 import { buildProxyEnv, resolveProxySettings } from '../utils/proxy';
 import { syncProxyConfigToOpenClaw } from '../utils/openclaw-proxy';
 import { normalizeOpenClawConfigHealthBaseline } from '../utils/openclaw-config-health';
@@ -88,6 +87,24 @@ function readPluginVersion(pkgJsonPath: string): string | null {
   }
 }
 
+function timeGatewayPrep<T>(label: string, fn: () => T): T {
+  const startedAt = Date.now();
+  try {
+    return fn();
+  } finally {
+    logger.debug(`[gateway-prep] ${label} completed in ${Date.now() - startedAt}ms`);
+  }
+}
+
+async function timeGatewayPrepAsync<T>(label: string, fn: () => Promise<T>): Promise<T> {
+  const startedAt = Date.now();
+  try {
+    return await fn();
+  } finally {
+    logger.debug(`[gateway-prep] ${label} completed in ${Date.now() - startedAt}ms`);
+  }
+}
+
 function buildBundledPluginSources(pluginDirName: string): string[] {
   return app.isPackaged
     ? [
@@ -127,10 +144,12 @@ function ensureConfiguredPluginsUpgraded(configuredChannels: string[]): void {
       if (!isInstalled || (sourceVersion && installedVersion && sourceVersion !== installedVersion)) {
         logger.info(`[plugin] ${isInstalled ? 'Auto-upgrading' : 'Installing'} ${channelType} plugin${isInstalled ? `: ${installedVersion} → ${sourceVersion}` : `: ${sourceVersion}`} (bundled)`);
         try {
+          const copyStartedAt = Date.now();
           mkdirSync(fsPath(join(homedir(), '.openclaw', 'extensions')), { recursive: true });
           rmSync(fsPath(targetDir), { recursive: true, force: true });
           cpSyncSafe(bundledDir, targetDir);
           fixupPluginManifest(targetDir);
+          logger.info(`[plugin] ${channelType} bundled plugin copy completed in ${Date.now() - copyStartedAt}ms`);
         } catch (err) {
           logger.warn(`[plugin] Failed to ${isInstalled ? 'auto-upgrade' : 'install'} ${channelType} plugin:`, err);
         }
@@ -184,6 +203,25 @@ function ensureConfiguredPluginsUpgraded(configuredChannels: string[]): void {
  * openclaw's own deps (they take priority).
  */
 function ensureExtensionDepsResolvable(openclawDir: string): void {
+  const packageVersion = readPluginVersion(join(openclawDir, 'package.json')) ?? 'unknown';
+  const cacheFile = join(app.getPath('userData'), 'gateway-extension-deps-cache.json');
+  if (app.isPackaged) {
+    try {
+      if (existsSync(fsPath(cacheFile))) {
+        const cached = JSON.parse(readFileSync(fsPath(cacheFile), 'utf-8')) as {
+          openclawDir?: string;
+          packageVersion?: string;
+        };
+        if (cached.openclawDir === openclawDir && cached.packageVersion === packageVersion) {
+          logger.debug(`[extension-deps] Skipped dependency scan for OpenClaw ${packageVersion} (cached)`);
+          return;
+        }
+      }
+    } catch {
+      // Corrupt cache should not block startup; just rebuild it below.
+    }
+  }
+
   const extDir = join(openclawDir, 'dist', 'extensions');
   const topNM = join(openclawDir, 'node_modules');
   let linkedCount = 0;
@@ -256,6 +294,18 @@ function ensureExtensionDepsResolvable(openclawDir: string): void {
 
   if (linkedCount > 0) {
     logger.info(`[extension-deps] Linked ${linkedCount} extension packages into ${topNM}`);
+  }
+
+  if (app.isPackaged) {
+    try {
+      writeFileSync(
+        fsPath(cacheFile),
+        JSON.stringify({ openclawDir, packageVersion, updatedAt: new Date().toISOString() }, null, 2),
+        'utf-8',
+      );
+    } catch {
+      // Cache is an optimization only.
+    }
   }
 }
 
@@ -661,8 +711,8 @@ export async function prepareGatewayLaunchContext(port: number): Promise<Gateway
     throw new Error(`OpenClaw package not found at: ${openclawDir}`);
   }
 
-  const appSettings = await getAllSettings();
-  await syncGatewayConfigBeforeLaunch(appSettings);
+  const appSettings = await timeGatewayPrepAsync('load settings', () => getAllSettings());
+  await timeGatewayPrepAsync('sync config before launch', () => syncGatewayConfigBeforeLaunch(appSettings));
 
   if (!existsSync(entryScript)) {
     throw new Error(`OpenClaw entry script not found at: ${entryScript}`);
@@ -679,9 +729,9 @@ export async function prepareGatewayLaunchContext(port: number): Promise<Gateway
     : path.join(process.cwd(), 'resources', 'bin', target);
   const binPathExists = existsSync(binPath);
 
-  const { providerEnv, loadedProviderKeyCount } = await loadProviderEnv();
-  const { skipChannels, channelStartupSummary } = await resolveChannelStartupPolicy();
-  const uvEnv = await getUvMirrorEnv();
+  const { providerEnv, loadedProviderKeyCount } = await timeGatewayPrepAsync('load provider env', () => loadProviderEnv());
+  const { skipChannels, channelStartupSummary } = await timeGatewayPrepAsync('resolve channel startup policy', () => resolveChannelStartupPolicy());
+  const uvEnv = await timeGatewayPrepAsync('load uv mirror env', () => getUvMirrorEnv());
   const proxyEnv = buildProxyEnv(appSettings);
   const resolvedProxy = resolveProxySettings(appSettings);
   const proxySummary = appSettings.proxyEnabled
@@ -708,7 +758,7 @@ export async function prepareGatewayLaunchContext(port: number): Promise<Gateway
   // Ensure extension-specific packages (e.g. grammy from the telegram
   // extension) are resolvable by shared dist/ chunks via symlinks in
   // openclaw/node_modules/.  NODE_PATH does NOT work for ESM imports.
-  ensureExtensionDepsResolvable(openclawDir);
+  timeGatewayPrep('ensure extension deps resolvable', () => ensureExtensionDepsResolvable(openclawDir));
 
   return {
     appSettings,

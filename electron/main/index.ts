@@ -55,6 +55,14 @@ if (process.platform === 'win32') {
     const cp = require('child_process');
     if (!cp.__clawxWindowsHidePatched) {
       cp.__clawxWindowsHidePatched = true;
+
+      const shouldShowChildWindow = (command: unknown): boolean => {
+        if (typeof command !== 'string') return false;
+        const normalized = command.replace(/\\/g, '/').toLowerCase();
+        const fileName = normalized.split('/').pop() ?? normalized;
+        return fileName === 'elevate.exe'
+          || /^openme-.*-win-(?:x64|arm64)\.exe$/.test(fileName);
+      };
       
       ['spawn', 'exec', 'execFile', 'fork', 'spawnSync', 'execSync', 'execFileSync'].forEach((method) => {
         const original = cp[method];
@@ -70,13 +78,17 @@ if (process.platform === 'win32') {
               break;
             }
           }
-          
+          const showChildWindow = shouldShowChildWindow(args[0]);
+
           if (optIdx >= 0) {
             // 已有 options，添加 windowsHide
-            args[optIdx] = { ...args[optIdx], windowsHide: true };
+            args[optIdx] = {
+              ...args[optIdx],
+              windowsHide: showChildWindow ? false : (args[optIdx].windowsHide ?? true),
+            };
           } else {
             // 没有 options，创建一个
-            const opts = { windowsHide: true };
+            const opts = { windowsHide: !showChildWindow };
             if (typeof args[args.length - 1] === 'function') {
               // 最后一个参数是回调函数，插入到回调之前
               args.splice(args.length - 1, 0, opts);
@@ -455,15 +467,6 @@ async function initialize(): Promise<void> {
     });
   }
 
-  // Pre-deploy/upgrade bundled OpenClaw plugins (dingtalk, wecom, feishu, wechat)
-  // to ~/.openclaw/extensions/ so they are always up-to-date after an app update.
-  // Note: qqbot was moved to a built-in channel in OpenClaw 3.31.
-  if (!isE2EMode) {
-    void ensureAllBundledPluginsInstalled().catch((error) => {
-      logger.warn('Failed to install/upgrade bundled plugins:', error);
-    });
-  }
-
   // Bridge gateway and host-side events before any auto-start logic runs, so
   // renderer subscribers observe the full startup lifecycle.
   gatewayManager.on('status', (status: { state: string }) => {
@@ -592,6 +595,17 @@ async function initialize(): Promise<void> {
     logger.info('Gateway auto-start disabled in settings');
   }
 
+  // Pre-deploy/upgrade bundled OpenClaw plugins after the Gateway startup path
+  // has had a chance to finish.  Packaged builds can contain very large plugin
+  // mirrors; copying them during boot competes with Gateway cold start I/O.
+  if (!isE2EMode) {
+    setTimeout(() => {
+      void ensureAllBundledPluginsInstalled().catch((error) => {
+        logger.warn('Failed to install/upgrade bundled plugins:', error);
+      });
+    }, 30_000);
+  }
+
   // Auto-sync Box-IM bot agents if user is logged in (ensures auth-profiles.json are up-to-date)
   // Delayed by 3 seconds to avoid conflict with login-time sync
   if (!isE2EMode) {
@@ -708,11 +722,6 @@ if (gotTheLock) {
   });
 
   app.on('before-quit', (event) => {
-    if (appUpdater.shouldInstallDownloadedUpdateOnQuit()) {
-      logger.info('Downloaded update detected during quit; launching installer and restarting after update');
-      appUpdater.quitAndInstall(true, true);
-    }
-
     setQuitting();
     const action = requestQuitLifecycleAction(quitLifecycleState);
 
@@ -749,6 +758,11 @@ if (gotTheLock) {
         });
       }
       markQuitCleanupCompleted(quitLifecycleState);
+      if (appUpdater.shouldInstallDownloadedUpdateOnQuit()) {
+        logger.info('Downloaded update detected during quit; launching installer after cleanup');
+        appUpdater.quitAndInstall();
+        return;
+      }
       app.quit();
     });
   });
