@@ -44,6 +44,7 @@ import { browserOAuthManager } from '../utils/browser-oauth';
 import { whatsAppLoginManager } from '../utils/whatsapp-login';
 import { syncAllProviderAuthToRuntime } from '../services/providers/provider-runtime-sync';
 import { ensureOpenClawMkcertCertsWindows } from '../utils/mkcert-certs';
+import { stopWireGuard } from '../utils/wireguard-vpn';
 
 const WINDOWS_APP_USER_MODEL_ID = 'app.clawx.desktop';
 const isE2EMode = process.env.CLAWX_E2E === '1';
@@ -733,13 +734,22 @@ if (gotTheLock) {
     const stopPromise = gatewayManager.stop().catch((err) => {
       logger.warn('gatewayManager.stop() error during quit:', err);
     });
+    const vpnStopPromise = process.platform === 'win32'
+      ? stopWireGuard().then((result) => {
+        if (result === 'stopped') {
+          logger.info('WireGuard VPN stopped during app quit');
+        }
+      }).catch((err) => {
+        logger.warn('stopWireGuard() error during quit:', err);
+      })
+      : Promise.resolve();
     const timeoutPromise = new Promise<'timeout'>((resolve) => {
-      setTimeout(() => resolve('timeout'), 5000);
+      setTimeout(() => resolve('timeout'), 30000);
     });
 
-    void Promise.race([stopPromise.then(() => 'stopped' as const), timeoutPromise]).then((result) => {
+    void Promise.race([Promise.all([stopPromise, vpnStopPromise]).then(() => 'stopped' as const), timeoutPromise]).then((result) => {
       if (result === 'timeout') {
-        logger.warn('Gateway shutdown timed out during app quit; proceeding with forced quit');
+        logger.warn('Quit cleanup timed out during app quit; proceeding with forced quit');
         void gatewayManager.forceTerminateOwnedProcessForQuit().then((terminated) => {
           if (terminated) {
             logger.warn('Forced gateway process termination completed after quit timeout');

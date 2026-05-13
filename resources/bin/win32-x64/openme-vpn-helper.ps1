@@ -189,7 +189,7 @@ if (-not (Test-Administrator)) {
   Invoke-Elevated
 }
 
-if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
+if ($Action -eq "install-start" -and -not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
   throw "WireGuard config not found: $ConfigPath"
 }
 

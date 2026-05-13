@@ -132,6 +132,10 @@ function vpnDir(): string {
   return join(app.getPath('userData'), 'vpn');
 }
 
+function defaultWireGuardConfigPath(): string {
+  return join(vpnDir(), 'clawx-wg0.conf');
+}
+
 async function privateKeyPath(): Promise<string> {
   const dir = vpnDir();
   await mkdir(dir, { recursive: true });
@@ -196,7 +200,7 @@ export async function registerWireGuardDevice(options: {
 export async function writeWireGuardConfig(privateKey: string, registration: WireGuardRegistration): Promise<string> {
   const dir = vpnDir();
   await mkdir(dir, { recursive: true });
-  const configPath = join(dir, 'clawx-wg0.conf');
+  const configPath = defaultWireGuardConfigPath();
   const allowedIps = registration.allowedIps?.length ? registration.allowedIps.join(', ') : registration.clientAddress;
   const keepalive = registration.persistentKeepalive ?? 25;
   const content = `[Interface]
@@ -247,6 +251,24 @@ export async function startWireGuard(configPath: string): Promise<'started' | 'o
   return 'started';
 }
 
+export async function stopWireGuard(configPath = defaultWireGuardConfigPath()): Promise<'stopped' | 'not-configured'> {
+  if (process.platform === 'win32') {
+    return await stopWireGuardWindows(configPath);
+  }
+
+  if (!await fileAccessible(configPath)) {
+    return 'not-configured';
+  }
+
+  const wgQuick = await resolveWgQuickCommand();
+  try {
+    await execFileText(wgQuick, ['down', configPath], undefined, 30_000);
+  } catch {
+    // The tunnel may already be down.
+  }
+  return 'stopped';
+}
+
 async function startWireGuardWindows(configPath: string): Promise<'started' | 'config-written'> {
   const helperCandidates = windowsVpnHelperPathCandidates();
   const helperPath = await resolveWindowsVpnHelperPath(helperCandidates);
@@ -281,9 +303,59 @@ async function startWireGuardWindows(configPath: string): Promise<'started' | 'c
   } catch (error) {
     const helperLog = await readWindowsVpnHelperLogTail();
     const suffix = helperLog ? `\nHelper log tail:\n${helperLog}` : '';
-    throw new Error(`${(error as Error).message}${suffix}`);
+    throw new Error(`${(error as Error).message}${suffix}`, { cause: error });
   }
   return 'started';
+}
+
+async function stopWireGuardWindows(configPath: string): Promise<'stopped' | 'not-configured'> {
+  const helperCandidates = windowsVpnHelperPathCandidates();
+  const helperPath = await resolveWindowsVpnHelperPath(helperCandidates);
+  if (!helperPath) {
+    console.warn(`[wireguard-vpn] Windows VPN helper was not found during quit. Checked: ${helperCandidates.join(', ')}`);
+    return 'not-configured';
+  }
+
+  const serviceName = `WireGuardTunnel$${getTunnelNameFromConfigPath(configPath)}`;
+  const statusBefore = await getWindowsTunnelServiceStatus(serviceName).catch(() => '');
+  if (statusBefore.includes('state=missing')) {
+    return 'not-configured';
+  }
+
+  const powershell = getWindowsPowerShellPath();
+  console.log(`[wireguard-vpn] Stopping Windows tunnel via helper: ${helperPath}`);
+  try {
+    const output = await execFileText(
+      powershell,
+      [
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        helperPath,
+        '-Action',
+        'uninstall',
+        '-ConfigPath',
+        configPath,
+      ],
+      undefined,
+      180_000,
+    );
+    if (output) {
+      console.log(`[wireguard-vpn] Windows helper output:\n${output}`);
+    }
+  } catch (error) {
+    const helperLog = await readWindowsVpnHelperLogTail();
+    const suffix = helperLog ? `\nHelper log tail:\n${helperLog}` : '';
+    throw new Error(`${(error as Error).message}${suffix}`, { cause: error });
+  }
+
+  const statusAfter = await getWindowsTunnelServiceStatus(serviceName);
+  console.log(`[wireguard-vpn] Windows tunnel service after stop:\n${statusAfter}`);
+  if (!statusAfter.includes('state=missing')) {
+    throw new Error(`Windows tunnel service still exists after uninstall: ${statusAfter}`);
+  }
+  return 'stopped';
 }
 
 function windowsVpnHelperPathCandidates(): string[] {
@@ -307,14 +379,24 @@ async function resolveWindowsVpnHelperPath(candidates = windowsVpnHelperPathCand
 async function verifyWindowsTunnelService(configPath: string): Promise<string> {
   const tunnelName = getTunnelNameFromConfigPath(configPath);
   const serviceName = `WireGuardTunnel$${tunnelName}`;
+  const status = await getWindowsTunnelServiceStatus(serviceName);
+  if (status.includes('state=missing')) {
+    throw new Error(status);
+  }
+  if (!status.includes('state=Running')) {
+    throw new Error(status);
+  }
+  return status;
+}
+
+async function getWindowsTunnelServiceStatus(serviceName: string): Promise<string> {
   const serviceNameLiteral = toPowerShellSingleQuotedString(serviceName);
   const command = [
     `$name = ${serviceNameLiteral}`,
     `$svc = Get-CimInstance Win32_Service -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq $name } | Select-Object -First 1`,
-    `if (-not $svc) { Write-Output ('service=' + $name + ' state=missing'); exit 21 }`,
+    `if (-not $svc) { Write-Output ('service=' + $name + ' state=missing'); exit 0 }`,
     `Write-Output "service=$($svc.Name) state=$($svc.State) startMode=$($svc.StartMode) exitCode=$($svc.ExitCode)"`,
     `Write-Output "path=$($svc.PathName)"`,
-    `if ($svc.State -ne "Running") { exit 22 }`,
   ].join('; ');
 
   return await execFileText(
