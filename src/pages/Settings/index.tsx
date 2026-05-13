@@ -49,6 +49,14 @@ type ControlUiInfo = {
   port: number;
 };
 
+type BoxImAccountInfo = {
+  tokenKey: string | null;
+  apiUrl: string;
+  ownerUserId: number | null;
+  nickname: string | null;
+  avatar: string | null;
+};
+
 export function Settings() {
   const { t } = useTranslation('settings');
   const navigate = useNavigate();
@@ -107,6 +115,7 @@ export function Settings() {
   const [logContent, setLogContent] = useState('');
   const [loggingOut, setLoggingOut] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+  const [boxImAccountInfo, setBoxImAccountInfo] = useState<BoxImAccountInfo | null>(null);
   const [doctorRunningMode, setDoctorRunningMode] = useState<'diagnose' | 'fix' | null>(null);
   const [doctorResult, setDoctorResult] = useState<{
     mode: 'diagnose' | 'fix';
@@ -328,6 +337,19 @@ export function Settings() {
   useEffect(() => {
     void refreshControlUiInfo();
   // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const result = await invokeIpc<BoxImAccountInfo>('box-im:getConfig');
+        if (!cancelled) setBoxImAccountInfo(result);
+      } catch {
+        if (!cancelled) setBoxImAccountInfo(null);
+      }
+    })();
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
@@ -721,11 +743,27 @@ export function Settings() {
               {t('account.title')}
             </h2>
             <div className="flex items-center justify-between">
-              <div>
-                <Label className="text-[15px] font-medium text-foreground">{t('account.logout')}</Label>
-                <p className="text-[13px] text-muted-foreground mt-1">
-                  {t('account.logoutDesc')}
-                </p>
+              <div className="flex min-w-0 items-center gap-3">
+                <div className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-full border border-black/10 bg-black/[0.04] text-sm font-medium text-muted-foreground dark:border-white/10 dark:bg-white/[0.06]">
+                  {boxImAccountInfo?.avatar ? (
+                    <img
+                      src={boxImAccountInfo.avatar}
+                      alt={boxImAccountInfo.nickname || t('account.loggedInAccount', { defaultValue: '已登录账号' })}
+                      className="h-full w-full object-cover"
+                      referrerPolicy="no-referrer"
+                    />
+                  ) : (
+                    (boxImAccountInfo?.nickname || '账').trim().slice(0, 1).toUpperCase()
+                  )}
+                </div>
+                <div className="min-w-0">
+                  <Label className="block truncate text-[15px] font-medium text-foreground">
+                    {boxImAccountInfo?.nickname || t('account.loggedInAccount', { defaultValue: '已登录账号' })}
+                  </Label>
+                  <p className="mt-1 text-[13px] text-muted-foreground">
+                    {t('account.logoutDesc')}
+                  </p>
+                </div>
               </div>
               <Button
                 variant="outline"

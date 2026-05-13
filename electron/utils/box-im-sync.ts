@@ -248,6 +248,8 @@ interface BoxImOwnerAuth {
   accessToken?: string;
   openid?: string;
   userId?: number;
+  nickname?: string;
+  avatar?: string;
   [key: string]: unknown;
 }
 
@@ -259,6 +261,63 @@ interface BoxImAccount {
   headImage?: string;
   model?: string;
   [key: string]: unknown;
+}
+
+function decodeBase64UrlJson(segment: string): Record<string, unknown> | null {
+  try {
+    const normalized = segment.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
+    return JSON.parse(Buffer.from(padded, 'base64').toString('utf8')) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function readOwnerInfoFromAccessToken(accessToken: string | null): { nickname: string | null; avatar: string | null } {
+  if (!accessToken) return { nickname: null, avatar: null };
+  const [, payloadSegment] = accessToken.split('.');
+  if (!payloadSegment) return { nickname: null, avatar: null };
+
+  const payload = decodeBase64UrlJson(payloadSegment);
+  const infoRaw = typeof payload?.info === 'string' ? payload.info : null;
+  const info = infoRaw ? decodeJsonObject(infoRaw) : null;
+
+  const nickname = firstNonEmptyString(
+    info?.nickName,
+    info?.nickname,
+    info?.userName,
+    payload?.nickName,
+    payload?.nickname,
+    payload?.userName,
+  );
+  const avatar = firstNonEmptyString(
+    info?.headImage,
+    info?.headimgurl,
+    info?.avatar,
+    payload?.headImage,
+    payload?.headimgurl,
+    payload?.avatar,
+  );
+
+  return { nickname, avatar };
+}
+
+function decodeJsonObject(raw: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+function firstNonEmptyString(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return null;
 }
 
 interface AgentEntry {
@@ -287,6 +346,8 @@ export async function getBoxImConfig(): Promise<{
   openid: string | null;
   apiUrl: string;
   ownerUserId: number | null;
+  nickname: string | null;
+  avatar: string | null;
   accounts: Record<string, BoxImAccount>;
 }> {
   try {
@@ -302,12 +363,62 @@ export async function getBoxImConfig(): Promise<{
     const apiUrl = typeof boxIm.apiUrl === 'string' && boxIm.apiUrl.length > 0
       ? boxIm.apiUrl : DEFAULT_API_URL;
     const ownerUserId = typeof ownerAuth.userId === 'number' ? ownerAuth.userId : null;
+    const tokenInfo = readOwnerInfoFromAccessToken(accessToken);
+    const nickname = firstNonEmptyString(ownerAuth.nickname, tokenInfo.nickname);
+    const avatar = firstNonEmptyString(ownerAuth.avatar, tokenInfo.avatar);
     const accounts = (boxIm.accounts ?? {}) as Record<string, BoxImAccount>;
-    return { tokenKey, accessToken, openid, apiUrl, ownerUserId, accounts };
+    return { tokenKey, accessToken, openid, apiUrl, ownerUserId, nickname, avatar, accounts };
   } catch (err) {
     logger.error('[box-im] Failed to read config:', err);
-    return { tokenKey: null, accessToken: null, openid: null, apiUrl: DEFAULT_API_URL, ownerUserId: null, accounts: {} };
+    return { tokenKey: null, accessToken: null, openid: null, apiUrl: DEFAULT_API_URL, ownerUserId: null, nickname: null, avatar: null, accounts: {} };
   }
+}
+
+export async function getBoxImAccountDisplayInfo(): Promise<{
+  tokenKey: string | null;
+  apiUrl: string;
+  ownerUserId: number | null;
+  nickname: string | null;
+  avatar: string | null;
+}> {
+  const config = await getBoxImConfig();
+  let { nickname, avatar } = config;
+
+  if (config.openid && (!nickname || !avatar)) {
+    try {
+      const resp = await fetch(`${config.apiUrl}/findUserByOpenid`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ openid: config.openid, terminalNo: 0 }),
+        signal: AbortSignal.timeout(3_000),
+      });
+      if (resp.ok) {
+        const payload = await resp.json() as {
+          data?: {
+            nickName?: unknown;
+            nickname?: unknown;
+            userName?: unknown;
+            headImage?: unknown;
+            headImageThumb?: unknown;
+            avatar?: unknown;
+          } | null;
+        };
+        const user = payload.data;
+        nickname = firstNonEmptyString(nickname, user?.nickName, user?.nickname, user?.userName);
+        avatar = firstNonEmptyString(avatar, user?.headImage, user?.headImageThumb, user?.avatar);
+      }
+    } catch (error) {
+      logger.debug('[box-im] Failed to fetch account display info:', error);
+    }
+  }
+
+  return {
+    tokenKey: config.tokenKey,
+    apiUrl: config.apiUrl,
+    ownerUserId: config.ownerUserId,
+    nickname,
+    avatar,
+  };
 }
 
 export async function ensureOwnerAccessToken(forceRefresh = false): Promise<string | null> {

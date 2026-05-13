@@ -69,7 +69,7 @@ import {
   type AppRequest,
   type AppResponse,
 } from './ipc/request-helpers';
-import { getBoxImConfig, getTokenKey as getBoxImTokenKey, logoutBoxIm, syncBots, checkProfileSync, syncProfileFiles, downloadProfileFile, uploadProfileFile_Single } from '../utils/box-im-sync';
+import { getBoxImAccountDisplayInfo, getBoxImConfig, getTokenKey as getBoxImTokenKey, logoutBoxIm, syncBots, checkProfileSync, syncProfileFiles, downloadProfileFile, uploadProfileFile_Single } from '../utils/box-im-sync';
 import {
   createWxScene,
   pollWxScan,
@@ -472,7 +472,7 @@ function registerUnifiedRequestHandlers(gatewayManager: GatewayManager): void {
             break;
           }
           if (request.action === 'install') {
-            appUpdater.quitAndInstall();
+            appUpdater.requestQuitAndInstall();
             data = { success: true };
             break;
           }
@@ -882,11 +882,11 @@ function registerSkillConfigHandlers(): void {
 function registerBoxImConfigHandlers(): void {
   ipcMain.handle('box-im:getConfig', async () => {
     try {
-      const { tokenKey, apiUrl, ownerUserId } = await getBoxImConfig();
-      return { tokenKey, apiUrl, ownerUserId };
+      const { tokenKey, apiUrl, ownerUserId, nickname, avatar } = await getBoxImAccountDisplayInfo();
+      return { tokenKey, apiUrl, ownerUserId, nickname, avatar };
     } catch (err) {
       logger.warn('[box-im] Failed to read config:', err);
-      return { tokenKey: null, apiUrl: 'https://im.shadanai.com/api', ownerUserId: null };
+      return { tokenKey: null, apiUrl: 'https://im.shadanai.com/api', ownerUserId: null, nickname: null, avatar: null };
     }
   });
 

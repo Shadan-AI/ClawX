@@ -47,6 +47,7 @@ export class AppUpdater extends EventEmitter {
   private autoInstallTimer: NodeJS.Timeout | null = null;
   private autoInstallCountdown = 0;
   private installTriggered = false;
+  private pendingInstallOptions: { isSilent: boolean; isForceRunAfter: boolean } | null = null;
 
   /** Delay (in seconds) before auto-installing a downloaded update. */
   private static readonly AUTO_INSTALL_DELAY_SECONDS = 5;
@@ -230,13 +231,26 @@ export class AppUpdater extends EventEmitter {
    * BEFORE calling quitAndInstall(). This lets the native quit flow close
    * the window cleanly while ShipIt runs independently to replace the app.
    */
-  quitAndInstall(isSilent = true, isForceRunAfter = true): void {
+  requestQuitAndInstall(isSilent = false, isForceRunAfter = true): void {
+    if (this.installTriggered) {
+      logger.info('[Updater] install request ignored; install already triggered');
+      return;
+    }
+    logger.info('[Updater] install requested; quitting after cleanup');
+    this.pendingInstallOptions = { isSilent, isForceRunAfter };
+    this.clearAutoInstallTimer();
+    setQuitting();
+    app.quit();
+  }
+
+  quitAndInstall(isSilent = this.pendingInstallOptions?.isSilent ?? false, isForceRunAfter = this.pendingInstallOptions?.isForceRunAfter ?? true): void {
     if (this.installTriggered) {
       logger.info('[Updater] quitAndInstall ignored; install already triggered');
       return;
     }
     logger.info('[Updater] quitAndInstall called');
     this.installTriggered = true;
+    this.pendingInstallOptions = null;
     this.clearAutoInstallTimer();
     setQuitting();
     autoUpdater.quitAndInstall(isSilent, isForceRunAfter);
@@ -261,7 +275,7 @@ export class AppUpdater extends EventEmitter {
 
       if (this.autoInstallCountdown <= 0) {
         this.clearAutoInstallTimer();
-        this.quitAndInstall();
+        this.requestQuitAndInstall();
       }
     }, 1000);
   }
@@ -342,7 +356,7 @@ export function registerUpdateHandlers(
 
   // Install update and restart
   ipcMain.handle('update:install', () => {
-    updater.quitAndInstall();
+    updater.requestQuitAndInstall();
     return { success: true };
   });
 
