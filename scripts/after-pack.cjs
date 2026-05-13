@@ -40,6 +40,37 @@ function resolveArch(archEnum) {
   return ARCH_MAP[archEnum] || 'x64';
 }
 
+function copyWindowsVpnRuntime(resourcesDir, arch) {
+  if (arch !== 'x64') {
+    throw new Error(`[after-pack] Windows VPN runtime is only bundled for x64; unsupported arch=${arch}`);
+  }
+
+  const srcDir = join(__dirname, '..', 'resources', 'bin', `win32-${arch}`);
+  const destDir = join(resourcesDir, 'bin');
+  const requiredFiles = [
+    'openme-vpn-helper.ps1',
+    'wireguard-amd64-0.6.1.msi',
+  ];
+
+  for (const fileName of requiredFiles) {
+    const src = join(srcDir, fileName);
+    if (!existsSync(src)) {
+      throw new Error(`[after-pack] Missing required Windows VPN runtime file: ${src}`);
+    }
+  }
+
+  mkdirSync(destDir, { recursive: true });
+  for (const fileName of requiredFiles) {
+    const src = join(srcDir, fileName);
+    const dest = join(destDir, fileName);
+    cpSync(src, dest);
+    if (!existsSync(dest)) {
+      throw new Error(`[after-pack] Failed to copy Windows VPN runtime file to: ${dest}`);
+    }
+    console.log(`[after-pack] Bundled Windows VPN runtime: ${relative(resourcesDir, dest)}`);
+  }
+}
+
 // ── General cleanup ──────────────────────────────────────────────────────────
 
 function cleanupUnnecessaryFiles(dir) {
@@ -639,6 +670,10 @@ exports.default = async function afterPack(context) {
   const dest = join(openclawRoot, 'node_modules');
   const nodeModulesRoot = join(__dirname, '..', 'node_modules');
   const pluginsDestRoot = join(resourcesDir, 'openclaw-plugins');
+
+  if (platform === 'win32') {
+    copyWindowsVpnRuntime(resourcesDir, arch);
+  }
 
   if (!existsSync(src)) {
     console.warn('[after-pack] ⚠️  build/openclaw/node_modules not found. Run bundle-openclaw first.');

@@ -46,14 +46,13 @@ function Invoke-Elevated {
   }
   $elevatedArgs = @(
     "-NoProfile",
-    "-NonInteractive",
     "-ExecutionPolicy", "Bypass",
     "-File", (Quote-Arg $scriptPath),
     "-Action", (Quote-Arg $Action),
     "-ConfigPath", (Quote-Arg $ConfigPath)
   ) -join " "
 
-  $proc = Start-Process -FilePath $powershellPath -ArgumentList $elevatedArgs -Verb RunAs -WindowStyle Hidden -Wait -PassThru
+  $proc = Start-Process -FilePath $powershellPath -ArgumentList $elevatedArgs -Verb RunAs -Wait -PassThru
   exit $proc.ExitCode
 }
 
@@ -227,7 +226,7 @@ switch ($Action) {
       Start-Service -Name $serviceName -ErrorAction Stop
     }
     Wait-ServiceRunning $serviceName
-    Write-ServiceStatus $serviceName | Out-Null
+    Write-ServiceStatus $serviceName
   }
   "stop" {
     Stop-Service -Name $serviceName -ErrorAction SilentlyContinue

@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process';
 import { createPrivateKey, createPublicKey, generateKeyPairSync } from 'node:crypto';
 import { constants } from 'node:fs';
 import { access, chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
-import { delimiter, dirname, join } from 'node:path';
+import { basename, delimiter, dirname, extname, join } from 'node:path';
 
 export interface WireGuardRegistration {
   vpnIp: string;
@@ -43,11 +43,13 @@ let wgQuickCommandPromise: Promise<string> | undefined;
 function execFileText(command: string, args: string[], input?: string, timeout = 15_000): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = execFile(command, args, { timeout }, (error, stdout, stderr) => {
+      const output = String(stdout).trim();
+      const errorOutput = String(stderr).trim();
       if (error) {
-        reject(new Error(`${command} ${args.join(' ')} failed: ${stderr || error.message}`));
+        reject(new Error(`${command} ${args.join(' ')} failed: ${errorOutput || output || error.message}`));
         return;
       }
-      resolve(String(stdout).trim());
+      resolve(output);
     });
     if (input) child.stdin?.end(input);
   });
@@ -246,46 +248,104 @@ export async function startWireGuard(configPath: string): Promise<'started' | 'o
 }
 
 async function startWireGuardWindows(configPath: string): Promise<'started' | 'config-written'> {
-  const helperPath = await resolveWindowsVpnHelperPath();
+  const helperCandidates = windowsVpnHelperPathCandidates();
+  const helperPath = await resolveWindowsVpnHelperPath(helperCandidates);
   if (!helperPath) {
-    return 'config-written';
+    throw new Error(`Windows VPN helper was not found. Checked: ${helperCandidates.join(', ')}`);
   }
 
   const powershell = getWindowsPowerShellPath();
-  await execFileText(
-    powershell,
-    [
-      '-NoProfile',
-      '-NonInteractive',
-      '-ExecutionPolicy',
-      'Bypass',
-      '-File',
-      helperPath,
-      '-Action',
-      'install-start',
-      '-ConfigPath',
-      configPath,
-    ],
-    undefined,
-    180_000,
-  );
+  console.log(`[wireguard-vpn] Starting Windows tunnel via helper: ${helperPath}`);
+  try {
+    const output = await execFileText(
+      powershell,
+      [
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        helperPath,
+        '-Action',
+        'install-start',
+        '-ConfigPath',
+        configPath,
+      ],
+      undefined,
+      180_000,
+    );
+    if (output) {
+      console.log(`[wireguard-vpn] Windows helper output:\n${output}`);
+    }
+    const status = await verifyWindowsTunnelService(configPath);
+    console.log(`[wireguard-vpn] Windows tunnel service verified:\n${status}`);
+  } catch (error) {
+    const helperLog = await readWindowsVpnHelperLogTail();
+    const suffix = helperLog ? `\nHelper log tail:\n${helperLog}` : '';
+    throw new Error(`${(error as Error).message}${suffix}`);
+  }
   return 'started';
 }
 
-async function resolveWindowsVpnHelperPath(): Promise<string | null> {
-  const candidates = app.isPackaged
+function windowsVpnHelperPathCandidates(): string[] {
+  return app.isPackaged
     ? [join(process.resourcesPath, 'bin', 'openme-vpn-helper.ps1')]
     : [
         join(process.cwd(), 'resources', 'bin', `win32-${process.arch}`, 'openme-vpn-helper.ps1'),
         join(dirname(process.execPath), 'resources', 'bin', `win32-${process.arch}`, 'openme-vpn-helper.ps1'),
       ];
+}
 
+async function resolveWindowsVpnHelperPath(candidates = windowsVpnHelperPathCandidates()): Promise<string | null> {
   for (const candidate of candidates) {
     if (await fileAccessible(candidate)) {
       return candidate;
     }
   }
   return null;
+}
+
+async function verifyWindowsTunnelService(configPath: string): Promise<string> {
+  const tunnelName = getTunnelNameFromConfigPath(configPath);
+  const serviceName = `WireGuardTunnel$${tunnelName}`;
+  const serviceNameLiteral = toPowerShellSingleQuotedString(serviceName);
+  const command = [
+    `$name = ${serviceNameLiteral}`,
+    `$svc = Get-CimInstance Win32_Service -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq $name } | Select-Object -First 1`,
+    `if (-not $svc) { Write-Output ('service=' + $name + ' state=missing'); exit 21 }`,
+    `Write-Output "service=$($svc.Name) state=$($svc.State) startMode=$($svc.StartMode) exitCode=$($svc.ExitCode)"`,
+    `Write-Output "path=$($svc.PathName)"`,
+    `if ($svc.State -ne "Running") { exit 22 }`,
+  ].join('; ');
+
+  return await execFileText(
+    getWindowsPowerShellPath(),
+    ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', command],
+    undefined,
+    30_000,
+  );
+}
+
+function getTunnelNameFromConfigPath(configPath: string): string {
+  const name = basename(configPath, extname(configPath)).replace(/[^A-Za-z0-9_=+.-]/g, '-');
+  if (!name.trim()) {
+    throw new Error(`Invalid WireGuard config name: ${configPath}`);
+  }
+  return name;
+}
+
+function toPowerShellSingleQuotedString(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+async function readWindowsVpnHelperLogTail(): Promise<string> {
+  const programData = process.env.ProgramData || 'C:\\ProgramData';
+  const logPath = join(programData, 'OpenMe', 'vpn-helper.log');
+  try {
+    const content = await readFile(logPath, 'utf8');
+    return content.slice(-8000).trim();
+  } catch {
+    return '';
+  }
 }
 
 function getWindowsPowerShellPath(): string {
