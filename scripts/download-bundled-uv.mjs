@@ -56,8 +56,13 @@ async function setupTarget(id) {
 
   echo(chalk.blue`\n📦 Setting up uv for ${id}...`);
 
-  // Cleanup & Prep
-  await fs.remove(targetDir);
+  // Only remove the target uv binary, not the entire directory. Other build
+  // assets such as the Windows VPN helper/MSI are stored in the same platform
+  // directory and must survive prep:win-binaries.
+  const destBin = path.join(targetDir, target.binName);
+  if (await fs.pathExists(destBin)) {
+    await fs.remove(destBin);
+  }
   await fs.remove(tempDir);
   await fs.ensureDir(targetDir);
   await fs.ensureDir(tempDir);
@@ -88,8 +93,6 @@ async function setupTarget(id) {
     // uv archives usually contain a folder named after the target
     const folderName = target.filename.replace('.tar.gz', '').replace('.zip', '');
     const sourceBin = path.join(tempDir, folderName, target.binName);
-    const destBin = path.join(targetDir, target.binName);
-
     if (await fs.pathExists(sourceBin)) {
       await fs.move(sourceBin, destBin, { overwrite: true });
     } else {
