@@ -1,6 +1,6 @@
 {
     "name": "openme",
-    "version": "0.7.3",
+    "version": "0.7.4",
     "pnpm": {
         "onlyBuiltDependencies": [
             "@discordjs/opus",
