@@ -46,13 +46,15 @@ function Invoke-Elevated {
   }
   $elevatedArgs = @(
     "-NoProfile",
+    "-NonInteractive",
     "-ExecutionPolicy", "Bypass",
+    "-WindowStyle", "Hidden",
     "-File", (Quote-Arg $scriptPath),
     "-Action", (Quote-Arg $Action),
     "-ConfigPath", (Quote-Arg $ConfigPath)
   ) -join " "
 
-  $proc = Start-Process -FilePath $powershellPath -ArgumentList $elevatedArgs -Verb RunAs -Wait -PassThru
+  $proc = Start-Process -FilePath $powershellPath -ArgumentList $elevatedArgs -Verb RunAs -WindowStyle Hidden -Wait -PassThru
   exit $proc.ExitCode
 }
 

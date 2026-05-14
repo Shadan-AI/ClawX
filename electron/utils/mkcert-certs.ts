@@ -10,6 +10,7 @@
  * Set CLAWX_REGENERATE_MKCERT=1 to force re-run even if already initialized.
  */
 import { execFile } from 'node:child_process';
+import { app } from 'electron';
 import { existsSync, mkdirSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir, networkInterfaces } from 'node:os';
 import { join } from 'node:path';
@@ -22,6 +23,12 @@ const CERT_FILE = () => join(OPENCLAW_CERT_DIR(), 'localhost.pem');
 const KEY_FILE = () => join(OPENCLAW_CERT_DIR(), 'localhost-key.pem');
 const ENV_FILE = () => join(OPENCLAW_DIR(), '.env');
 const CERTS_INITIALIZED_KEY = 'CLAWX_CERTS_INITIALIZED';
+const CERTS_HOSTS_KEY = 'CLAWX_CERTS_HOSTS';
+
+export type MkcertEnsureOptions = {
+  extraHosts?: string[];
+  force?: boolean;
+};
 
 /** Read ~/.openclaw/.env and return parsed key=value map */
 function readOpenClawEnv(): Map<string, string> {
@@ -76,6 +83,34 @@ function listPrivateLanIPv4(): string[] {
   return [...out].sort();
 }
 
+function normalizeCertHosts(hosts: string[]): string[] {
+  const out = new Set<string>();
+  for (const raw of hosts) {
+    const host = raw.trim();
+    if (!host) continue;
+    if (host.includes('/')) continue;
+    if (host.includes(':') && host !== '::1') continue;
+    out.add(host);
+  }
+  return [...out].sort();
+}
+
+function readExistingWireGuardHosts(): string[] {
+  try {
+    const configPath = join(app.getPath('userData'), 'vpn', 'clawx-wg0.conf');
+    if (!existsSync(configPath)) return [];
+    const content = readFileSync(configPath, 'utf-8');
+    const address = content.match(/^\s*Address\s*=\s*([^\r\n#]+)/im)?.[1]?.trim();
+    if (!address) return [];
+    return address
+      .split(',')
+      .map((value) => value.trim().replace(/\/\d+$/, ''))
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Resolve mkcert.exe from the @shadanai/openclaw npm package.
  * - Production: <resourcesPath>/openclaw/mkcert.exe
@@ -93,6 +128,8 @@ export type MkcertEnsureResult = {
   reason?: string;
   error?: string;
   certDir?: string;
+  regenerated?: boolean;
+  hosts?: string[];
 };
 
 function execFileAsync(cmd: string, args: string[]): Promise<void> {
@@ -119,7 +156,7 @@ function execFileAsyncVisible(cmd: string, args: string[]): Promise<void> {
  * regenerates certs for all LAN IPs, then writes CLAWX_CERTS_INITIALIZED=true
  * to ~/.openclaw/.env so subsequent starts skip this step.
  */
-export async function ensureOpenClawMkcertCertsWindows(): Promise<MkcertEnsureResult> {
+export async function ensureOpenClawMkcertCertsWindows(options: MkcertEnsureOptions = {}): Promise<MkcertEnsureResult> {
   if (process.platform !== 'win32') {
     return { ok: true, skipped: true, reason: 'not-windows' };
   }
@@ -130,13 +167,19 @@ export async function ensureOpenClawMkcertCertsWindows(): Promise<MkcertEnsureRe
   const certDir = OPENCLAW_CERT_DIR();
   const certFile = CERT_FILE();
   const keyFile = KEY_FILE();
+  const lan = listPrivateLanIPv4();
+  const vpn = readExistingWireGuardHosts();
+  const hosts = normalizeCertHosts(['localhost', '127.0.0.1', '::1', ...lan, ...vpn, ...(options.extraHosts ?? [])]);
+  const hostSignature = hosts.join(',');
 
   // Check if already initialized (and not forced)
   const env = readOpenClawEnv();
   const alreadyInitialized = env.get(CERTS_INITIALIZED_KEY) === 'true';
-  if (alreadyInitialized && process.env.CLAWX_REGENERATE_MKCERT !== '1') {
+  const hostsMatch = env.get(CERTS_HOSTS_KEY) === hostSignature;
+  const force = options.force === true || process.env.CLAWX_REGENERATE_MKCERT === '1';
+  if (alreadyInitialized && hostsMatch && !force) {
     if (existsSync(certFile) && existsSync(keyFile)) {
-      return { ok: true, skipped: true, reason: 'already-initialized', certDir };
+      return { ok: true, skipped: true, reason: 'already-initialized', certDir, hosts };
     }
     // Files missing despite flag — fall through to regenerate
     logger.warn('[mkcert] CLAWX_CERTS_INITIALIZED=true but cert files missing, regenerating...');
@@ -158,16 +201,17 @@ export async function ensureOpenClawMkcertCertsWindows(): Promise<MkcertEnsureRe
   }
 
   mkdirSync(certDir, { recursive: true });
-  const lan = listPrivateLanIPv4();
-  const hosts = ['localhost', '127.0.0.1', '::1', ...lan];
   logger.info(`[mkcert] generating trusted certs for: ${hosts.join(', ')}`);
 
-  // Install root CA into system trust store (shows UAC on Windows)
-  try {
-    await execFileAsyncVisible(mkcert, ['-install']);
-    logger.info('[mkcert] root CA installed successfully');
-  } catch (err) {
-    logger.warn('[mkcert] -install failed (non-fatal, cert may not be trusted by browser):', err);
+  // Install root CA into system trust store on first initialization. Host-only
+  // certificate refreshes do not need another UAC prompt once the CA is trusted.
+  if (!alreadyInitialized || force) {
+    try {
+      await execFileAsyncVisible(mkcert, ['-install']);
+      logger.info('[mkcert] root CA installed successfully');
+    } catch (err) {
+      logger.warn('[mkcert] -install failed (non-fatal, cert may not be trusted by browser):', err);
+    }
   }
 
   // Generate cert for all hosts
@@ -180,8 +224,11 @@ export async function ensureOpenClawMkcertCertsWindows(): Promise<MkcertEnsureRe
   }
 
   // Mark as initialized in ~/.openclaw/.env
-  writeOpenClawEnv({ [CERTS_INITIALIZED_KEY]: 'true' });
+  writeOpenClawEnv({
+    [CERTS_INITIALIZED_KEY]: 'true',
+    [CERTS_HOSTS_KEY]: hostSignature,
+  });
   logger.info(`[mkcert] wrote ${certFile}, marked ${CERTS_INITIALIZED_KEY}=true in .env`);
 
-  return { ok: true, certDir };
+  return { ok: true, certDir, regenerated: true, hosts };
 }

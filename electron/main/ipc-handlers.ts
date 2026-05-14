@@ -999,6 +999,7 @@ function registerWxAuthHandlers(gatewayManager: GatewayManager): void {
     try {
       const result = await bindPhoneAndRegister(openid, phone, code, nickname, avatar);
       await persistLoginResult(result.tokenKey, result.userId, openid, nickname, avatar, result.accessToken);
+      gatewayManager.debouncedRestart(3000);
       return { success: true, ...result };
     } catch (err) {
       return { success: false, error: String(err) };

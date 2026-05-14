@@ -689,9 +689,21 @@ if (gotTheLock) {
     logger.debug('Main window is not ready yet; deferring second-instance focus until ready-to-show');
   });
 
-  // Allow self-signed TLS certs for localhost gateway (mkcert-generated)
+  // Allow self-signed TLS certs for local Gateway endpoints (mkcert-generated).
   app.on('certificate-error', (event, _webContents, url, _error, _cert, callback) => {
-    if (url.startsWith('https://127.0.0.1:') || url.startsWith('https://localhost:')) {
+    let allowGatewayCert = url.startsWith('https://127.0.0.1:') || url.startsWith('https://localhost:');
+    try {
+      const parsed = new URL(url);
+      allowGatewayCert = allowGatewayCert
+        || (
+          parsed.protocol === 'https:'
+          && parsed.port === '18789'
+          && /^(192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/.test(parsed.hostname)
+        );
+    } catch {
+      // Ignore malformed certificate-error URLs.
+    }
+    if (allowGatewayCert) {
       event.preventDefault();
       callback(true);
     } else {

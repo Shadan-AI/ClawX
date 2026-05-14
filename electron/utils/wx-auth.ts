@@ -13,6 +13,7 @@ import { syncBots } from './box-im-sync';
 import { ensureVncOriginsInConfig } from './openclaw-auth';
 import { getSetting } from './store';
 import { storeApiKey } from './secure-storage';
+import { ensureOpenClawMkcertCertsWindows } from './mkcert-certs';
 import {
   getOrCreateWireGuardKeys,
   registerWireGuardDevice,
@@ -434,6 +435,17 @@ export async function persistLoginResult(
       console.log(`[wx-auth] WireGuard config written for manual import/start: ${configPath}`);
     } else {
       console.log(`[wx-auth] WireGuard VPN started: ${vpnRegistration.clientAddress} via ${vpnRegistration.serverEndpoint}`);
+    }
+    const vpnIp = normalizeWireGuardIp(vpnRegistration);
+    if (process.platform === 'win32' && vpnIp) {
+      try {
+        const certResult = await ensureOpenClawMkcertCertsWindows({ extraHosts: [vpnIp] });
+        if (certResult.ok && certResult.regenerated) {
+          console.log(`[wx-auth] Gateway TLS cert regenerated with VPN IP: ${vpnIp}`);
+        }
+      } catch (certErr) {
+        console.warn('[wx-auth] Failed to regenerate Gateway TLS cert with VPN IP (non-fatal):', certErr);
+      }
     }
   } catch (err) {
     console.warn('[wx-auth] WireGuard VPN setup failed (non-fatal):', err);
