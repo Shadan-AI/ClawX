@@ -736,6 +736,18 @@ if (gotTheLock) {
 
   app.on('before-quit', (event) => {
     setQuitting();
+
+    if (appUpdater.isInstallingUpdate()) {
+      logger.info('Update installer is taking over app quit; skipping regular shutdown cleanup');
+      return;
+    }
+
+    if (appUpdater.shouldInstallDownloadedUpdateOnQuit()) {
+      logger.info('Downloaded update detected during quit; launching installer immediately');
+      appUpdater.quitAndInstall(false, true);
+      return;
+    }
+
     const action = requestQuitLifecycleAction(quitLifecycleState);
 
     if (action === 'allow-quit') {
@@ -780,11 +792,6 @@ if (gotTheLock) {
         });
       }
       markQuitCleanupCompleted(quitLifecycleState);
-      if (appUpdater.shouldInstallDownloadedUpdateOnQuit()) {
-        logger.info('Downloaded update detected during quit; launching installer after cleanup');
-        appUpdater.quitAndInstall();
-        return;
-      }
       app.quit();
     });
   });

@@ -236,11 +236,8 @@ export class AppUpdater extends EventEmitter {
       logger.info('[Updater] install request ignored; install already triggered');
       return;
     }
-    logger.info('[Updater] install requested; quitting after cleanup');
-    this.pendingInstallOptions = { isSilent, isForceRunAfter };
-    this.clearAutoInstallTimer();
-    setQuitting();
-    app.quit();
+    logger.info('[Updater] install requested; handing off to updater');
+    this.quitAndInstall(isSilent, isForceRunAfter);
   }
 
   quitAndInstall(isSilent = this.pendingInstallOptions?.isSilent ?? false, isForceRunAfter = this.pendingInstallOptions?.isForceRunAfter ?? true): void {
@@ -258,6 +255,10 @@ export class AppUpdater extends EventEmitter {
 
   shouldInstallDownloadedUpdateOnQuit(): boolean {
     return this.status.status === 'downloaded' && !this.installTriggered;
+  }
+
+  isInstallingUpdate(): boolean {
+    return this.installTriggered;
   }
 
   /**
