@@ -4,6 +4,7 @@ import 'zx/globals';
 import { readFileSync, existsSync, mkdirSync, rmSync, cpSync, writeFileSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
@@ -43,14 +44,31 @@ function createRepoDirName(repo, ref) {
   return `${repo.replace(/[\\/]/g, '__')}__${ref.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
 }
 
-function toGitPath(inputPath) {
-  if (process.platform !== 'win32') return inputPath;
-  // Git on Windows accepts forward slashes and avoids backslash escape quirks.
-  return inputPath.replace(/\\/g, '/');
-}
-
 function normalizeRepoPath(repoPath) {
   return repoPath.replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
+}
+
+function runCommand(command, args, options = {}) {
+  const result = spawnSync(command, args, {
+    stdio: 'inherit',
+    shell: false,
+    ...options,
+  });
+  if (result.status !== 0) {
+    throw new Error(`${command} ${args.join(' ')} failed: status=${result.status ?? 'n/a'} error=${result.error?.message ?? 'n/a'}`);
+  }
+}
+
+function captureCommand(command, args, options = {}) {
+  const result = spawnSync(command, args, {
+    encoding: 'utf8',
+    shell: false,
+    ...options,
+  });
+  if (result.status !== 0) {
+    throw new Error(`${command} ${args.join(' ')} failed: status=${result.status ?? 'n/a'} error=${result.error?.message ?? 'n/a'} stderr=${result.stderr ?? ''}`);
+  }
+  return result.stdout.trim();
 }
 
 function shouldCopySkillFile(srcPath) {
@@ -61,23 +79,28 @@ function shouldCopySkillFile(srcPath) {
 }
 
 async function extractArchive(archiveFileName, cwd) {
-  const prevCwd = $.cwd;
-  $.cwd = cwd;
-  try {
-    try {
-      await $`tar -xf ${archiveFileName}`;
-      return;
-    } catch (tarError) {
-      if (process.platform === 'win32') {
-        // Some Windows images expose bsdtar instead of tar.
-        await $`bsdtar -xf ${archiveFileName}`;
-        return;
-      }
-      throw tarError;
-    }
-  } finally {
-    $.cwd = prevCwd;
+  const commands = process.platform === 'win32'
+    ? [
+        'C:\\Windows\\System32\\tar.exe',
+        'C:\\Windows\\SysWOW64\\tar.exe',
+        'C:\\Program Files\\Git\\usr\\bin\\tar.exe',
+        'tar.exe',
+        'tar',
+        'bsdtar',
+      ]
+    : ['tar', 'bsdtar'];
+  const errors = [];
+  for (const command of commands) {
+    const result = spawnSync(command, ['-xf', archiveFileName], {
+      cwd,
+      stdio: 'inherit',
+      shell: false,
+    });
+    if (result.status === 0) return;
+    errors.push(`${command}: status=${result.status ?? 'n/a'} error=${result.error?.message ?? 'n/a'}`);
+    if (result.error?.code === 'ENOENT') continue;
   }
+  throw new Error(`Failed to extract ${archiveFileName}: ${errors.join('; ')}`);
 }
 
 async function fetchSparseRepo(repo, ref, paths, checkoutDir) {
@@ -85,22 +108,20 @@ async function fetchSparseRepo(repo, ref, paths, checkoutDir) {
   // Clean up any leftover directory from a previous failed run to avoid
   // "remote origin already exists" errors on git remote add.
   rmSync(checkoutDir, { recursive: true, force: true });
-  mkdirSync(checkoutDir, { recursive: true });
-  const gitCheckoutDir = toGitPath(checkoutDir);
+  mkdirSync(dirname(checkoutDir), { recursive: true });
+  const gitCheckoutDir = checkoutDir;
   const archiveFileName = '.subset.tar';
   const archivePath = join(checkoutDir, archiveFileName);
   const archivePaths = [...new Set(paths.map(normalizeRepoPath))];
 
-  await $`git init ${gitCheckoutDir}`;
-  await $`git -C ${gitCheckoutDir} remote add origin ${remote}`;
-  await $`git -C ${gitCheckoutDir} fetch --depth 1 origin ${ref}`;
+  runCommand('git', ['clone', '--no-checkout', '--depth', '1', '--branch', ref, remote, gitCheckoutDir]);
   // Do not checkout working tree on Windows: upstream repos may contain
   // Windows-invalid paths. Export only requested directories via git archive.
-  await $`git -C ${gitCheckoutDir} archive --format=tar --output ${archiveFileName} FETCH_HEAD ${archivePaths}`;
+  runCommand('git', ['-C', gitCheckoutDir, 'archive', '--format=tar', '--output', archiveFileName, 'HEAD', ...archivePaths]);
   await extractArchive(archiveFileName, checkoutDir);
   rmSync(archivePath, { force: true });
 
-  const commit = (await $`git -C ${gitCheckoutDir} rev-parse FETCH_HEAD`).stdout.trim();
+  const commit = captureCommand('git', ['-C', gitCheckoutDir, 'rev-parse', 'HEAD']);
   return commit;
 }
 
@@ -124,8 +145,9 @@ const lock = {
 };
 
 const groups = groupByRepoRef(manifestSkills);
+const runId = `${process.pid}-${Date.now()}`;
 for (const group of groups) {
-  const repoDir = join(TMP_ROOT, createRepoDirName(group.repo, group.ref));
+  const repoDir = join(TMP_ROOT, `${createRepoDirName(group.repo, group.ref)}__${runId}`);
   const sparsePaths = [...new Set(group.entries.map((entry) => entry.repoPath))];
 
   echo`Fetching ${group.repo} @ ${group.ref}`;
