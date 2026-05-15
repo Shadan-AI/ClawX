@@ -7,6 +7,20 @@ export function stripGatewayMetadataText(text: string): string {
     '',
   );
 
+  // Titles can be derived from a truncated heartbeat prompt, leaving fragments
+  // such as "Follow" or "Follow it strictly" in the session list.
+  if (
+    /^(?:Follow|Follow it strictly\.?|Do not infer(?: or repeat old tasks from prior chats\.)?|If nothing needs attention,\s*reply HEARTBEAT_OK\.?)$/i
+      .test(result.trim())
+  ) {
+    return '';
+  }
+
+  result = result.replace(
+    /^\s*(?:Follow it strictly\.?\s*)?(?:Do not infer or repeat old tasks from prior chats\.?\s*)?(?:If nothing needs attention,\s*reply HEARTBEAT_OK\.?)?\s*$/i,
+    '',
+  );
+
   // Strip rendered exec/process system summaries that should stay internal.
   result = result.replace(
     /^\s*System:\s*\[[^\]]+\]\s*Exec (?:completed|failed|started)[\s\S]*$/i,

@@ -13,7 +13,7 @@ import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 import { useAgentsStore } from '@/stores/agents';
 import { useGatewayStore } from '@/stores/gateway';
 import { useProviderStore } from '@/stores/providers';
-import { useModelsStore } from '@/stores/models';
+import { useModelsStore, type OneApiModel } from '@/stores/models';
 import { useAgentTemplatesStore } from '@/stores/agent-templates';
 import { useSkillsStore } from '@/stores/skills';
 import { hostApiFetch } from '@/lib/host-api';
@@ -66,6 +66,11 @@ interface RuntimeProviderOption {
   configuredModelId?: string;
 }
 
+interface ModelDropdownOption {
+  id: string;
+  label: string;
+}
+
 function resolveRuntimeProviderKey(account: ProviderAccount): string {
   if (account.authMode === 'oauth_browser') {
     if (account.vendorId === 'google') return 'google-gemini-cli';
@@ -93,6 +98,36 @@ function splitModelRef(modelRef: string | null | undefined): { providerKey: stri
     providerKey: value.slice(0, separatorIndex),
     modelId: value.slice(separatorIndex + 1),
   };
+}
+
+function buildAgentModelOptions(
+  provider: RuntimeProviderOption | null,
+  accounts: ProviderAccount[],
+  oneApiModels: OneApiModel[],
+): ModelDropdownOption[] {
+  if (!provider) return [];
+
+  const values = new Map<string, string>();
+  const add = (id: string | null | undefined, label?: string) => {
+    const raw = (id || '').trim();
+    const trimmed = raw.startsWith(`${provider.runtimeProviderKey}/`)
+      ? raw.slice(provider.runtimeProviderKey.length + 1)
+      : raw;
+    if (!trimmed || values.has(trimmed)) return;
+    values.set(trimmed, label || trimmed);
+  };
+
+  if (provider.runtimeProviderKey === 'shadan') {
+    oneApiModels.forEach((model) => add(model.id, model.name || model.id));
+  }
+
+  const account = accounts.find((entry) => resolveRuntimeProviderKey(entry) === provider.runtimeProviderKey);
+  add(provider.configuredModelId);
+  add(account?.model);
+  account?.fallbackModels?.forEach((model) => add(model));
+  account?.metadata?.customModels?.forEach((model) => add(model));
+
+  return [...values.entries()].map(([id, label]) => ({ id, label }));
 }
 
 function hasConfiguredProviderCredentials(
@@ -1371,6 +1406,8 @@ function AgentModelModal({
   const providerStatuses = useProviderStore((state) => state.statuses);
   const providerVendors = useProviderStore((state) => state.vendors);
   const providerDefaultAccountId = useProviderStore((state) => state.defaultAccountId);
+  const oneApiModels = useModelsStore((state) => state.models);
+  const fetchOneApiModels = useModelsStore((state) => state.fetchModels);
   const { updateAgentModel, defaultModelRef } = useAgentsStore();
   const [selectedRuntimeProviderKey, setSelectedRuntimeProviderKey] = useState('');
   const [modelIdInput, setModelIdInput] = useState('');
@@ -1431,7 +1468,17 @@ function AgentModelModal({
     setModelIdInput('');
   }, [agent.modelRef, agent.overrideModelRef, defaultModelRef, runtimeProviderOptions]);
 
+  useEffect(() => {
+    if (oneApiModels.length === 0) {
+      void fetchOneApiModels();
+    }
+  }, [fetchOneApiModels, oneApiModels.length]);
+
   const selectedProvider = runtimeProviderOptions.find((option) => option.runtimeProviderKey === selectedRuntimeProviderKey) || null;
+  const modelDropdownOptions = useMemo(
+    () => buildAgentModelOptions(selectedProvider, providerAccounts, oneApiModels),
+    [oneApiModels, providerAccounts, selectedProvider],
+  );
   const trimmedModelId = modelIdInput.trim();
   const nextModelRef = selectedRuntimeProviderKey && trimmedModelId
     ? `${selectedRuntimeProviderKey}/${trimmedModelId}`
@@ -1539,11 +1586,24 @@ function AgentModelModal({
             <Label htmlFor="agent-model-id" className="text-[12px] text-foreground/70">{t('settingsDialog.modelIdLabel')}</Label>
             <Input
               id="agent-model-id"
+              list="agent-model-options"
               value={modelIdInput}
               onChange={(event) => setModelIdInput(event.target.value)}
               placeholder={selectedProvider?.modelIdPlaceholder || selectedProvider?.configuredModelId || t('settingsDialog.modelIdPlaceholder')}
               className={inputClasses}
             />
+            <datalist id="agent-model-options">
+              {modelDropdownOptions.map((model) => (
+                <option key={model.id} value={model.id}>
+                  {model.label}
+                </option>
+              ))}
+            </datalist>
+            {modelDropdownOptions.length > 0 && (
+              <p className="text-[12px] text-foreground/60">
+                可从当前模型列表选择，也可以直接手动输入模型 ID。
+              </p>
+            )}
           </div>
           {!!nextModelRef && (
             <p className="text-[12px] font-mono text-foreground/70 break-all">

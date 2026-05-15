@@ -116,7 +116,7 @@ export function SkillsConfigurationView({
     [selectedEmployeeId, currentSkills, agentSkills, templateProfileCache]
   );
 
-  const MD_FILES = ['AGENTS.md', 'SOUL.md', 'TOOLS.md', 'IDENTITY.md', 'USER.md', 'HEARTBEAT.md'];
+  const MD_FILES = ['AGENTS.md', 'SOUL.md', 'TOOLS.md', 'IDENTITY.md', 'USER.md'];
 
   const DEFAULT_TEMPLATES: Record<string, string> = {
     'AGENTS.md': `# AGENTS
@@ -175,19 +175,6 @@ This file contains information about the user and their preferences.
 
 ## Context
 Additional context about the user's needs and expectations.
-`,
-    'HEARTBEAT.md': `# HEARTBEAT
-
-This file contains periodic tasks and reminders for the agent.
-
-## Periodic Tasks
-- List recurring tasks
-- Specify check intervals
-- Define success criteria
-
-## Reminders
-- Important reminders
-- Scheduled checks
 `,
   };
 

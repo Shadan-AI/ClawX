@@ -18,7 +18,6 @@ const AGENT_BOOTSTRAP_FILES = [
   'TOOLS.md',
   'USER.md',
   'IDENTITY.md',
-  'HEARTBEAT.md',
   'BOOT.md',
 ];
 const AGENT_RUNTIME_FILES = [

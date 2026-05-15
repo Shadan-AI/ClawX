@@ -62,6 +62,35 @@ const CHANNEL_PLUGIN_MAP: Record<string, { dirName: string; npmName: string }> =
  * plugin and must be removed.
  */
 const BUILTIN_CHANNEL_EXTENSIONS = ['discord', 'telegram'];
+const DISABLED_HEARTBEAT_EVERY = '0m';
+
+function ensureAgentHeartbeatDisabled(config: Record<string, unknown>): boolean {
+  const agents = (
+    config.agents && typeof config.agents === 'object' && !Array.isArray(config.agents)
+      ? { ...(config.agents as Record<string, unknown>) }
+      : {}
+  );
+  const defaults = (
+    agents.defaults && typeof agents.defaults === 'object' && !Array.isArray(agents.defaults)
+      ? { ...(agents.defaults as Record<string, unknown>) }
+      : {}
+  );
+  const heartbeat = (
+    defaults.heartbeat && typeof defaults.heartbeat === 'object' && !Array.isArray(defaults.heartbeat)
+      ? { ...(defaults.heartbeat as Record<string, unknown>) }
+      : {}
+  );
+
+  if (heartbeat.every === DISABLED_HEARTBEAT_EVERY) {
+    return false;
+  }
+
+  heartbeat.every = DISABLED_HEARTBEAT_EVERY;
+  defaults.heartbeat = heartbeat;
+  agents.defaults = defaults;
+  config.agents = agents;
+  return true;
+}
 
 function cleanupStaleBuiltInExtensions(): void {
   for (const ext of BUILTIN_CHANNEL_EXTENSIONS) {
@@ -600,7 +629,17 @@ async function batchSyncGatewayConfig(appSettings: Awaited<ReturnType<typeof get
       logger.warn('Failed to sync session idle minutes in batch:', err);
     }
 
-    // 7. Re-apply box-im tokenKey
+    // 7. Disable OpenClaw agent heartbeat to prevent internal HEARTBEAT_OK/NO_REPLY
+    // turns from leaking into ClawX-visible sessions.
+    try {
+      if (ensureAgentHeartbeatDisabled(config)) {
+        modified = true;
+      }
+    } catch (err) {
+      logger.warn('Failed to disable agent heartbeat in batch:', err);
+    }
+
+    // 8. Re-apply box-im tokenKey
     try {
       const tokenKey = await getTokenKey();
       if (tokenKey) {

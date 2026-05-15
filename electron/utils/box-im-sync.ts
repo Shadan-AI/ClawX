@@ -994,7 +994,7 @@ export async function writeBoxImTokenKey(tokenKey: string, userId?: number): Pro
 
 // ── Profile Sync ─────────────────────────────────────────────────
 
-const PROFILE_FILES = ['AGENTS.md', 'SOUL.md', 'TOOLS.md', 'IDENTITY.md', 'USER.md', 'HEARTBEAT.md'];
+const PROFILE_FILES = ['AGENTS.md', 'SOUL.md', 'TOOLS.md', 'IDENTITY.md', 'USER.md'];
 
 /**
  * Calculate SHA-256 hash of file content
