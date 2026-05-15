@@ -89,12 +89,33 @@ async function readHealthState(): Promise<ConfigHealthState> {
   }
 }
 
+function isRetriableFileLockError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return code === 'EPERM' || code === 'EACCES' || code === 'EBUSY';
+}
+
+async function delay(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function writeJsonAtomic(filePath: string, data: unknown): Promise<void> {
   await mkdir(dirname(filePath), { recursive: true });
   const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   await writeFile(tmpPath, JSON.stringify(data, null, 2), 'utf-8');
   try {
-    await rename(tmpPath, filePath);
+    const retryDelays = process.platform === 'win32' ? [50, 100, 200, 400, 800, 1200] : [];
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await rename(tmpPath, filePath);
+        break;
+      } catch (error) {
+        const delayMs = retryDelays[attempt];
+        if (delayMs === undefined || !isRetriableFileLockError(error)) {
+          throw error;
+        }
+        await delay(delayMs);
+      }
+    }
   } catch (error) {
     await unlink(tmpPath).catch(() => undefined);
     throw error;

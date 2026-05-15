@@ -196,6 +196,16 @@
 ;   3. Any leftover old files that weren't removed are harmless.
 !macro customUnInstallCheck
   ${if} $R0 != 0
+    ${if} $R5 > 5
+      IfSilent 0 _cu_user_cancelled_old_uninstall
+      DetailPrint "Old uninstaller could not close the previous app in silent mode. Continuing with overwrite install..."
+      Goto _cu_continue_after_old_uninstall
+      _cu_user_cancelled_old_uninstall:
+        DetailPrint "Installation cancelled while closing the previous OpenMe installation."
+        SetErrorLevel 1
+        Quit
+      _cu_continue_after_old_uninstall:
+    ${endIf}
     DetailPrint "Old uninstaller exited with code $R0. Continuing with overwrite install..."
   ${endIf}
   ClearErrors
@@ -205,6 +215,16 @@
 ; Without this, handleUninstallResult would show a fatal error and Quit.
 !macro customUnInstallCheckCurrentUser
   ${if} $R0 != 0
+    ${if} $R5 > 5
+      IfSilent 0 _cu_user_cancelled_old_uninstall_current_user
+      DetailPrint "Old current-user uninstaller could not close the previous app in silent mode. Continuing..."
+      Goto _cu_continue_after_old_uninstall_current_user
+      _cu_user_cancelled_old_uninstall_current_user:
+        DetailPrint "Installation cancelled while closing the previous current-user OpenMe installation."
+        SetErrorLevel 1
+        Quit
+      _cu_continue_after_old_uninstall_current_user:
+    ${endIf}
     DetailPrint "Old uninstaller (current user) exited with code $R0. Continuing..."
   ${endIf}
   ClearErrors

@@ -71,6 +71,8 @@ interface ModelDropdownOption {
   label: string;
 }
 
+const CUSTOM_MODEL_OPTION_VALUE = '__custom_model__';
+
 function resolveRuntimeProviderKey(account: ProviderAccount): string {
   if (account.authMode === 'oauth_browser') {
     if (account.vendorId === 'google') return 'google-gemini-cli';
@@ -1479,7 +1481,17 @@ function AgentModelModal({
     () => buildAgentModelOptions(selectedProvider, providerAccounts, oneApiModels),
     [oneApiModels, providerAccounts, selectedProvider],
   );
+  const modelDropdownOptionIds = useMemo(
+    () => new Set(modelDropdownOptions.map((model) => model.id)),
+    [modelDropdownOptions],
+  );
   const trimmedModelId = modelIdInput.trim();
+  const modelSelectValue = !trimmedModelId
+    ? ''
+    : modelDropdownOptionIds.has(trimmedModelId)
+      ? trimmedModelId
+      : CUSTOM_MODEL_OPTION_VALUE;
+  const showCustomModelInput = modelSelectValue === CUSTOM_MODEL_OPTION_VALUE || modelDropdownOptions.length === 0;
   const nextModelRef = selectedRuntimeProviderKey && trimmedModelId
     ? `${selectedRuntimeProviderKey}/${trimmedModelId}`
     : '';
@@ -1497,6 +1509,12 @@ function AgentModelModal({
       return;
     }
     onClose();
+  };
+
+  const getPreferredModelIdForProvider = (runtimeProviderKey: string) => {
+    const provider = runtimeProviderOptions.find((candidate) => candidate.runtimeProviderKey === runtimeProviderKey) || null;
+    const options = buildAgentModelOptions(provider, providerAccounts, oneApiModels);
+    return provider?.configuredModelId || options[0]?.id || '';
   };
 
   const handleSaveModel = async () => {
@@ -1567,10 +1585,7 @@ function AgentModelModal({
               onChange={(event) => {
                 const nextProvider = event.target.value;
                 setSelectedRuntimeProviderKey(nextProvider);
-                if (!modelIdInput.trim()) {
-                  const option = runtimeProviderOptions.find((candidate) => candidate.runtimeProviderKey === nextProvider);
-                  setModelIdInput(option?.configuredModelId || '');
-                }
+                setModelIdInput(nextProvider ? getPreferredModelIdForProvider(nextProvider) : '');
               }}
               className={selectClasses}
             >
@@ -1584,24 +1599,40 @@ function AgentModelModal({
           </div>
           <div className="space-y-2">
             <Label htmlFor="agent-model-id" className="text-[12px] text-foreground/70">{t('settingsDialog.modelIdLabel')}</Label>
-            <Input
+            <select
               id="agent-model-id"
-              list="agent-model-options"
-              value={modelIdInput}
-              onChange={(event) => setModelIdInput(event.target.value)}
-              placeholder={selectedProvider?.modelIdPlaceholder || selectedProvider?.configuredModelId || t('settingsDialog.modelIdPlaceholder')}
-              className={inputClasses}
-            />
-            <datalist id="agent-model-options">
+              value={modelSelectValue}
+              onChange={(event) => {
+                const nextValue = event.target.value;
+                if (nextValue === CUSTOM_MODEL_OPTION_VALUE) {
+                  if (modelDropdownOptionIds.has(trimmedModelId)) {
+                    setModelIdInput('');
+                  }
+                  return;
+                }
+                setModelIdInput(nextValue);
+              }}
+              className={selectClasses}
+            >
+              <option value="">{selectedProvider ? '请选择模型' : '请先选择 Provider'}</option>
               {modelDropdownOptions.map((model) => (
                 <option key={model.id} value={model.id}>
                   {model.label}
                 </option>
               ))}
-            </datalist>
+              <option value={CUSTOM_MODEL_OPTION_VALUE}>自定义模型 ID...</option>
+            </select>
+            {showCustomModelInput && (
+              <Input
+                value={modelIdInput}
+                onChange={(event) => setModelIdInput(event.target.value)}
+                placeholder={selectedProvider?.modelIdPlaceholder || selectedProvider?.configuredModelId || t('settingsDialog.modelIdPlaceholder')}
+                className={inputClasses}
+              />
+            )}
             {modelDropdownOptions.length > 0 && (
               <p className="text-[12px] text-foreground/60">
-                可从当前模型列表选择，也可以直接手动输入模型 ID。
+                可从当前模型列表选择，也可以选择“自定义模型 ID”手动填写。
               </p>
             )}
           </div>
