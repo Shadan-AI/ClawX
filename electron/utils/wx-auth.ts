@@ -454,7 +454,7 @@ export async function persistLoginResult(
   // 6. Inject user-specific VNC origins into gateway.controlUi.allowedOrigins (best-effort)
   if (userId && userId > 0) {
     try {
-      await ensureVncOriginsInConfig(userId, 18789);
+      await ensureVncOriginsInConfig(userId, 18789, normalizeGatewayHost(vpnRegistration?.vncProxyUrl));
     } catch (err) {
       console.warn('[wx-auth] VNC origins inject failed (non-fatal):', err);
     }

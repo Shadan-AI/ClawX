@@ -1244,9 +1244,10 @@ export async function ensureGatewayTlsEnabledInConfig(): Promise<void> {
  * After login, inject user-specific VNC origins into gateway.controlUi.allowedOrigins.
  * Format: https://<port>-<userId>.vnc.shadanai.com
  *         https://<port>-<userId>.vnc.im.shadanai.com
+ *         https://<port>-<devicePublicId>.vpn.shadanai.com
  * Removes stale VNC entries for the same port to prevent userId drift.
  */
-export async function ensureVncOriginsInConfig(userId: number, port = 18789): Promise<void> {
+export async function ensureVncOriginsInConfig(userId: number, port = 18789, customHost?: string): Promise<void> {
   if (!userId || userId <= 0) return;
   return withConfigLock(async () => {
     const config = await readOpenClawJson();
@@ -1259,18 +1260,31 @@ export async function ensureVncOriginsInConfig(userId: number, port = 18789): Pr
     const existing = Array.isArray(cui.allowedOrigins)
       ? (cui.allowedOrigins as unknown[]).filter((x): x is string => typeof x === 'string')
       : [];
+    const customOrigin = normalizeControlUiOrigin(customHost);
     const toAdd = [
       `https://${port}-${userId}.vnc.shadanai.com`,
       `https://${port}-${userId}.vnc.im.shadanai.com`,
+      ...(customOrigin ? [customOrigin] : []),
     ];
     // Remove stale VNC entries for this port (userId may have changed)
     const vncPattern = new RegExp(`^https://${port}-\\d+\\.vnc\\.(im\\.)?shadanai\\.com$`);
-    const cleaned = existing.filter((o) => !vncPattern.test(o));
+    const vpnPattern = new RegExp(`^https://${port}-[a-z0-9]+\\.vpn\\.shadanai\\.com$`);
+    const cleaned = existing.filter((o) => !vncPattern.test(o) && !vpnPattern.test(o));
     const newOrigins = [...cleaned, ...toAdd.filter((o) => !cleaned.includes(o))];
     if (newOrigins.length === existing.length && toAdd.every((o) => existing.includes(o))) return;
     cui.allowedOrigins = newOrigins;
     await writeOpenClawJson(config);
   });
+}
+
+function normalizeControlUiOrigin(raw?: string): string | undefined {
+  const value = raw?.trim();
+  if (!value) return undefined;
+  try {
+    return new URL(value.includes('://') ? value : `https://${value}`).origin;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
