@@ -154,9 +154,11 @@ export class AppUpdater extends EventEmitter {
    * Update status and notify renderer
    */
   private updateStatus(newStatus: Partial<UpdateStatus>): void {
+    const status = newStatus.status ?? this.status.status;
+    const shouldResetInfo = status === 'checking' || status === 'idle' || status === 'error';
     this.status = {
-      status: newStatus.status ?? this.status.status,
-      info: newStatus.info,
+      status,
+      info: newStatus.info !== undefined ? newStatus.info : (shouldResetInfo ? undefined : this.status.info),
       progress: newStatus.progress,
       error: newStatus.error,
     };

@@ -897,7 +897,52 @@ exports.default = async function afterPack(context) {
       console.log(`[after-pack] 🩹 Patched ${asarLruCount} lru-cache instance(s) in app.asar.unpacked`);
     }
   }
-  // 6. [Windows only] Patch NSIS extractAppPackage.nsh to skip CopyFiles
+  // 6. [Windows only] Patch NSIS installer templates.
+  //
+  // 6a. Patch installUtil.nsh so uninstallOldVersion does not show the
+  // electron-builder Retry/Cancel dialog after the old uninstaller fails.
+  // That dialog only re-runs the old uninstaller; it does not re-run our
+  // stronger process cleanup / stale-dir move in installer.nsh, so Retry is
+  // ineffective on machines with lingering Windows file locks.  We continue
+  // with overwrite install instead, which is safe because customCheckAppRunning
+  // has already killed install-dir processes and moved the old $INSTDIR aside.
+  if (platform === 'win32') {
+    const installUtilNsh = join(
+      __dirname, '..', 'node_modules', 'app-builder-lib',
+      'templates', 'nsis', 'include', 'installUtil.nsh'
+    );
+    if (existsSync(installUtilNsh)) {
+      const { readFileSync: readFS, writeFileSync: writeFS } = require('fs');
+      const original = readFS(installUtilNsh, 'utf8');
+
+      if (original.includes('OpenMe-uninstall-retry-patched')) {
+        console.log('[after-pack] installUtil.nsh already patched (idempotent skip).');
+      } else {
+        const retryDialog = [
+          '    ${if} $R5 > 5',
+          '      MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(appCannotBeClosed)" /SD IDCANCEL IDRETRY OneMoreAttempt',
+          '      Return',
+          '    ${endIf}',
+        ].join('\n');
+        const retryBypass = [
+          '    ${if} $R5 > 5',
+          '      DetailPrint "OpenMe-uninstall-retry-patched: old uninstaller failed after retries; continuing with overwrite install."',
+          '      Return',
+          '    ${endIf}',
+        ].join('\n');
+        const patched = original.replace(retryDialog, retryBypass);
+
+        if (patched !== original) {
+          writeFS(installUtilNsh, patched, 'utf8');
+          console.log('[after-pack] Patched installUtil.nsh: old-uninstaller Retry/Cancel dialog bypassed.');
+        } else {
+          console.warn('[after-pack] installUtil.nsh retry dialog replacement did not match; template may have changed.');
+        }
+      }
+    }
+  }
+
+  // 6b. [Windows only] Patch NSIS extractAppPackage.nsh to skip CopyFiles
   //
   // electron-builder's extractUsing7za macro decompresses app-64.7z into a temp
   // directory, then uses CopyFiles to copy ~300MB (thousands of small files) to

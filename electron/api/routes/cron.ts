@@ -527,7 +527,7 @@ export async function handleCronRoutes(
         schedule: { kind: 'cron', expr: input.schedule },
         payload: { kind: 'agentTurn', message: input.message },
         enabled: input.enabled ?? true,
-        wakeMode: 'next-heartbeat',
+        wakeMode: 'now',
         sessionTarget: 'isolated',
         delivery,
       });

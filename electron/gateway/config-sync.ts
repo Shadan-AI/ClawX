@@ -752,6 +752,7 @@ export async function prepareGatewayLaunchContext(port: number): Promise<Gateway
     OPENCLAW_SKIP_CHANNELS: skipChannels ? '1' : '',
     CLAWDBOT_SKIP_CHANNELS: skipChannels ? '1' : '',
     OPENCLAW_NO_RESPAWN: '1',
+    OPENCLAW_DISABLE_AGENT_HEARTBEAT: '1',
     OPENCLAW_SKILL_MARKET_URL: SKILL_MARKET_BASE_URL,
   };
 

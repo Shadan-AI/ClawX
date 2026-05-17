@@ -540,7 +540,7 @@ function registerUnifiedRequestHandlers(gatewayManager: GatewayManager): void {
               schedule: { kind: 'cron', expr: input.schedule },
               payload: { kind: 'agentTurn', message: input.message },
               enabled: input.enabled ?? true,
-              wakeMode: 'next-heartbeat',
+              wakeMode: 'now',
               sessionTarget: 'isolated',
               delivery: normalizeCronDelivery(input.delivery),
             };
@@ -1257,7 +1257,7 @@ function registerCronHandlers(gatewayManager: GatewayManager): void {
         schedule: { kind: 'cron', expr: input.schedule },
         payload: { kind: 'agentTurn', message: input.message },
         enabled: input.enabled ?? true,
-        wakeMode: 'next-heartbeat',
+        wakeMode: 'now',
         sessionTarget: 'isolated',
         // UI-created jobs deliver results via ClawX WebSocket chat events,
         // not external messaging channels.  Setting mode='none' prevents

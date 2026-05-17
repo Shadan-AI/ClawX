@@ -1293,6 +1293,7 @@ function isInternalOnlyText(text: string): boolean {
   if (!trimmed) return false;
   if (/^(HEARTBEAT_OK|NO_REPLY)\s*$/i.test(trimmed)) return true;
   if (trimmed.startsWith('Read HEARTBEAT.md if it exists (workspace context).')) return true;
+  if (/^(?:Follow|Follow it strictly\.?|Do not infer(?: or repeat old tasks from prior chats\.)?|If nothing needs attention,\s*reply HEARTBEAT_OK\.?)$/i.test(trimmed)) return true;
   if (/^System:\s*\[[^\]]+\]\s*Exec (?:completed|failed|started)\b/i.test(trimmed)) return true;
   return false;
 }

@@ -12,7 +12,6 @@ const MD_FILES = [
   { id: 'TOOLS.md', label: 'TOOLS' },
   { id: 'IDENTITY.md', label: 'IDENTITY' },
   { id: 'USER.md', label: 'USER' },
-  { id: 'HEARTBEAT.md', label: 'HEARTBEAT' },
 ];
 
 interface AgentProfileEditorProps {

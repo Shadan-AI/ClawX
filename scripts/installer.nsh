@@ -196,6 +196,9 @@
 ;   3. Any leftover old files that weren't removed are harmless.
 !macro customUnInstallCheck
   ${if} $R0 != 0
+    ${if} $R5 > 5
+      DetailPrint "Old uninstaller could not close the previous app after retries. Continuing with overwrite install..."
+    ${endIf}
     DetailPrint "Old uninstaller exited with code $R0. Continuing with overwrite install..."
   ${endIf}
   ClearErrors
@@ -205,6 +208,9 @@
 ; Without this, handleUninstallResult would show a fatal error and Quit.
 !macro customUnInstallCheckCurrentUser
   ${if} $R0 != 0
+    ${if} $R5 > 5
+      DetailPrint "Old current-user uninstaller could not close the previous app after retries. Continuing..."
+    ${endIf}
     DetailPrint "Old uninstaller (current user) exited with code $R0. Continuing..."
   ${endIf}
   ClearErrors

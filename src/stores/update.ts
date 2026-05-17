@@ -106,24 +106,27 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
         progress?: ProgressInfo;
         error?: string;
       };
+      const shouldResetInfo = status.status === 'checking' || status.status === 'idle' || status.status === 'error';
       set({
         status: status.status,
-        updateInfo: status.info || null,
+        updateInfo: status.info || (shouldResetInfo ? null : get().updateInfo),
         progress: status.progress || null,
         error: status.error || null,
       });
 
-      // When a new version is found and auto-download is enabled, prompt the user
+      // Auto-update should be quiet: the main process downloads automatically
+      // when autoDownloadUpdate is enabled, so do not show a redundant prompt.
       if (status.status === 'available') {
         const { autoDownloadUpdate } = useSettingsStore.getState();
-        if (autoDownloadUpdate) {
-          set({ pendingAutoDownloadConfirm: true });
+        if (!autoDownloadUpdate) {
+          set({ pendingAutoDownloadConfirm: false });
         }
       }
 
       // When download completes, prompt the user to install
       if (status.status === 'downloaded') {
-        set({ pendingInstallConfirm: true });
+        const { autoDownloadUpdate } = useSettingsStore.getState();
+        set({ pendingInstallConfirm: !autoDownloadUpdate });
       }
     });
 
@@ -169,9 +172,10 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
       };
       
       if (result.status) {
+        const shouldResetInfo = result.status.status === 'checking' || result.status.status === 'idle' || result.status.status === 'error';
         set({
           status: result.status.status,
-          updateInfo: result.status.info || null,
+          updateInfo: result.status.info || (shouldResetInfo ? null : get().updateInfo),
           progress: result.status.progress || null,
           error: result.status.error || null,
         });
@@ -230,9 +234,11 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
   setAutoDownload: async (enable) => {
     try {
       await invokeIpc('update:setAutoDownload', enable);
-      // If enabling and a new version is already available, prompt immediately
+      // If enabling and a new version is already available, start downloading
+      // instead of showing a second confirmation dialog.
       if (enable && get().status === 'available') {
-        set({ pendingAutoDownloadConfirm: true });
+        set({ pendingAutoDownloadConfirm: false });
+        void get().downloadUpdate();
       }
     } catch (error) {
       console.error('Failed to set auto-download:', error);

@@ -234,6 +234,32 @@ export async function launchGatewayProcess(options: {
       }
     });
 
+    // Always drain stdout. OpenClaw writes normal/info startup logs to stdout
+    // (including startup timing diagnostics). When the packaged app launches
+    // the gateway with stdio=pipe and nobody reads stdout, Windows can fill the
+    // pipe buffer and block the gateway process before it reaches readiness.
+    // Dev mode does not hit this as easily because stdout is consumed by the
+    // terminal, which is why installed builds could be much slower than dev.
+    let stdoutRemainder = '';
+    child.stdout?.on('data', (data) => {
+      const raw = stdoutRemainder + data.toString();
+      const lines = raw.split(/\r?\n/);
+      stdoutRemainder = lines.pop() ?? '';
+      for (const line of lines) {
+        const normalized = line.trim();
+        if (!normalized) continue;
+        if (
+          normalized.includes('[startup-timing]') ||
+          normalized.includes('listening on ') ||
+          normalized.includes('agent model:') ||
+          normalized.includes('Gateway started') ||
+          normalized.includes('gateway:')
+        ) {
+          logger.debug(`[Gateway stdout] ${normalized}`);
+        }
+      }
+    });
+
     child.on('spawn', () => {
       logger.info(`Gateway process started (pid=${child.pid})`);
       options.onSpawn(child.pid);

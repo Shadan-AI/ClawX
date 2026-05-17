@@ -33,6 +33,8 @@ const WINDOWS_USAGE_FETCH_MAX_ATTEMPTS = 3;
 const USAGE_FETCH_RETRY_DELAY_MS = 1500;
 const USAGE_AUTO_REFRESH_INTERVAL_MS = 15_000;
 const HIDDEN_USAGE_MARKERS = ['gateway-injected', 'delivery-mirror'];
+const RECHARGE_STATUS_POLL_INTERVAL_MS = 3_000;
+const RECHARGE_STATUS_POLL_TIMEOUT_MS = 180_000;
 
 type OneApiAccountSummary = {
   loggedIn: boolean;
@@ -150,6 +152,30 @@ function parseRechargeAmountInput(value: string): number | null {
   return Math.round(parsed * 100) / 100;
 }
 
+function getRechargeBalanceSignals(summary: OneApiAccountSummary | null): number[] {
+  if (!summary) return [];
+  return [
+    summary.totalAmount,
+    summary.remainingAmount,
+    summary.totalQuota,
+    summary.remainingQuota,
+  ].filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+}
+
+function hasRechargeBalanceIncreased(
+  before: OneApiAccountSummary | null,
+  after: OneApiAccountSummary | null,
+): boolean {
+  const beforeSignals = getRechargeBalanceSignals(before);
+  const afterSignals = getRechargeBalanceSignals(after);
+  if (beforeSignals.length === 0 || afterSignals.length === 0) return false;
+
+  return afterSignals.some((value, index) => {
+    const previous = beforeSignals[index];
+    return typeof previous === 'number' && value > previous + 0.000001;
+  });
+}
+
 function buildRechargeUrl(_summary?: OneApiAccountSummary, _amount?: number): string | null {
   return null;
 }
@@ -233,6 +259,16 @@ export function Models() {
   const usageFetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const usageFetchGenerationRef = useRef(0);
   const usageFetchStatusRef = useRef<FetchState['status']>('idle');
+  const rechargeBaselineRef = useRef<OneApiAccountSummary | null>(null);
+  const rechargePollTimerRef = useRef<number | null>(null);
+  const rechargePollStartedAtRef = useRef(0);
+
+  const stopRechargePolling = useCallback(() => {
+    if (rechargePollTimerRef.current) {
+      window.clearInterval(rechargePollTimerRef.current);
+      rechargePollTimerRef.current = null;
+    }
+  }, []);
 
   const _loadAccountSummary = useCallback(async (options?: {
     silent?: boolean;
@@ -296,6 +332,56 @@ export function Models() {
     trackUiEvent('models.page_viewed');
     void refreshAccountSummary();
   }, [refreshAccountSummary]);
+
+  const closeRechargeDialog = useCallback(async (options?: {
+    refresh?: boolean;
+    paid?: boolean;
+  }) => {
+    stopRechargePolling();
+    setRechargeDialogOpen(false);
+    setRechargeOrder(null);
+    setCustomRechargeAmount('');
+    rechargeBaselineRef.current = null;
+
+    if (options?.refresh) {
+      await refreshAccountSummary({ silent: false, showToastOnError: true });
+    }
+    if (options?.paid) {
+      toast.success('支付成功，余额已刷新');
+    }
+  }, [refreshAccountSummary, stopRechargePolling]);
+
+  useEffect(() => {
+    stopRechargePolling();
+
+    if (!rechargeDialogOpen || !rechargeOrder) {
+      return undefined;
+    }
+
+    rechargePollStartedAtRef.current = Date.now();
+    rechargePollTimerRef.current = window.setInterval(() => {
+      void (async () => {
+        if (Date.now() - rechargePollStartedAtRef.current > RECHARGE_STATUS_POLL_TIMEOUT_MS) {
+          stopRechargePolling();
+          return;
+        }
+
+        try {
+          const summary = await hostApiFetch<OneApiAccountSummary>('/api/oneapi/account-summary');
+          setAccountSummary(summary);
+          if (hasRechargeBalanceIncreased(rechargeBaselineRef.current, summary)) {
+            await closeRechargeDialog({ paid: true });
+          }
+        } catch {
+          // Keep polling quietly; users can still close the dialog to refresh manually.
+        }
+      })();
+    }, RECHARGE_STATUS_POLL_INTERVAL_MS);
+
+    return () => {
+      stopRechargePolling();
+    };
+  }, [closeRechargeDialog, rechargeDialogOpen, rechargeOrder, stopRechargePolling]);
 
   useEffect(() => {
     if (!isGatewayRunning) {
@@ -503,6 +589,7 @@ export function Models() {
       if (!result.success) {
         throw new Error('微信充值失败');
       }
+      rechargeBaselineRef.current = accountSummary;
       setRechargeOrder(result);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -957,9 +1044,7 @@ export function Models() {
           loading={rechargeLoading}
           order={rechargeOrder}
           onClose={() => {
-            setRechargeDialogOpen(false);
-            setRechargeOrder(null);
-            setCustomRechargeAmount('');
+            void closeRechargeDialog({ refresh: !!rechargeOrder });
           }}
           onConfirm={() => void startWechatRecharge()}
           onBack={() => {
