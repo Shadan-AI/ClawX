@@ -509,6 +509,7 @@ async function registerDeviceWithImServer(
   const protocol = 'https';
   const lanIp = detectLanIp();
   const vpnIp = normalizeWireGuardIp(vpnRegistration);
+  const customHost = normalizeGatewayHost(vpnRegistration?.vncProxyUrl);
 
   // Detect WAN IP (best-effort, short timeout)
   let wanIp: string | undefined;
@@ -527,6 +528,7 @@ async function registerDeviceWithImServer(
     lanIp,
     wanIp,
     vpnIp,
+    customHost,
     openclawPort: GATEWAY_PORT,
     protocol,       // always 'https' — matches buildOpenClawControlUiUrl behavior
     gatewayToken,   // clawx-<hex> from electron-store, same as Settings → Gateway shows
@@ -543,7 +545,22 @@ async function registerDeviceWithImServer(
     const text = await res.text().catch(() => '');
     throw new Error(`Device register failed: ${res.status} ${text}`);
   }
-  console.log(`[wx-auth] Device registered: ${protocol}://${vpnIp ?? lanIp ?? 'unknown'}:${GATEWAY_PORT}/#token=${gatewayToken}`);
+  const registeredHost = customHost ? `${protocol}://${customHost}` : `${protocol}://${vpnIp ?? lanIp ?? 'unknown'}:${GATEWAY_PORT}`;
+  console.log(`[wx-auth] Device registered: ${registeredHost}/#token=${gatewayToken}`);
+}
+
+function normalizeGatewayHost(raw?: string): string | undefined {
+  if (!raw) return undefined;
+  try {
+    const url = new URL(raw);
+    return url.hostname || undefined;
+  } catch {
+    return raw
+      .replace(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//, '')
+      .split(/[/?#]/, 1)[0]
+      ?.split(':', 1)[0]
+      ?.trim() || undefined;
+  }
 }
 
 function normalizeWireGuardIp(registration?: WireGuardRegistration): string | undefined {

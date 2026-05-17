@@ -6,6 +6,8 @@ import { access, chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { basename, delimiter, dirname, extname, join } from 'node:path';
 
 export interface WireGuardRegistration {
+  devicePublicId?: string;
+  vncProxyUrl?: string;
   vpnIp: string;
   clientAddress: string;
   serverPublicKey: string;
