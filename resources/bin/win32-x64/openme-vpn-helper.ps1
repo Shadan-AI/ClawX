@@ -240,6 +240,79 @@ function Wait-ServiceRunning([string]$ServiceName) {
   throw "Service did not reach Running state: $ServiceName status=$($svc.Status)"
 }
 
+function Wait-ServiceStopped([string]$ServiceName) {
+  for ($i = 0; $i -lt 20; $i++) {
+    $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    if (-not $svc) {
+      Write-Log "Service is missing after stop: $ServiceName"
+      return $true
+    }
+    if ($svc.Status -eq "Stopped") {
+      Write-Log "Service is stopped: $ServiceName"
+      return $true
+    }
+    Start-Sleep -Seconds 1
+  }
+
+  $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+  if (-not $svc) {
+    Write-Log "Service is missing after stop wait: $ServiceName"
+    return $true
+  }
+  Write-Log "Service did not reach Stopped state: $ServiceName status=$($svc.Status)"
+  return $false
+}
+
+function Start-TunnelService([string]$ServiceName) {
+  try {
+    $service = Get-Service -Name $ServiceName -ErrorAction Stop
+    if ($service.Status -ne "Running") {
+      Start-Service -Name $ServiceName -ErrorAction Stop
+    }
+    Wait-ServiceRunning $ServiceName
+  } catch {
+    Write-Log "Failed to start service $ServiceName admin=$(Test-Administrator): $($_.Exception.Message)"
+    if (-not (Test-Administrator)) {
+      Invoke-Elevated
+    }
+    throw
+  }
+}
+
+function Stop-TunnelService([string]$ServiceName) {
+  $stopError = $null
+  try {
+    $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    if (-not $service) {
+      Write-Log "Service not found before stop: $ServiceName"
+      return
+    }
+    if ($service.Status -ne "Stopped") {
+      Stop-Service -Name $ServiceName -ErrorAction Stop
+    }
+  } catch {
+    $stopError = $_
+    Write-Log "Failed to stop service $ServiceName admin=$(Test-Administrator): $($_.Exception.Message)"
+  }
+
+  if ((-not $stopError) -and (Wait-ServiceStopped $ServiceName)) {
+    return
+  }
+
+  if (-not (Test-Administrator)) {
+    Write-Log "Stop requires elevation or additional wait: $ServiceName"
+    Invoke-Elevated
+  }
+
+  if ($stopError) {
+    throw $stopError
+  }
+  $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+  if ($service -and $service.Status -ne "Stopped") {
+    throw "Service did not reach Stopped state: $ServiceName status=$($service.Status)"
+  }
+}
+
 Write-Log "Helper start: action=$Action config=$ConfigPath admin=$(Test-Administrator)"
 
 Invoke-ElevatedIfRequired
@@ -280,23 +353,15 @@ switch ($Action) {
     }
     Grant-TunnelServiceUserControl $serviceName
     Stop-WireGuardGuiProcesses -Attempts 3
-    $service = Get-Service -Name $serviceName -ErrorAction Stop
-    if ($service.Status -ne "Running") {
-      Start-Service -Name $serviceName -ErrorAction Stop
-    }
-    Wait-ServiceRunning $serviceName
+    Start-TunnelService $serviceName
     Write-ServiceStatus $serviceName
   }
   "start" {
-    $service = Get-Service -Name $serviceName -ErrorAction Stop
-    if ($service.Status -ne "Running") {
-      Start-Service -Name $serviceName -ErrorAction Stop
-    }
-    Wait-ServiceRunning $serviceName
+    Start-TunnelService $serviceName
     Write-ServiceStatus $serviceName
   }
   "stop" {
-    Stop-Service -Name $serviceName -ErrorAction SilentlyContinue
+    Stop-TunnelService $serviceName
     Write-ServiceStatus $serviceName | Out-Null
   }
   "uninstall" {
