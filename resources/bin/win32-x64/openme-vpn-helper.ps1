@@ -1,6 +1,6 @@
 param(
   [Parameter(Mandatory = $true)]
-  [ValidateSet("install-start", "stop", "uninstall", "status")]
+  [ValidateSet("install-start", "start", "stop", "uninstall", "status")]
   [string]$Action,
 
   [Parameter(Mandatory = $true)]
@@ -56,6 +56,15 @@ function Invoke-Elevated {
 
   $proc = Start-Process -FilePath $powershellPath -ArgumentList $elevatedArgs -Verb RunAs -WindowStyle Hidden -Wait -PassThru
   exit $proc.ExitCode
+}
+
+function Invoke-ElevatedIfRequired {
+  if (Test-Administrator) {
+    return
+  }
+  if ($Action -eq "install-start" -or $Action -eq "uninstall") {
+    Invoke-Elevated
+  }
 }
 
 function Find-WireGuardExe {
@@ -135,7 +144,53 @@ function Install-BundledWireGuard {
     throw "Bundled WireGuard install failed with exit code $exitCode. Log: $logPath"
   }
 
+  Stop-WireGuardGuiProcesses -Attempts 5
   return $true
+}
+
+function Stop-WireGuardGuiProcesses([int]$Attempts = 1) {
+  for ($i = 0; $i -lt $Attempts; $i++) {
+    try {
+      $procs = Get-CimInstance Win32_Process -Filter "Name='wireguard.exe'" -ErrorAction SilentlyContinue
+      foreach ($proc in ($procs | Where-Object {
+        $cmd = [string]$_.CommandLine
+        -not [string]::IsNullOrWhiteSpace($cmd) -and
+        $cmd -notmatch '/tunnelservice' -and
+        $cmd -notmatch '/installtunnelservice' -and
+        $cmd -notmatch '/uninstalltunnelservice' -and
+        $cmd -notmatch '/managerservice'
+      })) {
+        Write-Log "Stopping WireGuard GUI process pid=$($proc.ProcessId) cmd=$($proc.CommandLine)"
+        Invoke-CimMethod -InputObject $proc -MethodName Terminate | Out-Null
+      }
+    } catch {
+      Write-Log "Failed to stop WireGuard GUI processes: $($_.Exception.Message)"
+    }
+    if ($i -lt ($Attempts - 1)) {
+      Start-Sleep -Seconds 1
+    }
+  }
+}
+
+function Grant-TunnelServiceUserControl([string]$ServiceName) {
+  try {
+    $sddlOutput = & sc.exe sdshow $ServiceName 2>$null
+    $sddl = ($sddlOutput | Out-String).Trim()
+    if (-not $sddl) {
+      Write-Log "Service SDDL empty for $ServiceName"
+      return
+    }
+    if ($sddl -match ";;;IU\)") {
+      Write-Log "Service SDDL already contains IU ACE for $ServiceName"
+      return
+    }
+    $ace = "(A;;LCRPWPDTLO;;;IU)"
+    $next = $sddl -replace '^D:', "D:$ace"
+    & sc.exe sdset $ServiceName $next | Out-Null
+    Write-Log "Granted interactive user start/stop rights for $ServiceName exit=$LASTEXITCODE"
+  } catch {
+    Write-Log "Failed to grant service user control for $ServiceName`: $($_.Exception.Message)"
+  }
 }
 
 function Get-TunnelName([string]$Path) {
@@ -187,27 +242,27 @@ function Wait-ServiceRunning([string]$ServiceName) {
 
 Write-Log "Helper start: action=$Action config=$ConfigPath admin=$(Test-Administrator)"
 
-if (-not (Test-Administrator)) {
-  Invoke-Elevated
-}
+Invoke-ElevatedIfRequired
 
 if ($Action -eq "install-start" -and -not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
   throw "WireGuard config not found: $ConfigPath"
 }
 
 $wireGuardExe = Find-WireGuardExe
-if (-not $wireGuardExe) {
+if (-not $wireGuardExe -and $Action -eq "install-start") {
   if (Install-BundledWireGuard) {
     $wireGuardExe = Wait-WireGuardExe
   }
 }
 
-if (-not $wireGuardExe) {
+if (-not $wireGuardExe -and ($Action -eq "install-start" -or $Action -eq "uninstall")) {
   Write-Log "WireGuard executable unavailable after lookup/install"
   Write-Error "WireGuard for Windows was not found and bundled installation did not provide wireguard.exe."
   exit 20
 }
-Write-Log "Using WireGuard executable: $wireGuardExe"
+if ($wireGuardExe) {
+  Write-Log "Using WireGuard executable: $wireGuardExe"
+}
 
 $tunnelName = Get-TunnelName $ConfigPath
 $serviceName = "WireGuardTunnel`$$tunnelName"
@@ -223,6 +278,16 @@ switch ($Action) {
     if ($scExitCode -ne 0) {
       throw "sc.exe config failed with exit code $scExitCode for service $serviceName"
     }
+    Grant-TunnelServiceUserControl $serviceName
+    Stop-WireGuardGuiProcesses -Attempts 3
+    $service = Get-Service -Name $serviceName -ErrorAction Stop
+    if ($service.Status -ne "Running") {
+      Start-Service -Name $serviceName -ErrorAction Stop
+    }
+    Wait-ServiceRunning $serviceName
+    Write-ServiceStatus $serviceName
+  }
+  "start" {
     $service = Get-Service -Name $serviceName -ErrorAction Stop
     if ($service.Status -ne "Running") {
       Start-Service -Name $serviceName -ErrorAction Stop

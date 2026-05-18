@@ -278,8 +278,16 @@ async function startWireGuardWindows(configPath: string): Promise<'started' | 'c
     throw new Error(`Windows VPN helper was not found. Checked: ${helperCandidates.join(', ')}`);
   }
 
+  const serviceName = `WireGuardTunnel$${getTunnelNameFromConfigPath(configPath)}`;
+  const statusBefore = await getWindowsTunnelServiceStatus(serviceName).catch(() => '');
+  if (statusBefore.includes('state=Running')) {
+    console.log(`[wireguard-vpn] Windows tunnel service already running:\n${statusBefore}`);
+    return 'started';
+  }
+
   const powershell = getWindowsPowerShellPath();
-  console.log(`[wireguard-vpn] Starting Windows tunnel via helper: ${helperPath}`);
+  const action = statusBefore.includes('state=missing') ? 'install-start' : 'start';
+  console.log(`[wireguard-vpn] Starting Windows tunnel via helper: ${helperPath} action=${action}`);
   try {
     const output = await execFileText(
       powershell,
@@ -290,7 +298,7 @@ async function startWireGuardWindows(configPath: string): Promise<'started' | 'c
         '-File',
         helperPath,
         '-Action',
-        'install-start',
+        action,
         '-ConfigPath',
         configPath,
       ],
@@ -336,7 +344,7 @@ async function stopWireGuardWindows(configPath: string): Promise<'stopped' | 'no
         '-File',
         helperPath,
         '-Action',
-        'uninstall',
+        'stop',
         '-ConfigPath',
         configPath,
       ],
@@ -354,8 +362,8 @@ async function stopWireGuardWindows(configPath: string): Promise<'stopped' | 'no
 
   const statusAfter = await getWindowsTunnelServiceStatus(serviceName);
   console.log(`[wireguard-vpn] Windows tunnel service after stop:\n${statusAfter}`);
-  if (!statusAfter.includes('state=missing')) {
-    throw new Error(`Windows tunnel service still exists after uninstall: ${statusAfter}`);
+  if (!statusAfter.includes('state=Stopped') && !statusAfter.includes('state=missing')) {
+    throw new Error(`Windows tunnel service still running after stop: ${statusAfter}`);
   }
   return 'stopped';
 }

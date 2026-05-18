@@ -79,6 +79,7 @@ import {
   sendSmsCode,
   persistLoginResult,
 } from '../utils/wx-auth';
+import { stopWireGuard } from '../utils/wireguard-vpn';
 
 /**
  * Register all IPC handlers
@@ -901,6 +902,17 @@ function registerBoxImConfigHandlers(): void {
 
   ipcMain.handle('box-im:logout', async () => {
     try {
+      if (process.platform === 'win32') {
+        const vpnStopResult = await stopWireGuard();
+        logger.info(`[box-im] WireGuard VPN stop during logout: ${vpnStopResult}`);
+      } else {
+        try {
+          const vpnStopResult = await stopWireGuard();
+          logger.info(`[box-im] WireGuard VPN stop during logout: ${vpnStopResult}`);
+        } catch (err) {
+          logger.warn('[box-im] Non-Windows WireGuard VPN stop failed during logout; continuing logout:', err);
+        }
+      }
       await logoutBoxIm();
       return { success: true };
     } catch (err) {

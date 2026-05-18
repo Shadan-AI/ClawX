@@ -415,7 +415,50 @@ export async function persistLoginResult(
     console.warn('[wx-auth] Bot sync failed (non-fatal):', err);
   }
 
-  // 6. Register this machine as a WireGuard peer and start the tunnel (best-effort).
+  await setupLoggedInWireGuard(tokenKey, nodeId, userId, imApiUrl, 'login');
+}
+
+let loggedInWireGuardEnsurePromise: Promise<void> | undefined;
+
+/**
+ * Restore VPN for a persisted Box-IM login. Login state survives process
+ * restarts, but the WireGuard tunnel may have been stopped during app quit.
+ */
+export async function ensureLoggedInWireGuard(reason = 'startup'): Promise<boolean> {
+  if (loggedInWireGuardEnsurePromise) {
+    await loggedInWireGuardEnsurePromise;
+    return true;
+  }
+
+  loggedInWireGuardEnsurePromise = (async () => {
+    const cfg = await readOpenClawConfig();
+    const boxImCfg = ((cfg.channels?.[CHANNEL_ID] ?? {}) as Record<string, unknown>);
+    const ownerAuth = ((boxImCfg.ownerAuth ?? {}) as Record<string, unknown>);
+    const tokenKey = typeof ownerAuth.tokenKey === 'string' ? ownerAuth.tokenKey.trim() : '';
+    if (!tokenKey) return;
+
+    const userId = typeof ownerAuth.userId === 'number' ? ownerAuth.userId : undefined;
+    const configuredNodeId = typeof ownerAuth.nodeId === 'string' ? ownerAuth.nodeId.trim() : '';
+    const nodeId = configuredNodeId || await getOrCreateDeviceId(userId);
+    const imApiUrl = resolveImApiUrl(boxImCfg.apiUrl);
+    await setupLoggedInWireGuard(tokenKey, nodeId, userId, imApiUrl, reason);
+  })();
+
+  try {
+    await loggedInWireGuardEnsurePromise;
+    return true;
+  } finally {
+    loggedInWireGuardEnsurePromise = undefined;
+  }
+}
+
+async function setupLoggedInWireGuard(
+  tokenKey: string,
+  nodeId: string,
+  userId: number | undefined,
+  imApiUrl: string,
+  reason: string,
+): Promise<void> {
   let vpnRegistration: WireGuardRegistration | undefined;
   try {
     const { privateKey, publicKey } = await getOrCreateWireGuardKeys();
@@ -434,7 +477,7 @@ export async function persistLoginResult(
     } else if (startMode === 'config-written') {
       console.log(`[wx-auth] WireGuard config written for manual import/start: ${configPath}`);
     } else {
-      console.log(`[wx-auth] WireGuard VPN started: ${vpnRegistration.clientAddress} via ${vpnRegistration.serverEndpoint}`);
+      console.log(`[wx-auth] WireGuard VPN started (${reason}): ${vpnRegistration.clientAddress} via ${vpnRegistration.serverEndpoint}`);
     }
     const vpnIp = normalizeWireGuardIp(vpnRegistration);
     if (process.platform === 'win32' && vpnIp) {
@@ -448,10 +491,9 @@ export async function persistLoginResult(
       }
     }
   } catch (err) {
-    console.warn('[wx-auth] WireGuard VPN setup failed (non-fatal):', err);
+    console.warn(`[wx-auth] WireGuard VPN setup failed during ${reason} (non-fatal):`, err);
   }
 
-  // 6. Inject user-specific VNC origins into gateway.controlUi.allowedOrigins (best-effort)
   if (userId && userId > 0) {
     try {
       await ensureVncOriginsInConfig(userId, 18789, normalizeGatewayHost(vpnRegistration?.vncProxyUrl));
@@ -460,8 +502,6 @@ export async function persistLoginResult(
     }
   }
 
-  // 6. Register device with IM server so it can build the iframe URL:
-  //    https://<accessip>:18789/#token=<gatewayToken>
   try {
     await registerDeviceWithImServer(tokenKey, nodeId, userId, imApiUrl, vpnRegistration);
   } catch (err) {

@@ -607,14 +607,20 @@ async function initialize(): Promise<void> {
     }, 30_000);
   }
 
-  // Auto-sync Box-IM bot agents if user is logged in (ensures auth-profiles.json are up-to-date)
-  // Delayed by 3 seconds to avoid conflict with login-time sync
+  // Restore Box-IM runtime side effects if user is already logged in:
+  // bot sync plus VPN tunnel startup. Login state persists across restarts,
+  // but the WireGuard tunnel may have been stopped during app quit.
   if (!isE2EMode) {
     setTimeout(async () => {
       const { getTokenKey, syncBots } = await import('../utils/box-im-sync');
       try {
         const tokenKey = await getTokenKey();
         if (tokenKey) {
+          const { ensureLoggedInWireGuard } = await import('../utils/wx-auth');
+          logger.debug('[box-im] User is logged in, ensuring WireGuard VPN is started...');
+          await ensureLoggedInWireGuard('startup');
+          logger.info('[box-im] WireGuard VPN startup ensure completed');
+
           logger.debug('[box-im] User is logged in, auto-syncing bot agents...');
           await syncBots();
           logger.info('[box-im] Bot agents auto-sync completed');
