@@ -58,6 +58,7 @@ import { syncAllDigitalEmployeeModels } from '../utils/agent-config';
 export interface GatewayStatus {
   state: GatewayLifecycleState;
   port: number;
+  tls?: boolean;
   pid?: number;
   uptime?: number;
   error?: string;
@@ -858,6 +859,7 @@ export class GatewayManager extends EventEmitter {
         this.setStatus({
           state: 'running',
           port,
+          tls,
           connectedAt: Date.now(),
         });
         this.startPing();

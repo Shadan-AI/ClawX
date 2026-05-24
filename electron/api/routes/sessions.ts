@@ -16,6 +16,9 @@ type LocalSessionIndexEntry = {
   updatedAt?: number;
   sessionId?: string;
   sessionFile?: string;
+  cliSessionIds?: Record<string, string>;
+  cliSessionId?: string;
+  claudeCliSessionId?: string;
 };
 
 type TranscriptSidebarMeta = {
@@ -291,7 +294,7 @@ async function shouldPruneEmptyTranscriptSessionEntry(
 }
 
 function resolveLocalSessionEntry(
-  agentId: string,
+  _agentId: string,
   sessionKey: string,
   value: unknown,
   sessionsDir: string,
@@ -324,7 +327,18 @@ function resolveLocalSessionEntry(
     updatedAt: coerceUpdatedAt(entry?.updatedAt),
     sessionId,
     sessionFile,
+    cliSessionIds: coerceCliSessionIds(entry?.cliSessionIds),
+    cliSessionId: coerceNonEmptyString(entry?.cliSessionId),
+    claudeCliSessionId: coerceNonEmptyString(entry?.claudeCliSessionId),
   };
+}
+
+function coerceCliSessionIds(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .map(([provider, sessionId]) => [provider.trim().toLowerCase(), coerceNonEmptyString(sessionId)] as const)
+    .filter((entry): entry is readonly [string, string] => Boolean(entry[0] && entry[1]));
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
 async function shouldPruneDanglingSessionEntry(
@@ -732,9 +746,10 @@ export async function handleSessionRoutes(
       let indexDeleted = false;
       if (Array.isArray(json2.sessions)) {
         const before = json2.sessions.length;
-        json2.sessions = (json2.sessions as Array<Record<string, unknown>>)
+        const nextSessions = (json2.sessions as Array<Record<string, unknown>>)
           .filter((s) => s.key !== sessionKey && s.sessionKey !== sessionKey);
-        indexDeleted = json2.sessions.length !== before;
+        json2.sessions = nextSessions;
+        indexDeleted = nextSessions.length !== before;
       } else if (json2[sessionKey]) {
         delete json2[sessionKey];
         indexDeleted = true;

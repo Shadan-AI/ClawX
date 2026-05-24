@@ -736,7 +736,12 @@ function AgentCard({
   
   const handleChatWithAgent = () => {
     // 跳转到对话页面，并通过 state 传递需要创建新会话的 agentId
-    navigate('/', { state: { createNewSessionFor: agent.id } });
+    navigate('/', {
+      state: {
+        createNewSessionFor: agent.id,
+        createNativeCliSession: agent.runtime?.type === 'native-cli',
+      },
+    });
   };
   
   const boundChannelAccounts = channelGroups.flatMap((group) =>
@@ -948,6 +953,9 @@ function AddAgentDialog({
   const [headImage, setHeadImage] = useState('');
   const [selectedModel, setSelectedModel] = useState('');
   const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(null);
+  const [runtimeType, setRuntimeType] = useState<'embedded' | 'native-cli'>('embedded');
+  const [cliCommand, setCliCommand] = useState('');
+  const [cliArgs, setCliArgs] = useState('');
   const [saving, setSaving] = useState(false);
   
   const { models, fetchModels, createDigitalEmployee, fetchDigitalEmployees } = useModelsStore();
@@ -1076,6 +1084,29 @@ function AddAgentDialog({
         
         // 再次刷新以显示新的频道和模板
         await Promise.all([onRefresh(), fetchAgents()]);
+
+        // 写入 runtime 配置（如果选择了 native-cli）
+        if (runtimeType === 'native-cli' && cliCommand.trim()) {
+          try {
+            const runtime = {
+              type: 'native-cli' as const,
+              nativeCli: {
+                provider: cliCommand.trim().split('/')[0] || 'custom',
+                command: cliCommand.trim(),
+                ...(cliArgs.trim() ? { args: cliArgs.trim().split(/\s+/) } : {}),
+              },
+            };
+            await hostApiFetch(`/api/agents/${encodeURIComponent(employee.openclawAgentId)}/runtime`, {
+              method: 'PUT',
+              body: JSON.stringify({ runtime }),
+            });
+            console.log('[AddAgentDialog] Runtime config saved:', runtime);
+          } catch (runtimeErr) {
+            console.error('[AddAgentDialog] Failed to save runtime config:', runtimeErr);
+            toast.warning('运行方式配置保存失败');
+          }
+          await fetchAgents();
+        }
       } catch (syncErr) {
         console.error('[AddAgentDialog] Failed to sync bots:', syncErr);
         toast.error('频道同步失败: ' + String(syncErr));
@@ -1165,6 +1196,48 @@ function AddAgentDialog({
             </select>
             <p className="text-[12px] text-foreground/60">选择模板后将自动配置对应的技能</p>
           </div>
+
+          {/* Runtime 选择 */}
+          <div className="space-y-2.5">
+            <Label className={labelClasses}>运行方式</Label>
+            <select
+              value={runtimeType}
+              onChange={(e) => setRuntimeType(e.target.value as 'embedded' | 'native-cli')}
+              className={`${selectClasses} cursor-pointer`}
+            >
+              <option value="embedded">默认（内置）</option>
+              <option value="native-cli">本地 CLI</option>
+            </select>
+            <p className="text-[12px] text-foreground/60">
+              {runtimeType === 'embedded'
+                ? 'AI 对话由内置引擎处理'
+                : '通过本地终端启动 CLI 工具（如 Claude Code）'}
+            </p>
+          </div>
+
+          {/* Native CLI 配置 */}
+          {runtimeType === 'native-cli' && (
+            <>
+              <div className="space-y-2.5">
+                <Label className={labelClasses}>启动命令</Label>
+                <Input
+                  value={cliCommand}
+                  onChange={(e) => setCliCommand(e.target.value)}
+                  placeholder="如：claude、codex"
+                  className={inputClasses}
+                />
+              </div>
+              <div className="space-y-2.5">
+                <Label className={labelClasses}>参数（可选）</Label>
+                <Input
+                  value={cliArgs}
+                  onChange={(e) => setCliArgs(e.target.value)}
+                  placeholder="如：--dangerously-skip-permissions"
+                  className={inputClasses}
+                />
+              </div>
+            </>
+          )}
           
           <div className="flex justify-end gap-2">
             <Button

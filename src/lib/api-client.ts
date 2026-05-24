@@ -101,6 +101,7 @@ let transportConfig: ApiClientTransportConfig = {
 
 type GatewayStatusLike = {
   port?: unknown;
+  tls?: unknown;
 };
 
 type HttpTransportOptions = {
@@ -144,30 +145,31 @@ function normalizeGatewayRpcEnvelope(value: unknown): { success: boolean; result
   return { success: true, result: value };
 }
 
-let cachedGatewayPort: { port: number; expiresAt: number } | null = null;
+let cachedGatewayStatus: { port: number; tls: boolean; expiresAt: number } | null = null;
 const transportBackoffUntil: Partial<Record<Exclude<TransportKind, 'ipc'>, number>> = {};
 const SLOW_REQUEST_THRESHOLD_MS = 800;
 
-async function resolveGatewayPort(): Promise<number> {
+async function resolveGatewayStatus(): Promise<{ port: number; tls: boolean }> {
   const now = Date.now();
-  if (cachedGatewayPort && cachedGatewayPort.expiresAt > now) {
-    return cachedGatewayPort.port;
+  if (cachedGatewayStatus && cachedGatewayStatus.expiresAt > now) {
+    return { port: cachedGatewayStatus.port, tls: cachedGatewayStatus.tls };
   }
 
   const status = await invokeViaIpc<GatewayStatusLike>('gateway:status', []);
   const port = typeof status?.port === 'number' && status.port > 0 ? status.port : 18789;
-  cachedGatewayPort = { port, expiresAt: now + 5000 };
-  return port;
+  const tls = status?.tls === true;
+  cachedGatewayStatus = { port, tls, expiresAt: now + 5000 };
+  return { port, tls };
 }
 
 export async function resolveDefaultGatewayHttpBaseUrl(): Promise<string> {
-  const port = await resolveGatewayPort();
-  return `http://127.0.0.1:${port}`;
+  const { port, tls } = await resolveGatewayStatus();
+  return `${tls ? 'https' : 'http'}://127.0.0.1:${port}`;
 }
 
 export async function resolveDefaultGatewayWsUrl(): Promise<string> {
-  const port = await resolveGatewayPort();
-  return `ws://127.0.0.1:${port}/ws`;
+  const { port, tls } = await resolveGatewayStatus();
+  return `${tls ? 'wss' : 'ws'}://127.0.0.1:${port}/ws`;
 }
 
 class TransportUnsupportedError extends Error {

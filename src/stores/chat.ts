@@ -786,6 +786,11 @@ function buildFallbackMainSessionKey(agentId: string): string {
   return `agent:${normalizeAgentId(agentId)}:main`;
 }
 
+function buildNativeCliSessionKey(agentId: string): string {
+  const shortId = Math.random().toString(36).slice(2, 10);
+  return `agent:${normalizeAgentId(agentId)}:cli:${shortId}`;
+}
+
 function resolveMainSessionKeyForAgent(agentId: string | undefined | null): string | null {
   if (!agentId) return null;
   const normalizedAgentId = normalizeAgentId(agentId);
@@ -939,6 +944,14 @@ function mapRawSessionList(rawSessions: unknown): ChatSession[] {
       origin?.label ? String(origin.label) : undefined,
     );
 
+    const cliSessionIds = s.cliSessionIds && typeof s.cliSessionIds === 'object' && !Array.isArray(s.cliSessionIds)
+      ? Object.fromEntries(
+        Object.entries(s.cliSessionIds as Record<string, unknown>)
+          .map(([provider, sessionId]) => [provider.trim().toLowerCase(), typeof sessionId === 'string' ? sessionId.trim() : ''] as const)
+          .filter((entry) => entry[0] && entry[1]),
+      )
+      : undefined;
+
     return {
       key: sessionKey,
       label: s.label ? String(s.label) : undefined,
@@ -948,6 +961,9 @@ function mapRawSessionList(rawSessions: unknown): ChatSession[] {
       updatedAt: parseSessionUpdatedAtMs(s.updatedAt),
       sessionId: s.sessionId ? String(s.sessionId) : undefined,
       sessionFile: s.sessionFile ? String(s.sessionFile) : undefined,
+      cliSessionIds: cliSessionIds && Object.keys(cliSessionIds).length > 0 ? cliSessionIds : undefined,
+      cliSessionId: s.cliSessionId ? String(s.cliSessionId) : undefined,
+      claudeCliSessionId: s.claudeCliSessionId ? String(s.claudeCliSessionId) : undefined,
       lastChannel: s.lastChannel ? String(s.lastChannel) : undefined,
       lastAccountId: s.lastAccountId ? String(s.lastAccountId) : undefined,
       deliveryContext: deliveryContext ? {
@@ -2132,7 +2148,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const prefix = getCanonicalPrefixFromSessionKey(currentSessionKey)
       ?? getCanonicalPrefixFromSessions(sessions)
       ?? DEFAULT_CANONICAL_PREFIX;
-    const newKey = `${prefix}:session-${Date.now()}`;
+    const agentId = resolveSessionAgentIdByKey(currentSessionKey, sessions, get().channelBindings);
+    const isNativeCli = useAgentsStore.getState().agents.find((agent) => agent.id === agentId)?.runtime?.type === 'native-cli';
+    const newKey = isNativeCli ? buildNativeCliSessionKey(agentId) : `${prefix}:session-${Date.now()}`;
     const newSessionEntry: ChatSession = { key: newKey, displayName: newKey };
       set((s) => ({
         currentSessionKey: newKey,

@@ -7,6 +7,7 @@ import { withConfigLock } from './config-mutex';
 import { expandPath, getOpenClawConfigDir } from './paths';
 import * as logger from './logger';
 import { toUiChannelType } from './channel-alias';
+import { getBoxImConfig } from './box-im-sync';
 
 const MAIN_AGENT_ID = 'main';
 const MAIN_AGENT_NAME = 'Main Agent';
@@ -89,6 +90,7 @@ export interface AgentSummary {
   mainSessionKey: string;
   channelTypes: string[];
   skills?: string[];
+  runtime?: { type: string; nativeCli?: { provider: string; command: string } };
 }
 
 export interface AgentsSnapshot {
@@ -523,6 +525,7 @@ async function buildSnapshotFromConfig(config: AgentConfigDocument, preloadedCha
         .filter((ct) => ownedChannels.has(ct))
         .map((channelType) => toUiChannelType(channelType)),
       skills: Array.isArray(entry.skills) ? entry.skills : undefined,
+      runtime: entry.runtime as { type: string; nativeCli?: { provider: string; command: string } } | undefined,
     };
   });
 
@@ -595,11 +598,8 @@ export async function createAgent(
   });
 }
 
-import { logger } from './logger.js';
-import { getBoxImConfig } from './box-im-sync.js';
-
 // 同步员工名称到数据库
-async function syncAgentNameToDatabase(agentId: string, nickName: string): Promise<void> {
+async function _syncAgentNameToDatabase(agentId: string, nickName: string): Promise<void> {
   const { tokenKey, apiUrl } = await getBoxImConfig();
   if (!tokenKey) {
     logger.warn('[agent-config] No tokenKey, skipping name sync to database');
@@ -989,6 +989,29 @@ export async function updateAgentSkills(agentId: string, skills: string[]): Prom
 
     await writeOpenClawConfig(config);
     logger.info('Updated agent skills', { agentId, skillCount: skills.length });
+    return buildSnapshotFromConfig(config);
+  });
+}
+
+export async function updateAgentRuntime(agentId: string, runtime: Record<string, unknown>): Promise<AgentsSnapshot> {
+  return withConfigLock(async () => {
+    const config = await readOpenClawConfig() as AgentConfigDocument;
+    const { agentsConfig, entries } = normalizeAgentsConfig(config);
+    const index = entries.findIndex((entry) => entry.id === agentId);
+    if (index === -1) {
+      throw new Error(`Agent "${agentId}" not found`);
+    }
+
+    const nextEntry: AgentListEntry = { ...entries[index], runtime };
+    entries[index] = nextEntry;
+    config.agents = {
+      ...agentsConfig,
+      list: entries,
+    };
+
+    await writeOpenClawConfig(config);
+    const runtimeType = typeof runtime.type === 'string' ? runtime.type : undefined;
+    logger.info('Updated agent runtime', { agentId, runtimeType });
     return buildSnapshotFromConfig(config);
   });
 }

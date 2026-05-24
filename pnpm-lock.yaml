@@ -102,8 +102,8 @@ importers:
         specifier: ^1.2.8
         version: 1.2.8(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@shadanai/openclaw':
-        specifier: 2026.5.15-1
-        version: 2026.5.15-1(@napi-rs/canvas@0.1.97)(encoding@0.1.13)
+        specifier: 2026.5.26
+        version: 2026.5.26(@napi-rs/canvas@0.1.97)(encoding@0.1.13)
       '@soimy/dingtalk':
         specifier: ^3.5.1
         version: 3.5.1(openclaw@2026.4.1(@napi-rs/canvas@0.1.97)(encoding@0.1.13))
@@ -146,6 +146,12 @@ importers:
       '@whiskeysockets/baileys':
         specifier: 7.0.0-rc.9
         version: 7.0.0-rc.9(sharp@0.34.5)
+      '@xterm/addon-fit':
+        specifier: ^0.11.0
+        version: 0.11.0
+      '@xterm/xterm':
+        specifier: ^6.0.0
+        version: 6.0.0
       autoprefixer:
         specifier: ^10.4.24
         version: 10.4.27(postcss@8.5.8)
@@ -2109,8 +2115,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@shadanai/openclaw@2026.5.15-1':
-    resolution: {integrity: sha512-Q1akTxtEnx+eB33ARbf251gM+sbaX+vH0s698BEiGIvEWBnz19+rcB/7gNl4Io7E+2cl+wLAUnUDOi+gSeH3Lg==}
+  '@shadanai/openclaw@2026.5.26':
+    resolution: {integrity: sha512-dInAAz8JxkazRL1vbxUvrK01N8iEHN0SiMsXsBJFa7sIdbZZZor/aTMBf/iJE8Y10JSqPRtsy/uI27vysbaKyg==}
     engines: {node: '>=22.16.0'}
     hasBin: true
     peerDependencies:
@@ -2605,6 +2611,12 @@ packages:
   '@xmldom/xmldom@0.8.11':
     resolution: {integrity: sha512-cQzWCtO6C8TQiYl1ruKNn2U6Ao4o4WBBcbL61yJl84x+j5sOWWFU9X7DpND8XZG3daDppSsigMdfAIl2upQBRw==}
     engines: {node: '>=10.0.0'}
+
+  '@xterm/addon-fit@0.11.0':
+    resolution: {integrity: sha512-jYcgT6xtVYhnhgxh3QgYDnnNMYTcf8ElbxxFzX0IZo+vabQqSPAjC3c1wJrKB5E19VwQei89QCiZZP86DCPF7g==}
+
+  '@xterm/xterm@6.0.0':
+    resolution: {integrity: sha512-TQwDdQGtwwDt+2cgKDLn0IRaSxYu1tSUjgKarSDkUM0ZNiSRXFpjxEsvc/Zgc5kq5omJ+V0a8/kIM2WD3sMOYg==}
 
   abbrev@3.0.1:
     resolution: {integrity: sha512-AO2ac6pjRB3SJmGJo+v5/aK6Omggp6fsLrs6wN9bd35ulu4cCwaAU9+7ZhXjeqHVkaHThLuzH0nZr0YpCDhygg==}
@@ -8369,7 +8381,7 @@ snapshots:
 
   '@rollup/rollup-win32-x64-msvc@4.60.1': {}
 
-  '@shadanai/openclaw@2026.5.15-1(@napi-rs/canvas@0.1.97)(encoding@0.1.13)':
+  '@shadanai/openclaw@2026.5.26(@napi-rs/canvas@0.1.97)(encoding@0.1.13)':
     dependencies:
       '@agentclientprotocol/sdk': 0.16.1(zod@4.3.6)
       '@anthropic-ai/vertex-sdk': 0.14.4(encoding@0.1.13)(zod@4.3.6)
@@ -9121,6 +9133,10 @@ snapshots:
       - utf-8-validate
 
   '@xmldom/xmldom@0.8.11': {}
+
+  '@xterm/addon-fit@0.11.0': {}
+
+  '@xterm/xterm@6.0.0': {}
 
   abbrev@3.0.1: {}
 

@@ -1,4 +1,5 @@
 import { invokeIpc } from '@/lib/api-client';
+import { useAgentsStore } from '@/stores/agents';
 import { getCanonicalPrefixFromSessions, getMessageText, toMs } from './helpers';
 import { DEFAULT_CANONICAL_PREFIX, DEFAULT_SESSION_KEY, type ChatSession, type RawMessage } from './types';
 import type { ChatGet, ChatSet, SessionHistoryActions } from './store-api';
@@ -278,18 +279,24 @@ export function createSessionActions(
     // ── New session ──
 
     newSession: () => {
-      // Generate a new unique session key and switch to it.
-      // NOTE: We intentionally do NOT call sessions.reset on the old session.
-      // sessions.reset archives (renames) the session JSONL file, making old
-      // conversation history inaccessible when the user switches back to it.
       const { currentSessionKey, messages, sessionLastActivity, sessionLabels } = get();
-      // Only treat sessions with no history records and no activity timestamp as empty
       const leavingEmpty = !currentSessionKey.endsWith(':main')
         && messages.length === 0
         && !sessionLastActivity[currentSessionKey]
         && !sessionLabels[currentSessionKey];
-      const prefix = getCanonicalPrefixFromSessions(get().sessions) ?? DEFAULT_CANONICAL_PREFIX;
-      const newKey = `${prefix}:session-${Date.now()}`;
+
+      const agentId = getAgentIdFromSessionKey(currentSessionKey);
+      const agents = useAgentsStore.getState().agents;
+      const isNativeCli = (agents ?? []).find((a) => a.id === agentId)?.runtime?.type === 'native-cli';
+
+      let newKey: string;
+      if (isNativeCli) {
+        const shortId = Math.random().toString(36).slice(2, 10);
+        newKey = `agent:${agentId}:cli:${shortId}`;
+      } else {
+        const prefix = getCanonicalPrefixFromSessions(get().sessions) ?? DEFAULT_CANONICAL_PREFIX;
+        newKey = `${prefix}:session-${Date.now()}`;
+      }
       const newSessionEntry: ChatSession = { key: newKey, displayName: newKey };
       set((s) => ({
         currentSessionKey: newKey,

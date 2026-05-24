@@ -342,9 +342,14 @@ export function OrganizationView() {
 
   const handleChatWithAgent = useCallback(
     (agentId: string) => {
-      navigate('/', { state: { createNewSessionFor: agentId } });
+      navigate('/', {
+        state: {
+          createNewSessionFor: agentId,
+          createNativeCliSession: agentById[agentId]?.runtime?.type === 'native-cli',
+        },
+      });
     },
-    [navigate],
+    [agentById, navigate],
   );
 
   const beginAgentDrag = useCallback((agentId: string) => {

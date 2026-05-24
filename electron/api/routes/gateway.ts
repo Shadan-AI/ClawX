@@ -21,7 +21,8 @@ export async function handleGatewayRoutes(
       }
 
       const port = status.port || PORTS.OPENCLAW_GATEWAY;
-      const gatewayUrl = `https://127.0.0.1:${port}${url.pathname}${url.search}`;
+      const gatewayProtocol = status.tls === true ? 'https' : 'http';
+      const gatewayUrl = `${gatewayProtocol}://127.0.0.1:${port}${url.pathname}${url.search}`;
       
       // Read request body
       const chunks: Buffer[] = [];
@@ -31,8 +32,9 @@ export async function handleGatewayRoutes(
       const body = chunks.length > 0 ? Buffer.concat(chunks).toString('utf-8') : undefined;
 
       // Use node-fetch with custom agent to accept self-signed cert
-      const https = await import('node:https');
-      const agent = new https.Agent({ rejectUnauthorized: false });
+      const agent = status.tls === true
+        ? new (await import('node:https')).Agent({ rejectUnauthorized: false })
+        : undefined;
       
       const fetchModule = await import('node-fetch');
       const fetch = fetchModule.default;
@@ -64,10 +66,14 @@ export async function handleGatewayRoutes(
     const status = ctx.gatewayManager.getStatus();
     const token = await getSetting('gatewayToken');
     const port = status.port || PORTS.OPENCLAW_GATEWAY;
+    const wsProtocol = status.tls === true ? 'wss' : 'ws';
+    const httpProtocol = status.tls === true ? 'https' : 'http';
     sendJson(res, 200, {
-      wsUrl: `ws://127.0.0.1:${port}/ws`,
+      wsUrl: `${wsProtocol}://127.0.0.1:${port}/ws`,
+      httpUrl: `${httpProtocol}://127.0.0.1:${port}`,
       token,
       port,
+      tls: status.tls === true,
     });
     return true;
   }

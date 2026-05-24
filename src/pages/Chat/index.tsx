@@ -15,6 +15,7 @@ import { useModelsStore } from '@/stores/models';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 import { ChatMessage } from './ChatMessage';
 import { ChatInput } from './ChatInput';
+import { NativeCliTerminal } from './NativeCliTerminal';
 import { extractImages, extractText, extractThinking, extractToolUse } from './message-utils';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
@@ -23,6 +24,24 @@ import { useStickToBottomInstant } from '@/hooks/use-stick-to-bottom-instant';
 import { useMinLoading } from '@/hooks/use-min-loading';
 
 type InputShellState = 'collapsed' | 'auto' | 'focused';
+
+type ChatRouteState = {
+  createNewSessionFor?: string;
+  createNativeCliSession?: boolean;
+  quickUseSkill?: { name: string; slug: string; description: string };
+};
+
+function buildNewAgentSessionKey(agentId: string, nativeCli: boolean) {
+  if (nativeCli) {
+    const shortId = Math.random().toString(36).slice(2, 10);
+    return `agent:${agentId}:cli:${shortId}`;
+  }
+  return `agent:${agentId}:session-${Date.now()}`;
+}
+
+function isNativeCliSessionKey(sessionKey: string) {
+  return /^agent:[^:]+:cli:/i.test(sessionKey);
+}
 
 export function Chat() {
   const { t } = useTranslation('chat');
@@ -35,13 +54,18 @@ export function Chat() {
   const currentAgentId = useChatStore((s) => s.currentAgentId);
   const modelCount = useModelsStore((s) => s.models.length);
   const loading = useChatStore((s) => s.loading);
+  const switchSession = useChatStore((s) => s.switchSession);
+  const fetchAgents = useAgentsStore((s) => s.fetchAgents);
+  const agents = useAgentsStore((s) => s.agents);
+  const sessions = useChatStore((s) => s.sessions);
   
   // 技能快速使用状态
   const [quickUseSkill, setQuickUseSkill] = useState<{ name: string; slug: string; description: string } | null>(null);
+  const processedRouteActionRef = useRef<string | null>(null);
   
   // 处理从员工列表跳转过来创建新会话的情况
   useEffect(() => {
-    const state = location.state as { createNewSessionFor?: string; quickUseSkill?: { name: string; slug: string; description: string } } | null;
+    const state = location.state as ChatRouteState | null;
     const searchParams = new URLSearchParams(location.search);
     const skillSlug = searchParams.get('skill');
 
@@ -54,13 +78,37 @@ export function Chat() {
       : null;
     const nextQuickUseSkill = quickUseSkillFromUrl || state?.quickUseSkill || null;
     const targetAgentId = state?.createNewSessionFor || (nextQuickUseSkill ? SKILL_TRIAL_AGENT_ID : null);
+    const routeActionKey = JSON.stringify({
+      key: location.key,
+      search: location.search,
+      targetAgentId,
+      skillSlug,
+      quickUseSkill: nextQuickUseSkill?.slug,
+    });
+    const shouldCreateSession = Boolean(targetAgentId) && processedRouteActionRef.current !== routeActionKey;
 
-    if (targetAgentId) {
+    let cancelled = false;
+    if (targetAgentId && shouldCreateSession) {
+      processedRouteActionRef.current = routeActionKey;
       const agentId = targetAgentId;
-      const newSessionKey = `agent:${agentId}:session-${Date.now()}`;
+      const createSession = async () => {
+        let targetAgent = useAgentsStore.getState().agents.find((agent) => agent.id === agentId);
+        if (!targetAgent) {
+          try {
+            await fetchAgents();
+            targetAgent = useAgentsStore.getState().agents.find((agent) => agent.id === agentId);
+          } catch (error) {
+            console.warn('[Chat] Failed to refresh agents before creating session:', error);
+          }
+        }
+        if (cancelled) return;
 
-      console.log('[Chat] Creating new session for agent:', { agentId, newSessionKey });
-      useChatStore.getState().switchSession(newSessionKey);
+        const nativeCli = state?.createNativeCliSession === true || targetAgent?.runtime?.type === 'native-cli';
+        const newSessionKey = buildNewAgentSessionKey(agentId, nativeCli);
+        console.log('[Chat] Creating new session for agent:', { agentId, nativeCli, newSessionKey });
+        switchSession(newSessionKey);
+      };
+      void createSession();
     }
 
     let quickUseFrameId: number | null = null;
@@ -78,11 +126,12 @@ export function Chat() {
     }
 
     return () => {
+      cancelled = true;
       if (quickUseFrameId !== null) {
         window.cancelAnimationFrame(quickUseFrameId);
       }
     };
-  }, [location]);
+  }, [fetchAgents, location, switchSession]);
   const sending = useChatStore((s) => s.sending);
   const error = useChatStore((s) => s.error);
   const showThinking = useChatStore((s) => s.showThinking);
@@ -92,7 +141,16 @@ export function Chat() {
   const sendMessage = useChatStore((s) => s.sendMessage);
   const abortRun = useChatStore((s) => s.abortRun);
   const clearError = useChatStore((s) => s.clearError);
-  const fetchAgents = useAgentsStore((s) => s.fetchAgents);
+  const currentAgent = (agents ?? []).find((a) => a.id === currentAgentId);
+  const isNativeCli = currentAgent?.runtime?.type === 'native-cli' || isNativeCliSessionKey(currentSessionKey);
+  const nativeCliProvider = currentAgent?.runtime?.nativeCli?.provider?.trim().toLowerCase() || undefined;
+  const currentSession = sessions.find((session) => session.key === currentSessionKey);
+  const nativeCliSessionId = nativeCliProvider
+    ? currentSession?.cliSessionIds?.[nativeCliProvider] ?? currentSession?.cliSessionId
+    : currentSession?.claudeCliSessionId
+      ?? currentSession?.cliSessionId
+      ?? currentSession?.cliSessionIds?.claude
+      ?? currentSession?.cliSessionIds?.codex;
 
   const cleanupEmptySession = useChatStore((s) => s.cleanupEmptySession);
 
@@ -241,6 +299,18 @@ export function Chat() {
 
   return (
     <div className={cn("relative flex flex-col transition-colors duration-500 dark:bg-background h-full")}>
+      {/* Native CLI Terminal */}
+      {isNativeCli ? (
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <NativeCliTerminal
+            agentId={currentAgentId}
+            sessionKey={currentSessionKey}
+            cliSessionId={nativeCliSessionId}
+            cliSessionProvider={nativeCliProvider}
+          />
+        </div>
+      ) : (
+      <>
       {/* Messages Area - 固定 padding,不随输入框变化 */}
       <div 
         ref={scrollRef} 
@@ -386,12 +456,14 @@ export function Chat() {
       </div>
 
       {/* Transparent loading overlay */}
-      {minLoading && !sending && (
+      {!isNativeCli && minLoading && !sending && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/20 backdrop-blur-[1px] rounded-xl pointer-events-auto">
           <div className="bg-background shadow-lg rounded-full p-2.5 border border-border">
             <LoadingSpinner size="md" />
           </div>
         </div>
+      )}
+      </>
       )}
     </div>
   );

@@ -48,6 +48,9 @@ export interface ChatSession {
   updatedAt?: number;
   sessionId?: string;  // Session UUID for constructing file paths
   sessionFile?: string;  // Absolute path to the .jsonl file (if provided by Gateway)
+  cliSessionIds?: Record<string, string>;
+  cliSessionId?: string;
+  claudeCliSessionId?: string;
   lastChannel?: string;
   lastAccountId?: string;
   deliveryContext?: {

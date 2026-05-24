@@ -1,3 +1,13 @@
+export interface AgentRuntimeNativeCli {
+  provider: string;
+  command: string;
+}
+
+export interface AgentRuntime {
+  type: 'embedded' | 'acp' | 'native-cli';
+  nativeCli?: AgentRuntimeNativeCli;
+}
+
 export interface AgentSummary {
   id: string;
   name: string;
@@ -10,6 +20,7 @@ export interface AgentSummary {
   agentDir: string;
   mainSessionKey: string;
   channelTypes: string[];
+  runtime?: AgentRuntime;
   skills?: string[];
   isDigitalEmployee?: boolean; // 标记是否为数字员工
   templateName?: string;

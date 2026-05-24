@@ -9,6 +9,7 @@ import {
   resolveAccountIdForAgent,
   updateAgentModel,
   updateAgentName,
+  updateAgentRuntime,
   updateAgentSkills,
 } from '../../utils/agent-config';
 import { deleteChannelAccountConfig } from '../../utils/channel-config';
@@ -178,6 +179,19 @@ export async function handleAgentRoutes(
         const body = await parseJsonBody<{ skills: string[] }>(req);
         const agentId = decodeURIComponent(parts[0]);
         const snapshot = await updateAgentSkills(agentId, body.skills || []);
+        sendJson(res, 200, { success: true, ...snapshot });
+      } catch (error) {
+        sendJson(res, 500, { success: false, error: String(error) });
+      }
+      return true;
+    }
+
+    if (parts.length === 2 && parts[1] === 'runtime') {
+      try {
+        const body = await parseJsonBody<{ runtime: Record<string, unknown> }>(req);
+        const agentId = decodeURIComponent(parts[0]);
+        const snapshot = await updateAgentRuntime(agentId, body.runtime);
+        scheduleGatewayReload(ctx, 'update-agent-runtime');
         sendJson(res, 200, { success: true, ...snapshot });
       } catch (error) {
         sendJson(res, 500, { success: false, error: String(error) });

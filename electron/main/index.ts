@@ -3,6 +3,7 @@
  * Manages window creation, system tray, and IPC handlers
  */
 import { app, BrowserWindow, nativeImage, session, shell } from 'electron';
+import * as childProcess from 'node:child_process';
 import type { Server } from 'node:http';
 import { join } from 'path';
 import { GatewayManager } from '../gateway/manager';
@@ -53,7 +54,7 @@ const requestedUserDataDir = process.env.CLAWX_USER_DATA_DIR?.trim();
 // Windows: 全局 patch child_process 以隐藏 CMD 窗口
 if (process.platform === 'win32') {
   try {
-    const cp = require('child_process');
+    const cp = childProcess as typeof childProcess & { __clawxWindowsHidePatched?: boolean } & Record<string, unknown>;
     if (!cp.__clawxWindowsHidePatched) {
       cp.__clawxWindowsHidePatched = true;
 
@@ -69,7 +70,7 @@ if (process.platform === 'win32') {
         const original = cp[method];
         if (typeof original !== 'function') return;
         
-        cp[method] = function(...args: any[]) {
+        cp[method] = function(this: unknown, ...args: unknown[]) {
           // 查找 options 参数
           let optIdx = -1;
           for (let i = 1; i < args.length; i++) {
@@ -82,10 +83,11 @@ if (process.platform === 'win32') {
           const showChildWindow = shouldShowChildWindow(args[0]);
 
           if (optIdx >= 0) {
+            const options = args[optIdx] as Record<string, unknown>;
             // 已有 options，添加 windowsHide
             args[optIdx] = {
-              ...args[optIdx],
-              windowsHide: showChildWindow ? false : (args[optIdx].windowsHide ?? true),
+              ...options,
+              windowsHide: showChildWindow ? false : (options.windowsHide ?? true),
             };
           } else {
             // 没有 options，创建一个
@@ -697,12 +699,12 @@ if (gotTheLock) {
 
   // Allow self-signed TLS certs for local Gateway endpoints (mkcert-generated).
   app.on('certificate-error', (event, _webContents, url, _error, _cert, callback) => {
-    let allowGatewayCert = url.startsWith('https://127.0.0.1:') || url.startsWith('https://localhost:');
+    let allowGatewayCert = /^(https|wss):\/\/(127\.0\.0\.1|localhost):/i.test(url);
     try {
       const parsed = new URL(url);
       allowGatewayCert = allowGatewayCert
         || (
-          parsed.protocol === 'https:'
+          (parsed.protocol === 'https:' || parsed.protocol === 'wss:')
           && parsed.port === '18789'
           && /^(192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/.test(parsed.hostname)
         );
