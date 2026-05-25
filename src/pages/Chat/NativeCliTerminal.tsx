@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { invokeIpc } from '@/lib/api-client';
 import { hostApiFetch } from '@/lib/host-api';
+import { useChatStore } from '@/stores/chat';
 import '@xterm/xterm/css/xterm.css';
 
 interface NativeCliTerminalProps {
@@ -58,19 +59,6 @@ type PersistedTerminalState = {
   buffer?: string;
   userHasInteracted?: boolean;
   cliSessionId?: string;
-};
-
-type HostSessionIndexEntry = {
-  key: string;
-  sessionId?: string;
-  cliSessionIds?: Record<string, string>;
-  cliSessionId?: string;
-  claudeCliSessionId?: string;
-};
-
-type HostSessionIndexesResponse = {
-  success: boolean;
-  sessions?: HostSessionIndexEntry[];
 };
 
 type HostNativeCliResolveResponse = {
@@ -124,9 +112,14 @@ const TERMINAL_BELL = String.fromCharCode(7);
 const TERMINAL_OSC_PATTERN = new RegExp(`${TERMINAL_ESCAPE}\\][^${TERMINAL_BELL}]*(?:${TERMINAL_BELL}|${TERMINAL_ESCAPE}\\\\)`, 'g');
 const TERMINAL_CSI_PATTERN = new RegExp(`${TERMINAL_ESCAPE}\\[[0-?]*[ -/]*[@-~]`, 'g');
 const TERMINAL_CHARSET_PATTERN = new RegExp(`${TERMINAL_ESCAPE}[()][A-Za-z0-9]`, 'g');
+const NATIVE_CLI_SESSION_KEY_PATTERN = /^agent:[^:]+:cli:/i;
 
 function storageKey(sessionKey: string) {
   return `openclaw-terminal-state:native-cli:${sessionKey}`;
+}
+
+function isNativeCliSessionKey(sessionKey: string) {
+  return NATIVE_CLI_SESSION_KEY_PATTERN.test(sessionKey);
 }
 
 function hasPrintableTerminalContent(data: string) {
@@ -209,51 +202,6 @@ function persistNativeCliSessionId(sessionKey: string, cliSessionId: string, pro
   } catch {
     // Best effort only; backend also persists cliSessionIds into sessions.json.
   }
-}
-
-function pickCliSessionIdFromHostEntry(entry: HostSessionIndexEntry | undefined, provider?: string): string {
-  if (!entry) return '';
-  const normalizedProvider = normalizeProvider(provider);
-  const providerSessionId = normalizedProvider ? entry.cliSessionIds?.[normalizedProvider]?.trim() : '';
-  if (providerSessionId) return providerSessionId;
-  return entry.claudeCliSessionId?.trim()
-    || entry.cliSessionId?.trim()
-    || entry.cliSessionIds?.claude?.trim()
-    || entry.cliSessionIds?.codex?.trim()
-    || Object.values(entry.cliSessionIds ?? {}).find((value) => value?.trim())?.trim()
-    || entry.sessionId?.trim()
-    || '';
-}
-
-async function resolveNativeCliSessionIdFromHost(sessionKey: string, provider?: string): Promise<string> {
-  try {
-    const response = await hostApiFetch<HostSessionIndexesResponse>('/api/sessions/indexes');
-    if (!response.success || !Array.isArray(response.sessions)) return '';
-    return pickCliSessionIdFromHostEntry(
-      response.sessions.find((entry) => entry.key === sessionKey),
-      provider,
-    );
-  } catch {
-    return '';
-  }
-}
-
-async function resolveNativeCliSessionIdForExistingSession(params: {
-  sessionKey: string;
-  provider?: string;
-  sessionTitle?: string;
-  sessionUpdatedAt?: number;
-}): Promise<string> {
-  const fromIndex = await resolveNativeCliSessionIdFromHost(params.sessionKey, params.provider);
-  if (fromIndex) return fromIndex;
-  const userText = params.sessionTitle?.trim();
-  if (!userText || userText === params.sessionKey) return '';
-  return resolveNativeCliSessionIdToHost({
-    sessionKey: params.sessionKey,
-    provider: params.provider,
-    userText,
-    startedAt: params.sessionUpdatedAt ?? Date.now() - 60_000,
-  });
 }
 
 async function persistNativeCliSessionIdToHost(sessionKey: string, cliSessionId: string, provider?: string) {
@@ -716,6 +664,7 @@ export function NativeCliTerminal({
   const initialOutputRafRef = useRef<number>(0);
   const initialOutputPendingPaintRef = useRef(false);
   const loadingExitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cliSessionIdPropRef = useRef(cliSessionId);
   const sessionTitleRef = useRef(sessionTitle);
   const sessionUpdatedAtRef = useRef(sessionUpdatedAt);
   const reconnectDelayRef = useRef(1000);
@@ -729,6 +678,10 @@ export function NativeCliTerminal({
   const [draft, setDraft] = useState('');
 
   const normalizedProvider = useMemo(() => normalizeProvider(cliSessionProvider), [cliSessionProvider]);
+
+  useEffect(() => {
+    cliSessionIdPropRef.current = cliSessionId;
+  }, [cliSessionId]);
 
   useEffect(() => {
     sessionTitleRef.current = sessionTitle;
@@ -824,6 +777,37 @@ export function NativeCliTerminal({
       userEchoTimerRef.current = setTimeout(run, TERMINAL_USER_ECHO_DEBOUNCE_MS);
     }
   }, [styleVisibleTerminalUserEchoes]);
+
+  const bindNativeCliSessionId = useCallback((sessionId: string) => {
+    const trimmed = sessionId.trim();
+    if (!trimmed) return;
+
+    const alreadyBound = cliSessionIdRef.current === trimmed;
+    cliSessionIdRef.current = trimmed;
+    persistNativeCliSessionId(sessionKey, trimmed, normalizedProvider);
+    persistState();
+    if (!alreadyBound) void persistNativeCliSessionIdToHost(sessionKey, trimmed, normalizedProvider);
+
+    const provider = normalizeProvider(normalizedProvider) || 'claude';
+    useChatStore.setState((state) => ({
+      sessions: state.sessions.map((session) => {
+        if (session.key !== sessionKey) return session;
+        const nextCliSessionIds = {
+          ...(session.cliSessionIds ?? {}),
+          [provider]: trimmed,
+        };
+        return {
+          ...session,
+          sessionId: session.sessionId ?? trimmed,
+          cliSessionIds: nextCliSessionIds,
+          cliSessionId: session.cliSessionId ?? trimmed,
+          claudeCliSessionId: provider === 'claude'
+            ? session.claudeCliSessionId ?? trimmed
+            : session.claudeCliSessionId,
+        };
+      }),
+    }));
+  }, [normalizedProvider, persistState, sessionKey]);
 
   const ensureRowsObserver = useCallback(() => {
     if (rowsObserverRef.current) return;
@@ -961,6 +945,22 @@ export function NativeCliTerminal({
     });
   }, [maybeSettleInitialOutput]);
 
+  const settleReadyWithoutInitialOutput = useCallback(() => {
+    if (initialOutputRafRef.current) {
+      cancelAnimationFrame(initialOutputRafRef.current);
+      initialOutputRafRef.current = 0;
+    }
+    initialOutputPendingPaintRef.current = false;
+    initialOutputRafRef.current = requestAnimationFrame(() => {
+      initialOutputRafRef.current = requestAnimationFrame(() => {
+        initialOutputRafRef.current = 0;
+        if (disposedRef.current) return;
+        setAwaitingInitialOutput(false);
+        setConnectionPhase('idle');
+      });
+    });
+  }, []);
+
   const handleTerminalData = useCallback((raw: string) => {
     const visibleRaw = stripTerminalStreamMarkers(raw);
     updateShellPassthroughState(visibleRaw);
@@ -999,13 +999,11 @@ export function NativeCliTerminal({
         });
         if (!resolvedSessionId) continue;
         if (disposedRef.current || activeSessionResolveRef.current !== resolveKey || cliSessionIdRef.current) return;
-        cliSessionIdRef.current = resolvedSessionId;
-        persistNativeCliSessionId(sessionKey, resolvedSessionId, normalizedProvider);
-        persistState();
+        bindNativeCliSessionId(resolvedSessionId);
         return;
       }
     })();
-  }, [normalizedProvider, persistState, sessionKey]);
+  }, [bindNativeCliSessionId, normalizedProvider, sessionKey]);
 
   const fitTerminalToContent = useCallback(() => {
     const term = termRef.current;
@@ -1036,28 +1034,46 @@ export function NativeCliTerminal({
     if (!termRef.current) return;
     if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) return;
 
-    const storedCliSessionId = cliSessionIdRef.current || resolveStoredCliSessionId(sessionKey, cliSessionId);
+    const storedCliSessionId = cliSessionIdRef.current || resolveStoredCliSessionId(sessionKey, cliSessionIdPropRef.current);
     const hasHistoricalTitle = Boolean(sessionTitleRef.current?.trim() && sessionTitleRef.current.trim() !== sessionKey);
+    const shouldWaitForResumeSessionId = !storedCliSessionId && hasHistoricalTitle && isNativeCliSessionKey(sessionKey);
     setStatus('connecting');
-    setConnectionPhase(storedCliSessionId ? 'resuming' : hasHistoricalTitle ? 'preparing' : 'starting');
+    setConnectionPhase(storedCliSessionId ? 'resuming' : shouldWaitForResumeSessionId ? 'preparing' : 'starting');
     setAwaitingInitialOutput(true);
     initialOutputPendingPaintRef.current = false;
 
-    const [statusResult, hostResolvedCliSessionId] = await Promise.all([
-      invokeIpc<GatewayStatus>('gateway:status', []),
-      storedCliSessionId
-        ? Promise.resolve('')
-        : resolveNativeCliSessionIdForExistingSession({
-          sessionKey,
-          provider: normalizedProvider,
-          sessionTitle: sessionTitleRef.current,
-          sessionUpdatedAt: sessionUpdatedAtRef.current,
-        }),
-    ]);
+    if (shouldWaitForResumeSessionId) {
+      const userText = sessionTitleRef.current?.trim() || '';
+      const startedAt = sessionUpdatedAtRef.current ?? Date.now() - 60_000;
+      const resolveKey = `resume:${sessionKey}:${userText}:${startedAt}`;
+      if (activeSessionResolveRef.current === resolveKey) return;
+      activeSessionResolveRef.current = resolveKey;
+      void (async () => {
+        for (let attempt = 0; attempt < 20; attempt += 1) {
+          const resolvedSessionId = await resolveNativeCliSessionIdToHost({
+            sessionKey,
+            provider: normalizedProvider,
+            userText,
+            startedAt,
+          });
+          if (disposedRef.current || activeSessionResolveRef.current !== resolveKey || cliSessionIdRef.current) return;
+          if (resolvedSessionId) {
+            bindNativeCliSessionId(resolvedSessionId);
+            activeSessionResolveRef.current = '';
+            void connect();
+            return;
+          }
+          await wait(attempt < 3 ? 500 : 1500);
+        }
+      })();
+      return;
+    }
+
+    const statusResult = await invokeIpc<GatewayStatus>('gateway:status', []);
     if (disposedRef.current) return;
     const port = typeof statusResult?.port === 'number' && statusResult.port > 0 ? statusResult.port : 18789;
     const wsProtocol = statusResult?.tls === true ? 'wss' : 'ws';
-    const knownCliSessionId = storedCliSessionId || hostResolvedCliSessionId;
+    const knownCliSessionId = storedCliSessionId;
     cliSessionIdRef.current = knownCliSessionId;
     if (knownCliSessionId) {
       setConnectionPhase('resuming');
@@ -1089,6 +1105,7 @@ export function NativeCliTerminal({
       fitTerminalToContent();
       const term = termRef.current;
       if (term) ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+      if (!knownCliSessionId) settleReadyWithoutInitialOutput();
     };
 
     ws.onmessage = (event) => {
@@ -1108,10 +1125,7 @@ export function NativeCliTerminal({
         } else if (msg.type === 'assistant_turn_end' && typeof msg.turnId === 'string') {
           handleTerminalStreamMarker({ kind: 'turn_end', conversationId: String(msg.conversationId ?? ''), turnId: msg.turnId });
         } else if (msg.type === 'session_id' && typeof msg.sessionId === 'string') {
-          cliSessionIdRef.current = msg.sessionId;
-          persistNativeCliSessionId(sessionKey, msg.sessionId, normalizedProvider);
-          void persistNativeCliSessionIdToHost(sessionKey, msg.sessionId, normalizedProvider);
-          persistState();
+          bindNativeCliSessionId(msg.sessionId);
         } else if (msg.type === 'exit' && userHasInteractedRef.current) {
           termRef.current?.write(`\r\n\x1b[33m[process exited: ${String(msg.code ?? 0)}]\x1b[0m\r\n`);
         }
@@ -1153,7 +1167,7 @@ export function NativeCliTerminal({
     };
   }, [
     agentId,
-    cliSessionId,
+    bindNativeCliSessionId,
     fitTerminalToContent,
     handleTerminalData,
     handleTerminalStreamMarker,
@@ -1161,6 +1175,7 @@ export function NativeCliTerminal({
     persistState,
     resetVisibleTerminalForResume,
     sessionKey,
+    settleReadyWithoutInitialOutput,
     upsertTerminalTurn,
   ]);
 
@@ -1271,7 +1286,7 @@ export function NativeCliTerminal({
     disposedRef.current = false;
 
     const persisted = loadPersistedTerminalState(sessionKey);
-    const initialCliSessionId = resolveStoredCliSessionId(sessionKey, cliSessionId) || persisted.cliSessionId || '';
+    const initialCliSessionId = resolveStoredCliSessionId(sessionKey, cliSessionIdPropRef.current) || persisted.cliSessionId || '';
     cliSessionIdRef.current = initialCliSessionId;
     userHasInteractedRef.current = Boolean(cliSessionIdRef.current || persisted.userHasInteracted);
     bufferRef.current = initialCliSessionId ? '' : persisted.buffer ?? '';
@@ -1340,7 +1355,6 @@ export function NativeCliTerminal({
       fitAddonRef.current = null;
     };
   }, [
-    cliSessionId,
     connect,
     ensureRowsObserver,
     fitTerminalToContent,
@@ -1351,6 +1365,15 @@ export function NativeCliTerminal({
     sendTerminalData,
     sessionKey,
   ]);
+
+  useEffect(() => {
+    const nextCliSessionId = cliSessionId?.trim() || '';
+    if (!nextCliSessionId || nextCliSessionId === cliSessionIdRef.current) return;
+    bindNativeCliSessionId(nextCliSessionId);
+    if (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED) {
+      void connect();
+    }
+  }, [bindNativeCliSessionId, cliSessionId, connect]);
 
   const canSend = status === 'connected' && draft.trim().length > 0;
   const desiredLoadingLabel = status === 'connected' && !awaitingInitialOutput

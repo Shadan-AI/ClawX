@@ -57,12 +57,15 @@ let _lastLoadSessionsAt = 0;
 const _historyLoadInFlight = new Map<string, Promise<void>>();
 const _lastHistoryLoadAtBySession = new Map<string, number>();
 const _sessionSidebarMetaInFlight = new Set<string>();
+const _nativeCliSessionIdRepairInFlight = new Set<string>();
+const _nativeCliSessionIdRepairLastAttempt = new Map<string, number>();
 const SESSION_LOAD_MIN_INTERVAL_MS = 1_200;
 const HISTORY_LOAD_MIN_INTERVAL_MS = 800;
 const HISTORY_POLL_SILENCE_WINDOW_MS = 2_500;
 const CHAT_EVENT_DEDUPE_TTL_MS = 30_000;
 const SESSION_SIDEBAR_META_CONCURRENCY = 2;
 const ACTIVE_HISTORY_RPC_TIMEOUT_MS = 60_000;
+const NATIVE_CLI_SESSION_ID_REPAIR_RETRY_MS = 60_000;
 const DELETED_SESSION_KEYS_STORAGE_KEY = 'clawx-deleted-session-keys';
 const MAX_DELETED_SESSION_KEYS = 500;
 const _chatEventDedupe = new Map<string, number>();
@@ -791,6 +794,39 @@ function buildNativeCliSessionKey(agentId: string): string {
   return `agent:${normalizeAgentId(agentId)}:cli:${Date.now().toString(36)}-${shortId}`;
 }
 
+function isNativeCliSessionKey(sessionKey: string): boolean {
+  return /^agent:[^:]+:cli:/i.test(sessionKey);
+}
+
+function getAgentIdFromNativeCliSessionKey(sessionKey: string): string | null {
+  if (!isNativeCliSessionKey(sessionKey)) return null;
+  const [, agentId] = sessionKey.split(':');
+  return agentId ? normalizeAgentId(agentId) : null;
+}
+
+function normalizeNativeCliProvider(provider: string | undefined): string {
+  return provider?.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '') || 'claude';
+}
+
+function getNativeCliProviderForSession(session: ChatSession): string {
+  const agentId = getAgentIdFromNativeCliSessionKey(session.key);
+  const agent = agentId
+    ? useAgentsStore.getState().agents.find((candidate) => candidate.id === agentId)
+    : undefined;
+  return normalizeNativeCliProvider(agent?.runtime?.nativeCli?.provider);
+}
+
+function getNativeCliSessionId(session: ChatSession, provider: string): string {
+  return session.cliSessionIds?.[provider]?.trim()
+    || session.claudeCliSessionId?.trim()
+    || session.cliSessionId?.trim()
+    || session.cliSessionIds?.claude?.trim()
+    || session.cliSessionIds?.codex?.trim()
+    || Object.values(session.cliSessionIds ?? {}).find((value) => value?.trim())?.trim()
+    || session.sessionId?.trim()
+    || '';
+}
+
 function buildAgentAdhocSessionKey(agentId: string): string {
   return `agent:${normalizeAgentId(agentId)}:session-${Date.now()}`;
 }
@@ -1127,6 +1163,78 @@ function shouldReplaceSessionLabel(sessionKey: string, currentLabel: string | un
   }
   const normalized = normalizeSessionTitleCandidate(currentLabel);
   return !normalized || !isMeaningfulSessionTitle(normalized, sessionKey);
+}
+
+function resolveNativeCliRepairPrompt(
+  session: ChatSession,
+  sessionLabels: Record<string, string>,
+): string | undefined {
+  for (const candidate of [sessionLabels[session.key], session.label, session.displayName]) {
+    const normalized = normalizeSessionTitleCandidate(candidate);
+    if (normalized && isMeaningfulSessionTitle(normalized, session.key)) return normalized;
+  }
+  return undefined;
+}
+
+function repairMissingNativeCliSessionIdsInBackground(
+  sessions: ChatSession[],
+  sessionLabels: Record<string, string>,
+  sessionLastActivity: Record<string, number>,
+  set: (partial: Partial<ChatState> | ((state: ChatState) => Partial<ChatState>)) => void,
+): void {
+  const now = Date.now();
+  for (const session of sessions) {
+    if (!isNativeCliSessionKey(session.key)) continue;
+    const agentId = getAgentIdFromNativeCliSessionKey(session.key);
+    if (!agentId) continue;
+    const provider = getNativeCliProviderForSession(session);
+    if (getNativeCliSessionId(session, provider)) continue;
+
+    const userText = resolveNativeCliRepairPrompt(session, sessionLabels);
+    if (!userText) continue;
+
+    const repairKey = `${session.key}:${provider}:${userText}`;
+    if (_nativeCliSessionIdRepairInFlight.has(repairKey)) continue;
+    const lastAttempt = _nativeCliSessionIdRepairLastAttempt.get(repairKey) ?? 0;
+    if (now - lastAttempt < NATIVE_CLI_SESSION_ID_REPAIR_RETRY_MS) continue;
+    _nativeCliSessionIdRepairLastAttempt.set(repairKey, now);
+    _nativeCliSessionIdRepairInFlight.add(repairKey);
+
+    void hostApiFetch<{ success: boolean; resolved?: boolean; sessionId?: string }>('/api/sessions/native-cli-resolve', {
+      method: 'POST',
+      body: JSON.stringify({
+        sessionKey: session.key,
+        provider,
+        userText,
+        startedAt: session.updatedAt ?? sessionLastActivity[session.key] ?? Date.now() - 60_000,
+      }),
+    }).then((response) => {
+      const resolvedSessionId = response.success && response.resolved ? response.sessionId?.trim() : '';
+      if (!resolvedSessionId) return;
+      set((state) => ({
+        sessions: state.sessions.map((candidate) => {
+          if (candidate.key !== session.key) return candidate;
+          const nextCliSessionIds = {
+            ...(candidate.cliSessionIds ?? {}),
+            [provider]: resolvedSessionId,
+          };
+          return {
+            ...candidate,
+            sessionId: candidate.sessionId ?? resolvedSessionId,
+            cliSessionIds: nextCliSessionIds,
+            cliSessionId: candidate.cliSessionId ?? resolvedSessionId,
+            claudeCliSessionId: provider === 'claude'
+              ? candidate.claudeCliSessionId ?? resolvedSessionId
+              : candidate.claudeCliSessionId,
+          };
+        }),
+      }));
+    }).catch(() => {
+      // Best-effort repair. The next session list refresh can retry after the backoff window.
+    }).finally(() => {
+      _nativeCliSessionIdRepairInFlight.delete(repairKey);
+    });
+  }
 }
 
 function shouldHideIncompleteSession(session: ChatSession, sessionLabels: Record<string, string>): boolean {
@@ -1851,6 +1959,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
               }),
             );
           }
+
+          repairMissingNativeCliSessionIdsInBackground(
+            sessionsWithCurrent,
+            get().sessionLabels,
+            get().sessionLastActivity,
+            set,
+          );
 
           return true;
         };
