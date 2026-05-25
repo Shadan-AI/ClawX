@@ -157,6 +157,10 @@ const electronAPI = {
         'agent-profile:save',
         'agent-profile:getDir',
         'agent-profile:sync',
+        // Runtime environment check
+        'env:checkTool',
+        'env:installNode',
+        'env:installNpmGlobal',
       ];
 
       if (validChannels.includes(channel)) {

@@ -49,6 +49,7 @@ import { syncLaunchAtStartupSettingFromStore } from './launch-at-startup';
 import { proxyAwareFetch } from '../utils/proxy-fetch';
 import { getRecentTokenUsageHistory } from '../utils/token-usage';
 import { readAgentProfile, saveAgentProfile, getAgentWorkspaceDir, syncAgentProfile } from '../utils/agent-profile';
+import { checkToolInPath, installNode, installNpmGlobal } from '../utils/runtime-env-check';
 import { getProviderService } from '../services/providers/provider-service';
 import {
   getOpenClawProviderKey,
@@ -157,6 +158,9 @@ export function registerIpcHandlers(
 
   // Agent profile handlers (edit markdown files)
   registerAgentProfileHandlers();
+
+  // Runtime environment check handlers (node/npm/cli)
+  registerRuntimeEnvHandlers();
 }
 
 function registerUnifiedRequestHandlers(gatewayManager: GatewayManager): void {
@@ -2951,5 +2955,19 @@ function registerAgentProfileHandlers(): void {
 
   ipcMain.handle('agent-profile:sync', async (_, params: { agentId: string }) => {
     return await syncAgentProfile(params.agentId);
+  });
+}
+
+function registerRuntimeEnvHandlers(): void {
+  ipcMain.handle('env:checkTool', async (_, toolName: string) => {
+    return await checkToolInPath(toolName);
+  });
+
+  ipcMain.handle('env:installNode', async () => {
+    return await installNode();
+  });
+
+  ipcMain.handle('env:installNpmGlobal', async (_, packageName: string) => {
+    return await installNpmGlobal(packageName);
   });
 }

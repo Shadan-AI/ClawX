@@ -25,9 +25,13 @@ import { buildSkillTrialNavigationState } from '@/lib/skill-trial';
 export function SkillsConfigurationView({
   employees,
   onRefresh,
+  initialAgentId,
+  onAgentSelected,
 }: {
   employees: AgentSummary[];
   onRefresh: () => void;
+  initialAgentId?: string | null;
+  onAgentSelected?: () => void;
 }) {
   const { skills: allSkills, loading: skillsLoading, fetchSkills } = useSkillsStore();
   const { agentSkills, updateAgentSkills } = useAgentsStore();
@@ -82,10 +86,13 @@ export function SkillsConfigurationView({
   // 初始化本地技能状态
   useEffect(() => {
     setLocalSkills(agentSkills);
-    if (employees.length > 0 && !selectedEmployeeId) {
+    if (initialAgentId) {
+      setSelectedEmployeeId(initialAgentId);
+      onAgentSelected?.();
+    } else if (employees.length > 0 && !selectedEmployeeId) {
       setSelectedEmployeeId(employees[0].id);
     }
-  }, [agentSkills, employees.length, selectedEmployeeId]); // 优化依赖项
+  }, [agentSkills, employees.length, selectedEmployeeId, initialAgentId, onAgentSelected]);
 
   // 切换员工时清空模板缓存
   useEffect(() => {

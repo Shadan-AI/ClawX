@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, Bot, Check, Plus, RefreshCw, Settings2, Trash2, X, Layout, Puzzle, Building2, MessageCircle } from 'lucide-react';
+import { AlertCircle, Bot, Check, Plus, RefreshCw, Settings2, Trash2, X, Layout, Puzzle, Building2, MessageCircle, Loader2, Download } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
@@ -167,6 +167,7 @@ export function Agents() {
   const [agentToDelete, setAgentToDelete] = useState<AgentSummary | null>(null);
   const [showTemplateDialog, setShowTemplateDialog] = useState(false);
   const [viewMode, setViewMode] = useState<'list' | 'skills' | 'organization'>('list');
+  const [skillsViewAgentId, setSkillsViewAgentId] = useState<string | null>(null);
   const [globalConfetti, setGlobalConfetti] = useState<Array<{ id: number; x: number; y: number; explosionX: number; explosionY: number; color: string; size: number }>>([]);
   const lastClickTimeRef = useRef<number>(0);
   const pendingConfettiRef = useRef<Set<number>>(new Set());
@@ -508,7 +509,7 @@ export function Agents() {
             className="h-10 text-sm font-medium rounded-full px-6"
           >
             <Puzzle className="h-4 w-4 mr-2" />
-            技能配置
+            岗位技能
           </Button>
         </div>
 
@@ -578,6 +579,10 @@ export function Agents() {
                         }}
                         onDelete={() => setAgentToDelete(agent)}
                         onDigitalEmployeeClick={handleDigitalEmployeeClick}
+                        onNavigateToSkills={() => {
+                          setSkillsViewAgentId(agent.id);
+                          setViewMode('skills');
+                        }}
                       />
                     ))}
                   </div>
@@ -593,6 +598,8 @@ export function Agents() {
                   <SkillsConfigurationView
                     employees={visibleAgents}
                     onRefresh={handleRefresh}
+                    initialAgentId={skillsViewAgentId}
+                    onAgentSelected={() => setSkillsViewAgentId(null)}
                   />
                 </motion.div>
               ) : (
@@ -739,12 +746,14 @@ function AgentCard({
   onOpenSettings,
   onDelete,
   onDigitalEmployeeClick,
+  onNavigateToSkills,
 }: {
   agent: AgentSummary;
   channelGroups: ChannelGroupItem[];
   onOpenSettings: () => void;
   onDelete: () => void;
   onDigitalEmployeeClick?: (event: React.MouseEvent<HTMLDivElement>) => void;
+  onNavigateToSkills?: () => void;
 }) {
   const { t } = useTranslation('agents');
   const navigate = useNavigate();
@@ -864,7 +873,13 @@ function AgentCard({
           <span className="line-clamp-2">{t('channelsLine', { channels: channelsText })}</span>
         </div>
         {agent.isDigitalEmployee && (
-          <div className="text-[12px] text-muted-foreground flex items-start gap-1.5">
+          <div
+            className="text-[12px] text-muted-foreground flex items-start gap-1.5 cursor-pointer hover:text-foreground transition-colors rounded px-0.5 -mx-0.5 hover:bg-black/5 dark:hover:bg-white/5"
+            onClick={(e) => {
+              e.stopPropagation();
+              onNavigateToSkills?.();
+            }}
+          >
             <span className="opacity-70 shrink-0">📋</span>
             <span className="line-clamp-2">岗位: {agent.templateName || '无'}</span>
           </div>
@@ -974,6 +989,27 @@ function getRuntimeConfig(preset: string): { command: string; resumeArgs?: strin
   }
 }
 
+const RUNTIME_CLI_PACKAGES: Record<string, string> = {
+  claude: '@anthropic-ai/claude-code',
+  codex: '@openai/codex',
+  kiro: 'kiro-cli',
+  opencode: 'opencode',
+};
+
+type EnvStepStatus = 'pending' | 'checking' | 'installing' | 'success' | 'error';
+
+interface EnvStep {
+  id: string;
+  label: string;
+  status: EnvStepStatus;
+  version?: string;
+  error?: string;
+}
+
+function updateEnvStep(steps: EnvStep[], id: string, patch: Partial<EnvStep>): EnvStep[] {
+  return steps.map(s => s.id === id ? { ...s, ...patch } : s);
+}
+
 function AddAgentDialog({
   onClose,
   onRefresh,
@@ -991,6 +1027,14 @@ function AddAgentDialog({
   const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(null);
   const [runtimePreset, setRuntimePreset] = useState<string>(editAgent?.runtime?.nativeCli?.provider || 'embedded');
   const [saving, setSaving] = useState(false);
+
+  // Env check state
+  const [envSteps, setEnvSteps] = useState<EnvStep[]>([]);
+  const [, setEnvCheckRunning] = useState(false);
+  const envCheckGenRef = useRef(0);
+
+  const envCheckPassed = runtimePreset === 'embedded' ||
+    (envSteps.length > 0 && envSteps.every(s => s.status === 'success'));
   
   const { models, fetchModels, createDigitalEmployee, fetchDigitalEmployees } = useModelsStore();
   const { fetchAgents } = useAgentsStore();
@@ -1019,6 +1063,97 @@ function AddAgentDialog({
       setSelectedModel(defaultModel);
     }
   }, [models, selectedModel]);
+
+  // Runtime environment check flow
+  useEffect(() => {
+    if (runtimePreset === 'embedded') {
+      setEnvSteps([]);
+      setEnvCheckRunning(false);
+      return;
+    }
+
+    const gen = ++envCheckGenRef.current;
+    const { command } = getRuntimeConfig(runtimePreset);
+    const steps: EnvStep[] = [
+      { id: 'node', label: 'Node.js', status: 'pending' },
+      { id: 'npm', label: 'npm', status: 'pending' },
+      { id: 'cli', label: command, status: 'pending' },
+    ];
+    setEnvSteps([...steps]);
+    setEnvCheckRunning(true);
+
+    const run = async () => {
+      let current = [...steps];
+      const stale = () => envCheckGenRef.current !== gen;
+
+      // Step 1: Node.js
+      current = updateEnvStep(current, 'node', { status: 'checking' });
+      setEnvSteps([...current]);
+      const nodeRes = await invokeIpc<{ found: boolean; version?: string }>('env:checkTool', 'node');
+      if (stale()) return;
+      if (nodeRes.found) {
+        current = updateEnvStep(current, 'node', { status: 'success', version: nodeRes.version });
+      } else {
+        current = updateEnvStep(current, 'node', { status: 'installing' });
+        setEnvSteps([...current]);
+        const installRes = await invokeIpc<{ success: boolean; error?: string }>('env:installNode');
+        if (stale()) return;
+        if (installRes.success) {
+          const verifyRes = await invokeIpc<{ found: boolean; version?: string }>('env:checkTool', 'node');
+          current = updateEnvStep(current, 'node', { status: 'success', version: verifyRes.version });
+        } else {
+          current = updateEnvStep(current, 'node', { status: 'error', error: installRes.error || '安装失败' });
+          setEnvSteps([...current]);
+          setEnvCheckRunning(false);
+          return;
+        }
+      }
+      setEnvSteps([...current]);
+
+      // Step 2: npm
+      current = updateEnvStep(current, 'npm', { status: 'checking' });
+      setEnvSteps([...current]);
+      const npmRes = await invokeIpc<{ found: boolean; version?: string }>('env:checkTool', 'npm');
+      if (stale()) return;
+      if (npmRes.found) {
+        current = updateEnvStep(current, 'npm', { status: 'success', version: npmRes.version });
+      } else {
+        current = updateEnvStep(current, 'npm', { status: 'error', error: 'npm 未找到，请确认 Node.js 安装完整' });
+        setEnvSteps([...current]);
+        setEnvCheckRunning(false);
+        return;
+      }
+      setEnvSteps([...current]);
+
+      // Step 3: CLI tool
+      current = updateEnvStep(current, 'cli', { status: 'checking' });
+      setEnvSteps([...current]);
+      const cliRes = await invokeIpc<{ found: boolean; version?: string }>('env:checkTool', command);
+      if (stale()) return;
+      if (cliRes.found) {
+        current = updateEnvStep(current, 'cli', { status: 'success', version: cliRes.version });
+      } else {
+        current = updateEnvStep(current, 'cli', { status: 'installing' });
+        setEnvSteps([...current]);
+        const pkg = RUNTIME_CLI_PACKAGES[runtimePreset];
+        const installRes = await invokeIpc<{ success: boolean; error?: string }>('env:installNpmGlobal', pkg);
+        if (stale()) return;
+        if (installRes.success) {
+          const verifyRes = await invokeIpc<{ found: boolean; version?: string }>('env:checkTool', command);
+          current = updateEnvStep(current, 'cli', { status: 'success', version: verifyRes.version });
+        } else {
+          current = updateEnvStep(current, 'cli', {
+            status: 'error',
+            error: installRes.error || `安装失败，请手动执行: npm install -g ${pkg}`,
+          });
+        }
+      }
+      setEnvSteps([...current]);
+      setEnvCheckRunning(false);
+    };
+
+    void run();
+  }, [runtimePreset]);
 
   const handleSubmit = async () => {
     if (!name.trim()) return;
@@ -1281,7 +1416,57 @@ function AddAgentDialog({
               <option value="opencode">OpenCode</option>
             </select>
           </div>
-          
+
+          {/* Env check steps */}
+          {runtimePreset !== 'embedded' && envSteps.length > 0 && (
+            <div className="space-y-3 p-4 rounded-xl bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10">
+              {/* Step indicator bar */}
+              <div className="flex items-center justify-center gap-1">
+                {envSteps.map((step, i) => (
+                  <div key={step.id} className="flex items-center">
+                    <div className={cn(
+                      'flex h-7 w-7 items-center justify-center rounded-full border-2 text-xs font-bold transition-all duration-300',
+                      step.status === 'success' ? 'border-green-500 bg-green-500 text-white' :
+                      step.status === 'error' ? 'border-red-500 bg-red-500 text-white' :
+                      step.status === 'checking' || step.status === 'installing'
+                        ? 'border-blue-500 text-blue-500' :
+                      'border-muted-foreground/30 text-muted-foreground/50'
+                    )}>
+                      {step.status === 'success' ? <Check className="h-3.5 w-3.5" /> :
+                       step.status === 'error' ? <AlertCircle className="h-3.5 w-3.5" /> :
+                       (step.status === 'checking' || step.status === 'installing') ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> :
+                       <span>{i + 1}</span>}
+                    </div>
+                    {i < envSteps.length - 1 && (
+                      <div className={cn(
+                        'h-0.5 w-6 transition-colors duration-300',
+                        envSteps[i].status === 'success' ? 'bg-green-500' : 'bg-muted-foreground/20'
+                      )} />
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              {/* Step details */}
+              <div className="space-y-1.5">
+                {envSteps.map((step) => (
+                  <div key={step.id} className="flex items-center gap-2 text-[13px] min-h-[22px]">
+                    {step.status === 'checking' && <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-500 shrink-0" />}
+                    {step.status === 'installing' && <Download className="h-3.5 w-3.5 animate-pulse text-blue-500 shrink-0" />}
+                    {step.status === 'success' && <Check className="h-3.5 w-3.5 text-green-500 shrink-0" />}
+                    {step.status === 'error' && <AlertCircle className="h-3.5 w-3.5 text-red-500 shrink-0" />}
+                    {step.status === 'pending' && <span className="w-3.5 shrink-0" />}
+                    <span className="text-foreground/80 font-medium">{step.label}</span>
+                    {step.version && <span className="text-muted-foreground font-mono text-[11px]">v{step.version}</span>}
+                    {step.status === 'checking' && <span className="text-muted-foreground">检测中...</span>}
+                    {step.status === 'installing' && <span className="text-blue-500">正在安装...</span>}
+                    {step.status === 'error' && <span className="text-red-500 text-[12px] flex-1 truncate">{step.error}</span>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div className="flex justify-end gap-2">
             <Button
               variant="outline"
@@ -1292,7 +1477,7 @@ function AddAgentDialog({
             </Button>
             <Button
               onClick={() => void handleSubmit()}
-              disabled={saving || !name.trim()}
+              disabled={saving || !name.trim() || (runtimePreset !== 'embedded' && !envCheckPassed)}
               className="h-9 text-[13px] font-medium rounded-full px-4 shadow-none"
             >
               {saving ? (
