@@ -4,6 +4,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import {
   Globe,
   Image,
+  Loader2,
   Mic,
   MoreHorizontal,
   PenLine,
@@ -33,6 +34,7 @@ interface GatewayStatus {
 }
 
 type TerminalStatus = 'disconnected' | 'connecting' | 'connected';
+type TerminalConnectionPhase = 'idle' | 'preparing' | 'starting' | 'resuming' | 'reconnecting';
 
 type TerminalStreamMarker =
   | { kind: 'turn_start'; conversationId: string; turnId: string; userText: string }
@@ -117,9 +119,40 @@ const TERMINAL_SHELL_PASSTHROUGH_WRAPPER_SUBCOMMANDS = new Set(['dlx', 'exec', '
 const TERMINAL_MIN_COLS = 40;
 const TERMINAL_MAX_REASONABLE_CELL_WIDTH = 32;
 const TERMINAL_USER_ECHO_DEBOUNCE_MS = 96;
+const TERMINAL_ESCAPE = String.fromCharCode(27);
+const TERMINAL_BELL = String.fromCharCode(7);
+const TERMINAL_OSC_PATTERN = new RegExp(`${TERMINAL_ESCAPE}\\][^${TERMINAL_BELL}]*(?:${TERMINAL_BELL}|${TERMINAL_ESCAPE}\\\\)`, 'g');
+const TERMINAL_CSI_PATTERN = new RegExp(`${TERMINAL_ESCAPE}\\[[0-?]*[ -/]*[@-~]`, 'g');
+const TERMINAL_CHARSET_PATTERN = new RegExp(`${TERMINAL_ESCAPE}[()][A-Za-z0-9]`, 'g');
 
 function storageKey(sessionKey: string) {
   return `openclaw-terminal-state:native-cli:${sessionKey}`;
+}
+
+function hasPrintableTerminalContent(data: string) {
+  const printable = data
+    .replace(TERMINAL_OSC_PATTERN, '')
+    .replace(TERMINAL_CSI_PATTERN, '')
+    .replace(TERMINAL_CHARSET_PATTERN, '')
+    .split('')
+    .filter((char) => {
+      const code = char.charCodeAt(0);
+      return code > 31 && code !== 127;
+    })
+    .join('')
+    .trim();
+  return printable.length > 0;
+}
+
+function terminalHasVisibleContent(term: Terminal | null, mount: HTMLElement | null) {
+  if (!term || !mount) return false;
+  const buffer = term.buffer.active;
+  const start = Math.max(0, buffer.viewportY);
+  const end = Math.min(buffer.length, start + term.rows);
+  for (let lineIndex = start; lineIndex < end; lineIndex += 1) {
+    if (buffer.getLine(lineIndex)?.translateToString(true).trim()) return true;
+  }
+  return Boolean(mount.querySelector<HTMLElement>('.xterm-rows')?.textContent?.trim());
 }
 
 function normalizeProvider(provider?: string) {
@@ -447,6 +480,47 @@ function NativeCliTerminalStyles() {
         overflow: hidden;
         background: var(--native-cli-background);
       }
+      .native-cli-terminal__loading {
+        position: absolute;
+        inset: 20px 0 0;
+        z-index: 3;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        pointer-events: none;
+        background: linear-gradient(
+          180deg,
+          hsl(var(--background) / .92),
+          hsl(var(--background) / .72)
+        );
+        opacity: 1;
+        transition: opacity .18s ease;
+      }
+      .native-cli-terminal__loading--exiting {
+        opacity: 0;
+      }
+      .native-cli-terminal__loading-inner {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        min-height: 38px;
+        padding: 8px 14px;
+        border: 1px solid hsl(var(--border));
+        border-radius: 8px;
+        background: hsl(var(--card));
+        color: hsl(var(--muted-foreground));
+        font-size: 13px;
+        box-shadow: 0 10px 30px rgb(15 23 42 / .08);
+      }
+      .native-cli-terminal__loading-inner svg {
+        width: 16px;
+        height: 16px;
+        animation: native-cli-spin .8s linear infinite;
+        color: #2563eb;
+      }
+      @keyframes native-cli-spin {
+        to { transform: rotate(360deg); }
+      }
       .native-cli-terminal__mount .xterm {
         box-sizing: border-box;
         height: 100%;
@@ -639,12 +713,19 @@ export function NativeCliTerminal({
   const shellPassthroughRef = useRef(false);
   const cliSessionIdRef = useRef('');
   const activeSessionResolveRef = useRef('');
+  const initialOutputRafRef = useRef<number>(0);
+  const initialOutputPendingPaintRef = useRef(false);
+  const loadingExitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sessionTitleRef = useRef(sessionTitle);
   const sessionUpdatedAtRef = useRef(sessionUpdatedAt);
   const reconnectDelayRef = useRef(1000);
   const disposedRef = useRef(false);
 
   const [status, setStatus] = useState<TerminalStatus>('disconnected');
+  const [connectionPhase, setConnectionPhase] = useState<TerminalConnectionPhase>('idle');
+  const [awaitingInitialOutput, setAwaitingInitialOutput] = useState(false);
+  const [displayedLoadingLabel, setDisplayedLoadingLabel] = useState('');
+  const [loadingExiting, setLoadingExiting] = useState(false);
   const [draft, setDraft] = useState('');
 
   const normalizedProvider = useMemo(() => normalizeProvider(cliSessionProvider), [cliSessionProvider]);
@@ -848,15 +929,52 @@ export function NativeCliTerminal({
     }
   }, []);
 
+  const settleInitialOutputAfterPaint = useCallback(() => {
+    if (initialOutputRafRef.current) {
+      cancelAnimationFrame(initialOutputRafRef.current);
+      initialOutputRafRef.current = 0;
+    }
+    initialOutputRafRef.current = requestAnimationFrame(() => {
+      initialOutputRafRef.current = requestAnimationFrame(() => {
+        initialOutputRafRef.current = requestAnimationFrame(() => {
+          initialOutputRafRef.current = 0;
+          if (disposedRef.current) return;
+          setAwaitingInitialOutput(false);
+          setConnectionPhase('idle');
+        });
+      });
+    });
+  }, []);
+
+  const maybeSettleInitialOutput = useCallback(() => {
+    if (!initialOutputPendingPaintRef.current) return;
+    if (!terminalHasVisibleContent(termRef.current, mountRef.current)) return;
+    initialOutputPendingPaintRef.current = false;
+    settleInitialOutputAfterPaint();
+  }, [settleInitialOutputAfterPaint]);
+
+  const requestInitialOutputSettle = useCallback(() => {
+    initialOutputPendingPaintRef.current = true;
+    requestAnimationFrame(() => {
+      if (disposedRef.current) return;
+      maybeSettleInitialOutput();
+    });
+  }, [maybeSettleInitialOutput]);
+
   const handleTerminalData = useCallback((raw: string) => {
     const visibleRaw = stripTerminalStreamMarkers(raw);
     updateShellPassthroughState(visibleRaw);
     bufferRef.current = `${bufferRef.current}${raw}`.slice(-100_000);
     persistState();
     if (!userHasInteractedRef.current) return;
-    termRef.current?.write(raw);
+    const term = termRef.current;
+    if (term) {
+      term.write(raw, () => {
+        if (hasPrintableTerminalContent(visibleRaw)) requestInitialOutputSettle();
+      });
+    }
     scheduleTerminalUserEchoStyle();
-  }, [persistState, scheduleTerminalUserEchoStyle, stripTerminalStreamMarkers, updateShellPassthroughState]);
+  }, [persistState, requestInitialOutputSettle, scheduleTerminalUserEchoStyle, stripTerminalStreamMarkers, updateShellPassthroughState]);
 
   const sendTerminalData = useCallback((data: string) => {
     const ws = wsRef.current;
@@ -918,9 +1036,16 @@ export function NativeCliTerminal({
     if (!termRef.current) return;
     if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) return;
 
+    const storedCliSessionId = cliSessionIdRef.current || resolveStoredCliSessionId(sessionKey, cliSessionId);
+    const hasHistoricalTitle = Boolean(sessionTitleRef.current?.trim() && sessionTitleRef.current.trim() !== sessionKey);
+    setStatus('connecting');
+    setConnectionPhase(storedCliSessionId ? 'resuming' : hasHistoricalTitle ? 'preparing' : 'starting');
+    setAwaitingInitialOutput(true);
+    initialOutputPendingPaintRef.current = false;
+
     const [statusResult, hostResolvedCliSessionId] = await Promise.all([
       invokeIpc<GatewayStatus>('gateway:status', []),
-      cliSessionIdRef.current || resolveStoredCliSessionId(sessionKey, cliSessionId)
+      storedCliSessionId
         ? Promise.resolve('')
         : resolveNativeCliSessionIdForExistingSession({
           sessionKey,
@@ -929,14 +1054,18 @@ export function NativeCliTerminal({
           sessionUpdatedAt: sessionUpdatedAtRef.current,
         }),
     ]);
+    if (disposedRef.current) return;
     const port = typeof statusResult?.port === 'number' && statusResult.port > 0 ? statusResult.port : 18789;
     const wsProtocol = statusResult?.tls === true ? 'wss' : 'ws';
-    const knownCliSessionId = cliSessionIdRef.current || resolveStoredCliSessionId(sessionKey, cliSessionId) || hostResolvedCliSessionId;
+    const knownCliSessionId = storedCliSessionId || hostResolvedCliSessionId;
     cliSessionIdRef.current = knownCliSessionId;
     if (knownCliSessionId) {
+      setConnectionPhase('resuming');
       resetVisibleTerminalForResume();
       persistNativeCliSessionId(sessionKey, knownCliSessionId, normalizedProvider);
       persistState();
+    } else {
+      setConnectionPhase('starting');
     }
 
     const params = new URLSearchParams({
@@ -949,7 +1078,6 @@ export function NativeCliTerminal({
     }
     const ws = new WebSocket(`${wsProtocol}://127.0.0.1:${port}/terminal?${params.toString()}`);
     wsRef.current = ws;
-    setStatus('connecting');
     let openedAt = 0;
 
     ws.onopen = () => {
@@ -997,6 +1125,9 @@ export function NativeCliTerminal({
       if (wsRef.current !== ws) return;
       if (wsRef.current === ws) wsRef.current = null;
       setStatus('disconnected');
+      setConnectionPhase('reconnecting');
+      setAwaitingInitialOutput(true);
+      initialOutputPendingPaintRef.current = false;
       if (userHasInteractedRef.current) {
         termRef.current?.write('\r\n\x1b[31m[disconnected]\x1b[0m\r\n');
       }
@@ -1016,6 +1147,9 @@ export function NativeCliTerminal({
       if (disposedRef.current) return;
       if (wsRef.current !== ws) return;
       setStatus('disconnected');
+      setConnectionPhase('reconnecting');
+      setAwaitingInitialOutput(true);
+      initialOutputPendingPaintRef.current = false;
     };
   }, [
     agentId,
@@ -1141,6 +1275,8 @@ export function NativeCliTerminal({
     cliSessionIdRef.current = initialCliSessionId;
     userHasInteractedRef.current = Boolean(cliSessionIdRef.current || persisted.userHasInteracted);
     bufferRef.current = initialCliSessionId ? '' : persisted.buffer ?? '';
+    setAwaitingInitialOutput(true);
+    initialOutputPendingPaintRef.current = false;
 
     const term = createTerminalInstance();
     const fitAddon = new FitAddon();
@@ -1167,7 +1303,11 @@ export function NativeCliTerminal({
     term.onScroll(() => scheduleTerminalUserEchoStyle());
     term.onWriteParsed(() => {
       ensureRowsObserver();
+      maybeSettleInitialOutput();
       scheduleTerminalUserEchoStyle();
+    });
+    term.onRender(() => {
+      maybeSettleInitialOutput();
     });
 
     termRef.current = term;
@@ -1187,6 +1327,9 @@ export function NativeCliTerminal({
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
       if (userEchoTimerRef.current) clearTimeout(userEchoTimerRef.current);
       if (userEchoRafRef.current) cancelAnimationFrame(userEchoRafRef.current);
+      if (initialOutputRafRef.current) cancelAnimationFrame(initialOutputRafRef.current);
+      if (loadingExitTimerRef.current) clearTimeout(loadingExitTimerRef.current);
+      initialOutputPendingPaintRef.current = false;
       rowsObserverRef.current?.disconnect();
       resizeObserverRef.current?.disconnect();
       const ws = wsRef.current;
@@ -1202,6 +1345,7 @@ export function NativeCliTerminal({
     ensureRowsObserver,
     fitTerminalToContent,
     handleTerminalStreamMarker,
+    maybeSettleInitialOutput,
     persistState,
     scheduleTerminalUserEchoStyle,
     sendTerminalData,
@@ -1209,19 +1353,61 @@ export function NativeCliTerminal({
   ]);
 
   const canSend = status === 'connected' && draft.trim().length > 0;
+  const desiredLoadingLabel = status === 'connected' && !awaitingInitialOutput
+    ? ''
+    : connectionPhase === 'resuming'
+      ? '正在恢复会话'
+      : connectionPhase === 'preparing'
+        ? '正在准备会话'
+        : connectionPhase === 'reconnecting'
+          ? '正在重新连接'
+          : '正在创建会话';
+
+  useEffect(() => {
+    if (loadingExitTimerRef.current) {
+      clearTimeout(loadingExitTimerRef.current);
+      loadingExitTimerRef.current = null;
+    }
+
+    if (desiredLoadingLabel) {
+      setDisplayedLoadingLabel(desiredLoadingLabel);
+      setLoadingExiting(false);
+      return;
+    }
+
+    if (!displayedLoadingLabel) return;
+    setLoadingExiting(true);
+    loadingExitTimerRef.current = setTimeout(() => {
+      setDisplayedLoadingLabel('');
+      setLoadingExiting(false);
+      loadingExitTimerRef.current = null;
+    }, 180);
+  }, [desiredLoadingLabel, displayedLoadingLabel]);
 
   return (
     <div className="native-cli-terminal">
       <NativeCliTerminalStyles />
       <div ref={areaRef} className="native-cli-terminal__area">
         <div ref={mountRef} className="native-cli-terminal__mount" />
+        {displayedLoadingLabel ? (
+          <div
+            className={`native-cli-terminal__loading${loadingExiting ? ' native-cli-terminal__loading--exiting' : ''}`}
+            role="status"
+            aria-live="polite"
+          >
+            <div className="native-cli-terminal__loading-inner">
+              <Loader2 />
+              <span>{displayedLoadingLabel}</span>
+            </div>
+          </div>
+        ) : null}
       </div>
       <div className="native-cli-terminal__compose">
         <div className="native-cli-terminal__box">
           <textarea
             value={draft}
             rows={1}
-            placeholder={status === 'connected' ? '发消息或输入命令' : 'Terminal is disconnected'}
+            placeholder={status === 'connected' ? '发消息或输入命令' : desiredLoadingLabel}
             disabled={status !== 'connected'}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={handleKeyDown}

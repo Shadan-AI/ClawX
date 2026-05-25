@@ -247,6 +247,20 @@ function claudeProjectDirNames(cwd: string): string[] {
   ].filter(Boolean))];
 }
 
+function codexSessionDirsForStartedAt(startedAt: number): string[] {
+  const root = join(homedir(), '.codex', 'sessions');
+  const dayMs = 24 * 60 * 60 * 1000;
+  const dirs = [];
+  for (const offset of [-dayMs, 0, dayMs]) {
+    const date = new Date(startedAt + offset);
+    const year = String(date.getFullYear());
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    dirs.push(join(root, year, month, day));
+  }
+  return [...new Set(dirs)];
+}
+
 function normalizePromptText(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
 }
@@ -357,7 +371,7 @@ async function resolveNativeCliSessionFromFiles(params: {
   const minMtime = startedAt - 120_000;
 
   const files = provider === 'codex'
-    ? await listJsonlFiles(join(homedir(), '.codex', 'sessions'), true)
+    ? (await Promise.all(codexSessionDirsForStartedAt(startedAt).map((dir) => listJsonlFiles(dir)))).flat()
     : (await Promise.all(
       claudeProjectDirNames(context.cwd).map((dirName) => listJsonlFiles(join(homedir(), '.claude', 'projects', dirName))),
     )).flat();
