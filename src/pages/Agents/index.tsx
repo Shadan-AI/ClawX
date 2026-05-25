@@ -11,6 +11,7 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { AgentAvatar } from '@/components/common/AgentAvatar';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 import { useAgentsStore } from '@/stores/agents';
+import { useChatStore } from '@/stores/chat';
 import { useGatewayStore } from '@/stores/gateway';
 import { useProviderStore } from '@/stores/providers';
 import { useModelsStore, type OneApiModel } from '@/stores/models';
@@ -735,13 +736,15 @@ function AgentCard({
   const [isShaking, setIsShaking] = useState(false);
   
   const handleChatWithAgent = () => {
-    // 跳转到对话页面，并通过 state 传递需要创建新会话的 agentId
-    navigate('/', {
-      state: {
-        createNewSessionFor: agent.id,
-        createNativeCliSession: agent.runtime?.type === 'native-cli',
-      },
+    const newSessionKey = useChatStore.getState().newSessionForAgent(agent.id, {
+      nativeCli: agent.runtime?.type === 'native-cli',
     });
+    console.log('[Agents] Created new chat session for agent:', {
+      agentId: agent.id,
+      nativeCli: agent.runtime?.type === 'native-cli',
+      sessionKey: newSessionKey,
+    });
+    navigate('/');
   };
   
   const boundChannelAccounts = channelGroups.flatMap((group) =>
@@ -864,7 +867,7 @@ function AgentCard({
               onClick={handleChatWithAgent}
             >
               <MessageCircle className="h-3.5 w-3.5 mr-1.5" />
-              对话
+              新建对话
             </Button>
             <Button
               variant="ghost"
@@ -1088,12 +1091,25 @@ function AddAgentDialog({
         // 写入 runtime 配置（如果选择了 native-cli）
         if (runtimeType === 'native-cli' && cliCommand.trim()) {
           try {
+            const command = cliCommand.trim();
+            const provider = command.toLowerCase().includes('codex')
+              ? 'codex'
+              : command.toLowerCase().includes('claude')
+                ? 'claude'
+                : command.split('/')[0] || 'custom';
+            const args = cliArgs.trim() ? cliArgs.trim().split(/\s+/) : [];
+            const resumeArgs = provider === 'codex'
+              ? ['resume', '{sessionId}', ...args]
+              : provider === 'claude'
+                ? ['--resume', '{sessionId}', ...args]
+                : undefined;
             const runtime = {
               type: 'native-cli' as const,
               nativeCli: {
-                provider: cliCommand.trim().split('/')[0] || 'custom',
-                command: cliCommand.trim(),
-                ...(cliArgs.trim() ? { args: cliArgs.trim().split(/\s+/) } : {}),
+                provider,
+                command,
+                ...(args.length > 0 ? { args } : {}),
+                ...(resumeArgs ? { resumeArgs } : {}),
               },
             };
             await hostApiFetch(`/api/agents/${encodeURIComponent(employee.openclawAgentId)}/runtime`, {

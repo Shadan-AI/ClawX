@@ -1,6 +1,9 @@
 import type { IncomingMessage, ServerResponse } from 'http';
-import { join } from 'node:path';
-import { getOpenClawConfigDir } from '../../utils/paths';
+import type { Dirent } from 'node:fs';
+import { basename, join } from 'node:path';
+import { homedir } from 'node:os';
+import { getOpenClawConfigDir, expandPath } from '../../utils/paths';
+import { readOpenClawConfig } from '../../utils/channel-config';
 import type { HostApiContext } from '../context';
 import { parseJsonBody, sendJson } from '../route-utils';
 
@@ -33,6 +36,11 @@ type PruneEmptySessionsResult = {
   scanned: number;
   removed: number;
   failed: string[];
+};
+
+type NativeCliResolveResult = {
+  sessionId: string;
+  sessionFile?: string;
 };
 
 function stripUtf8Bom(raw: string): string {
@@ -159,6 +167,218 @@ function coerceUpdatedAt(value: unknown): number | undefined {
     }
   }
   return undefined;
+}
+
+function normalizeNativeCliProvider(provider: unknown, command?: unknown): string {
+  const configured = typeof provider === 'string' ? provider.trim().toLowerCase() : '';
+  if (configured) return configured.replace(/[^a-z0-9_-]/g, '') || 'claude';
+  const commandName = typeof command === 'string'
+    ? command.trim().toLowerCase().split(/[\\/]/).pop() ?? ''
+    : '';
+  if (commandName.includes('codex')) return 'codex';
+  return 'claude';
+}
+
+function parseAgentIdFromSessionKey(sessionKey: string): string | null {
+  if (!sessionKey || !sessionKey.startsWith('agent:')) return null;
+  const parts = sessionKey.split(':');
+  if (parts.length < 3 || !SAFE_SESSION_SEGMENT.test(parts[1])) return null;
+  return parts[1];
+}
+
+async function persistNativeCliSessionIndex(params: {
+  sessionKey: string;
+  cliSessionId?: string;
+  provider?: string;
+  label?: string;
+}): Promise<void> {
+  const agentId = parseAgentIdFromSessionKey(params.sessionKey);
+  if (!agentId) throw new Error(`Invalid sessionKey: ${params.sessionKey}`);
+
+  const provider = normalizeNativeCliProvider(params.provider);
+  const cliSessionId = params.cliSessionId?.trim() || '';
+  const label = params.label?.trim() || '';
+  const sessionsDir = join(getOpenClawConfigDir(), 'agents', agentId, 'sessions');
+  const sessionsJsonPath = join(sessionsDir, 'sessions.json');
+  const fsP = await import('node:fs/promises');
+  await fsP.mkdir(sessionsDir, { recursive: true });
+
+  let sessionsJson: Record<string, unknown>;
+  try {
+    sessionsJson = JSON.parse(await fsP.readFile(sessionsJsonPath, 'utf8')) as Record<string, unknown>;
+  } catch {
+    sessionsJson = {};
+  }
+
+  const now = Date.now();
+  const existingRaw = sessionsJson[params.sessionKey];
+  const existing = existingRaw && typeof existingRaw === 'object' && !Array.isArray(existingRaw)
+    ? existingRaw as Record<string, unknown>
+    : {};
+  const existingCliSessionIds = existing.cliSessionIds && typeof existing.cliSessionIds === 'object' && !Array.isArray(existing.cliSessionIds)
+    ? existing.cliSessionIds as Record<string, unknown>
+    : {};
+  const nextEntry: Record<string, unknown> = {
+    ...existing,
+    updatedAt: Math.max(typeof existing.updatedAt === 'number' ? existing.updatedAt : 0, now),
+  };
+  if (label) {
+    nextEntry.label = label;
+    nextEntry.displayName = label;
+  }
+  if (cliSessionId) {
+    nextEntry.sessionId = typeof existing.sessionId === 'string' && existing.sessionId.trim() ? existing.sessionId : cliSessionId;
+    nextEntry.cliSessionIds = {
+      ...existingCliSessionIds,
+      [provider]: cliSessionId,
+    };
+    nextEntry.cliSessionId = cliSessionId;
+    if (provider === 'claude') nextEntry.claudeCliSessionId = cliSessionId;
+  }
+  sessionsJson[params.sessionKey] = nextEntry;
+  await fsP.writeFile(sessionsJsonPath, JSON.stringify(sessionsJson, null, 2), 'utf8');
+}
+
+function claudeProjectDirNames(cwd: string): string[] {
+  const normalized = cwd.trim();
+  return [...new Set([
+    normalized.replace(/\//g, '-'),
+    normalized.replace(/[^A-Za-z0-9_-]/g, '-'),
+  ].filter(Boolean))];
+}
+
+function normalizePromptText(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+function promptMatches(candidate: string | undefined, userText: string): boolean {
+  const candidateText = normalizePromptText(candidate ?? '');
+  const expected = normalizePromptText(userText);
+  if (!candidateText || !expected) return false;
+  return candidateText === expected || candidateText.includes(expected) || expected.includes(candidateText);
+}
+
+async function readTextTail(filePath: string, maxBytes = 256 * 1024): Promise<string> {
+  const fsP = await import('node:fs/promises');
+  const stat = await fsP.stat(filePath);
+  const handle = await fsP.open(filePath, 'r');
+  try {
+    const length = Math.min(stat.size, maxBytes);
+    const buffer = Buffer.alloc(length);
+    await handle.read(buffer, 0, length, Math.max(0, stat.size - length));
+    return buffer.toString('utf8');
+  } finally {
+    await handle.close();
+  }
+}
+
+function extractSessionIdFromJsonlTail(raw: string, fallbackSessionId: string, userText: string): string | null {
+  const lines = raw.split(/\r?\n/).filter(Boolean).reverse();
+  let latestSessionId = fallbackSessionId;
+  for (const line of lines) {
+    try {
+      const entry = JSON.parse(line) as Record<string, unknown>;
+      const entrySessionId = coerceNonEmptyString(entry.sessionId);
+      if (entrySessionId) latestSessionId = entrySessionId;
+      if (entry.type === 'last-prompt' && promptMatches(coerceNonEmptyString(entry.lastPrompt), userText)) {
+        return coerceNonEmptyString(entry.sessionId) ?? latestSessionId;
+      }
+      const message = entry.message && typeof entry.message === 'object' ? entry.message as Record<string, unknown> : null;
+      if (entry.type === 'user' || message?.role === 'user') {
+        const text = extractTranscriptText(message?.content ?? entry.message);
+        if (promptMatches(text, userText)) return latestSessionId;
+      }
+    } catch {
+      // Ignore malformed/incomplete tail lines while the CLI is still writing.
+    }
+  }
+  return null;
+}
+
+async function listJsonlFiles(dir: string, recursive = false, depth = 0): Promise<Array<{ path: string; sessionId: string; mtimeMs: number }>> {
+  const fsP = await import('node:fs/promises');
+  let entries: Dirent[];
+  try {
+    entries = await fsP.readdir(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  const files: Array<{ path: string; sessionId: string; mtimeMs: number }> = [];
+  for (const entry of entries) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory() && recursive && depth < 5) {
+      files.push(...await listJsonlFiles(path, true, depth + 1));
+      continue;
+    }
+    if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
+    try {
+      const stat = await fsP.stat(path);
+      files.push({ path, sessionId: basename(entry.name, '.jsonl'), mtimeMs: stat.mtimeMs });
+    } catch {
+      // File may have moved while scanning.
+    }
+  }
+  return files;
+}
+
+async function resolveNativeCliRuntimeContext(agentId: string): Promise<{
+  provider: string;
+  cwd: string;
+} | null> {
+  const config = await readOpenClawConfig() as Record<string, unknown>;
+  const agents = config.agents && typeof config.agents === 'object' ? config.agents as Record<string, unknown> : {};
+  const list = Array.isArray(agents.list) ? agents.list as Array<Record<string, unknown>> : [];
+  const entry = list.find((item) => coerceNonEmptyString(item.id) === agentId);
+  if (!entry) return null;
+  const runtime = entry.runtime && typeof entry.runtime === 'object' ? entry.runtime as Record<string, unknown> : null;
+  if (runtime?.type !== 'native-cli') return null;
+  const nativeCli = runtime.nativeCli && typeof runtime.nativeCli === 'object'
+    ? runtime.nativeCli as Record<string, unknown>
+    : {};
+  const command = coerceNonEmptyString(nativeCli.command);
+  const provider = normalizeNativeCliProvider(nativeCli.provider, command);
+  const cwd = coerceNonEmptyString(nativeCli.cwd)
+    ?? coerceNonEmptyString(entry.workspace)
+    ?? join(getOpenClawConfigDir(), `workspace-${agentId}`);
+  return { provider, cwd: expandPath(cwd) };
+}
+
+async function resolveNativeCliSessionFromFiles(params: {
+  agentId: string;
+  provider: string;
+  userText: string;
+  startedAt?: number;
+}): Promise<NativeCliResolveResult | null> {
+  const context = await resolveNativeCliRuntimeContext(params.agentId);
+  if (!context) return null;
+  const provider = normalizeNativeCliProvider(params.provider || context.provider);
+  const startedAt = Number.isFinite(params.startedAt) && params.startedAt ? Number(params.startedAt) : Date.now() - 60_000;
+  const minMtime = startedAt - 120_000;
+
+  const files = provider === 'codex'
+    ? await listJsonlFiles(join(homedir(), '.codex', 'sessions'), true)
+    : (await Promise.all(
+      claudeProjectDirNames(context.cwd).map((dirName) => listJsonlFiles(join(homedir(), '.claude', 'projects', dirName))),
+    )).flat();
+
+  const recentFiles = files
+    .filter((file) => file.mtimeMs >= minMtime)
+    .sort((a, b) => b.mtimeMs - a.mtimeMs)
+    .slice(0, 80);
+
+  for (const file of recentFiles) {
+    try {
+      const tail = await readTextTail(file.path);
+      const sessionId = extractSessionIdFromJsonlTail(tail, file.sessionId, params.userText);
+      if (sessionId) return { sessionId, sessionFile: file.path };
+    } catch {
+      // Keep scanning other recent files.
+    }
+  }
+
+  const newest = recentFiles[0];
+  return newest ? { sessionId: newest.sessionId, sessionFile: newest.path } : null;
 }
 
 function getSessionKeyTail(sessionKey: string): string {
@@ -634,6 +854,74 @@ export async function handleSessionRoutes(
       } else {
         sendJson(res, 500, { success: false, error: 'Failed to load transcript' });
       }
+    }
+    return true;
+  }
+
+  if (url.pathname === '/api/sessions/native-cli-session' && req.method === 'POST') {
+    try {
+      const body = await parseJsonBody<{
+        sessionKey?: string;
+        cliSessionId?: string;
+        provider?: string;
+        label?: string;
+      }>(req);
+      const sessionKey = body.sessionKey?.trim() || '';
+      const cliSessionId = body.cliSessionId?.trim() || '';
+      const label = body.label?.trim() || '';
+      const provider = (body.provider?.trim().toLowerCase() || 'claude').replace(/[^a-z0-9_-]/g, '') || 'claude';
+      if (!parseAgentIdFromSessionKey(sessionKey)) {
+        sendJson(res, 400, { success: false, error: 'sessionKey is required' });
+        return true;
+      }
+
+      await persistNativeCliSessionIndex({ sessionKey, cliSessionId, provider, label });
+      sendJson(res, 200, { success: true });
+    } catch (error) {
+      sendJson(res, 500, { success: false, error: String(error) });
+    }
+    return true;
+  }
+
+  if (url.pathname === '/api/sessions/native-cli-resolve' && req.method === 'POST') {
+    try {
+      const body = await parseJsonBody<{
+        sessionKey?: string;
+        provider?: string;
+        userText?: string;
+        startedAt?: number;
+      }>(req);
+      const sessionKey = body.sessionKey?.trim() || '';
+      const agentId = parseAgentIdFromSessionKey(sessionKey);
+      const userText = body.userText?.trim() || '';
+      if (!agentId || !userText) {
+        sendJson(res, 400, { success: false, error: 'sessionKey and userText are required' });
+        return true;
+      }
+      const provider = normalizeNativeCliProvider(body.provider);
+      const resolved = await resolveNativeCliSessionFromFiles({
+        agentId,
+        provider,
+        userText,
+        startedAt: body.startedAt,
+      });
+      if (!resolved?.sessionId) {
+        sendJson(res, 200, { success: true, resolved: false });
+        return true;
+      }
+      await persistNativeCliSessionIndex({
+        sessionKey,
+        provider,
+        cliSessionId: resolved.sessionId,
+      });
+      sendJson(res, 200, {
+        success: true,
+        resolved: true,
+        sessionId: resolved.sessionId,
+        sessionFile: resolved.sessionFile,
+      });
+    } catch (error) {
+      sendJson(res, 500, { success: false, error: String(error) });
     }
     return true;
   }

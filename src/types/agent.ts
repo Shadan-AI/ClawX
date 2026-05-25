@@ -1,6 +1,8 @@
 export interface AgentRuntimeNativeCli {
   provider: string;
   command: string;
+  args?: string[];
+  resumeArgs?: string[];
 }
 
 export interface AgentRuntime {

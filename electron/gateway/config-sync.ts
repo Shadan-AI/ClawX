@@ -1,6 +1,6 @@
 import { app } from 'electron';
 import path from 'path';
-import { existsSync, readFileSync, mkdirSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, mkdirSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 
@@ -26,6 +26,7 @@ import { startOpenClawConfigLanReconciliationWatcher } from '../utils/openclaw-c
 import { buildProxyEnv, resolveProxySettings } from '../utils/proxy';
 import { syncProxyConfigToOpenClaw } from '../utils/openclaw-proxy';
 import { normalizeOpenClawConfigHealthBaseline } from '../utils/openclaw-config-health';
+import { ensureNativeCliRuntimeResumeArgs } from '../utils/agent-config';
 import { logger } from '../utils/logger';
 import { prependPathEntry } from '../utils/env-path';
 import { copyPluginFromNodeModules, fixupPluginManifest, cpSyncSafe } from '../utils/plugin-install';
@@ -231,7 +232,7 @@ function ensureExtensionDepsResolvable(openclawDir: string): void {
   // We must NOT overwrite these with extension deps — openclaw's own version
   // takes priority (e.g. file-type@21 must not be shadowed by whatsapp's v16).
   const openclawRealDir = (() => {
-    try { return require('fs').realpathSync(openclawDir); } catch { return openclawDir; }
+    try { return realpathSync(openclawDir); } catch { return openclawDir; }
   })();
   const openclawVirtualNM = join(openclawRealDir, 'node_modules');
   const ownedByOpenclaw = new Set<string>();
@@ -379,6 +380,12 @@ export async function syncGatewayConfigBeforeLaunch(
     await batchSyncGatewayConfig(appSettings);
   } catch (err) {
     logger.warn('Failed to batch sync gateway config:', err);
+  }
+
+  try {
+    await ensureNativeCliRuntimeResumeArgs();
+  } catch (err) {
+    logger.warn('Failed to repair native-cli runtime resume args:', err);
   }
 
   await normalizeOpenClawConfigHealthBaseline();

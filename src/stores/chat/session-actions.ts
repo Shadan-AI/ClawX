@@ -1,4 +1,5 @@
 import { invokeIpc } from '@/lib/api-client';
+import { hostApiFetch } from '@/lib/host-api';
 import { useAgentsStore } from '@/stores/agents';
 import { getCanonicalPrefixFromSessions, getMessageText, toMs } from './helpers';
 import { DEFAULT_CANONICAL_PREFIX, DEFAULT_SESSION_KEY, type ChatSession, type RawMessage } from './types';
@@ -35,7 +36,7 @@ function parseSessionUpdatedAtMs(value: unknown): number | undefined {
 export function createSessionActions(
   set: ChatSet,
   get: ChatGet,
-): Pick<SessionHistoryActions, 'loadSessions' | 'switchSession' | 'newSession' | 'deleteSession' | 'cleanupEmptySession'> {
+): Pick<SessionHistoryActions, 'loadSessions' | 'switchSession' | 'newSession' | 'newSessionForAgent' | 'deleteSession' | 'cleanupEmptySession'> {
   return {
     loadSessions: async () => {
       try {
@@ -277,6 +278,62 @@ export function createSessionActions(
     },
 
     // ── New session ──
+
+    newSessionForAgent: (agentId, options) => {
+      const { currentSessionKey, messages, sessionLastActivity, sessionLabels } = get();
+      const leavingEmpty = !currentSessionKey.endsWith(':main')
+        && messages.length === 0
+        && !sessionLastActivity[currentSessionKey]
+        && !sessionLabels[currentSessionKey];
+      const normalizedAgentId = (agentId || 'main').trim().toLowerCase() || 'main';
+      const agents = useAgentsStore.getState().agents;
+      const isNativeCli = options?.nativeCli === true || (agents ?? []).find((a) => a.id === normalizedAgentId)?.runtime?.type === 'native-cli';
+      const shortId = Math.random().toString(36).slice(2, 10);
+      const newKey = isNativeCli
+        ? `agent:${normalizedAgentId}:cli:${Date.now().toString(36)}-${shortId}`
+        : `agent:${normalizedAgentId}:session-${Date.now()}`;
+      const nowMs = Date.now();
+      const newSessionEntry: ChatSession = { key: newKey, displayName: newKey, updatedAt: nowMs };
+      set((s) => ({
+        currentSessionKey: newKey,
+        currentAgentId: normalizedAgentId,
+        sessions: [
+          ...(leavingEmpty ? s.sessions.filter((sess) => sess.key !== currentSessionKey) : s.sessions),
+          newSessionEntry,
+        ],
+        sessionLabels: leavingEmpty
+          ? Object.fromEntries(Object.entries(s.sessionLabels).filter(([k]) => k !== currentSessionKey))
+          : s.sessionLabels,
+        sessionLastActivity: leavingEmpty
+          ? {
+            ...Object.fromEntries(Object.entries(s.sessionLastActivity).filter(([k]) => k !== currentSessionKey)),
+            [newKey]: nowMs,
+          }
+          : { ...s.sessionLastActivity, [newKey]: nowMs },
+        messages: [],
+        streamingText: '',
+        streamingMessage: null,
+        streamingTools: [],
+        activeRunId: null,
+        error: null,
+        pendingFinal: false,
+        lastUserMessageAt: null,
+        pendingToolImages: [],
+      }));
+      if (isNativeCli) {
+        const provider = agents.find((a) => a.id === normalizedAgentId)?.runtime?.nativeCli?.provider;
+        void hostApiFetch('/api/sessions/native-cli-session', {
+          method: 'POST',
+          body: JSON.stringify({
+            sessionKey: newKey,
+            provider,
+          }),
+        }).catch(() => {
+          // Best effort; the live store still contains the new session immediately.
+        });
+      }
+      return newKey;
+    },
 
     newSession: () => {
       const { currentSessionKey, messages, sessionLastActivity, sessionLabels } = get();

@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
 import { useAgentsStore } from '@/stores/agents';
+import { useChatStore } from '@/stores/chat';
 import { useModelsStore } from '@/stores/models';
 import { useOrganizationStore } from '@/stores/organization';
 import type { ParentType } from '@/types/organization';
@@ -342,12 +343,16 @@ export function OrganizationView() {
 
   const handleChatWithAgent = useCallback(
     (agentId: string) => {
-      navigate('/', {
-        state: {
-          createNewSessionFor: agentId,
-          createNativeCliSession: agentById[agentId]?.runtime?.type === 'native-cli',
-        },
+      const agent = agentById[agentId];
+      const newSessionKey = useChatStore.getState().newSessionForAgent(agentId, {
+        nativeCli: agent?.runtime?.type === 'native-cli',
       });
+      console.log('[OrganizationView] Created new chat session for agent:', {
+        agentId,
+        nativeCli: agent?.runtime?.type === 'native-cli',
+        sessionKey: newSessionKey,
+      });
+      navigate('/');
     },
     [agentById, navigate],
   );
@@ -557,7 +562,7 @@ export function OrganizationView() {
                         type="button"
                         onClick={() => handleChatWithAgent(agent.id)}
                         className="rounded-lg p-2 text-muted-foreground transition-colors hover:bg-black/5 hover:text-foreground dark:hover:bg-white/10"
-                        title="开始对话"
+                        title="新建对话"
                       >
                         <MessageCircle className="h-4 w-4" />
                       </button>
@@ -808,7 +813,7 @@ export function OrganizationView() {
                             handleChatWithAgent(node.id);
                           }}
                           className="rounded-lg p-2 text-muted-foreground transition-colors hover:bg-black/5 hover:text-foreground dark:hover:bg-white/10"
-                          title="开始对话"
+                          title="新建对话"
                         >
                           <MessageCircle className="h-4 w-4" />
                         </button>

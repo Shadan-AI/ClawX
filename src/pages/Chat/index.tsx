@@ -22,22 +22,13 @@ import { cn } from '@/lib/utils';
 import { SKILL_TRIAL_AGENT_ID } from '@/lib/skill-trial';
 import { useStickToBottomInstant } from '@/hooks/use-stick-to-bottom-instant';
 import { useMinLoading } from '@/hooks/use-min-loading';
+import { hostApiFetch } from '@/lib/host-api';
 
 type InputShellState = 'collapsed' | 'auto' | 'focused';
 
 type ChatRouteState = {
-  createNewSessionFor?: string;
-  createNativeCliSession?: boolean;
   quickUseSkill?: { name: string; slug: string; description: string };
 };
-
-function buildNewAgentSessionKey(agentId: string, nativeCli: boolean) {
-  if (nativeCli) {
-    const shortId = Math.random().toString(36).slice(2, 10);
-    return `agent:${agentId}:cli:${shortId}`;
-  }
-  return `agent:${agentId}:session-${Date.now()}`;
-}
 
 function isNativeCliSessionKey(sessionKey: string) {
   return /^agent:[^:]+:cli:/i.test(sessionKey);
@@ -54,8 +45,7 @@ export function Chat() {
   const currentAgentId = useChatStore((s) => s.currentAgentId);
   const modelCount = useModelsStore((s) => s.models.length);
   const loading = useChatStore((s) => s.loading);
-  const switchSession = useChatStore((s) => s.switchSession);
-  const fetchAgents = useAgentsStore((s) => s.fetchAgents);
+  const newSessionForAgent = useChatStore((s) => s.newSessionForAgent);
   const agents = useAgentsStore((s) => s.agents);
   const sessions = useChatStore((s) => s.sessions);
   
@@ -77,7 +67,7 @@ export function Chat() {
         }
       : null;
     const nextQuickUseSkill = quickUseSkillFromUrl || state?.quickUseSkill || null;
-    const targetAgentId = state?.createNewSessionFor || (nextQuickUseSkill ? SKILL_TRIAL_AGENT_ID : null);
+    const targetAgentId = nextQuickUseSkill ? SKILL_TRIAL_AGENT_ID : null;
     const routeActionKey = JSON.stringify({
       key: location.key,
       search: location.search,
@@ -87,28 +77,11 @@ export function Chat() {
     });
     const shouldCreateSession = Boolean(targetAgentId) && processedRouteActionRef.current !== routeActionKey;
 
-    let cancelled = false;
     if (targetAgentId && shouldCreateSession) {
       processedRouteActionRef.current = routeActionKey;
       const agentId = targetAgentId;
-      const createSession = async () => {
-        let targetAgent = useAgentsStore.getState().agents.find((agent) => agent.id === agentId);
-        if (!targetAgent) {
-          try {
-            await fetchAgents();
-            targetAgent = useAgentsStore.getState().agents.find((agent) => agent.id === agentId);
-          } catch (error) {
-            console.warn('[Chat] Failed to refresh agents before creating session:', error);
-          }
-        }
-        if (cancelled) return;
-
-        const nativeCli = state?.createNativeCliSession === true || targetAgent?.runtime?.type === 'native-cli';
-        const newSessionKey = buildNewAgentSessionKey(agentId, nativeCli);
-        console.log('[Chat] Creating new session for agent:', { agentId, nativeCli, newSessionKey });
-        switchSession(newSessionKey);
-      };
-      void createSession();
+      const newSessionKey = newSessionForAgent(agentId);
+      console.log('[Chat] Created quick-use session:', { agentId, newSessionKey });
     }
 
     let quickUseFrameId: number | null = null;
@@ -121,17 +94,16 @@ export function Chat() {
 
     if (skillSlug) {
       window.history.replaceState({}, document.title, location.pathname);
-    } else if (state?.quickUseSkill || state?.createNewSessionFor) {
+    } else if (state?.quickUseSkill) {
       window.history.replaceState({}, document.title);
     }
 
     return () => {
-      cancelled = true;
       if (quickUseFrameId !== null) {
         window.cancelAnimationFrame(quickUseFrameId);
       }
     };
-  }, [fetchAgents, location, switchSession]);
+  }, [location, newSessionForAgent]);
   const sending = useChatStore((s) => s.sending);
   const error = useChatStore((s) => s.error);
   const showThinking = useChatStore((s) => s.showThinking);
@@ -146,11 +118,46 @@ export function Chat() {
   const nativeCliProvider = currentAgent?.runtime?.nativeCli?.provider?.trim().toLowerCase() || undefined;
   const currentSession = sessions.find((session) => session.key === currentSessionKey);
   const nativeCliSessionId = nativeCliProvider
-    ? currentSession?.cliSessionIds?.[nativeCliProvider] ?? currentSession?.cliSessionId
+    ? currentSession?.cliSessionIds?.[nativeCliProvider] ?? currentSession?.cliSessionId ?? currentSession?.sessionId
     : currentSession?.claudeCliSessionId
       ?? currentSession?.cliSessionId
       ?? currentSession?.cliSessionIds?.claude
-      ?? currentSession?.cliSessionIds?.codex;
+      ?? currentSession?.cliSessionIds?.codex
+      ?? currentSession?.sessionId;
+
+  const handleNativeCliUserText = useCallback((text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    const nowMs = Date.now();
+    const title = trimmed.length > 50 ? `${trimmed.slice(0, 50)}...` : trimmed;
+    useChatStore.setState((state) => {
+      const nextSessionLabels = !state.sessionLabels[currentSessionKey]
+        ? { ...state.sessionLabels, [currentSessionKey]: title }
+        : state.sessionLabels;
+      return {
+        sessionLabels: nextSessionLabels,
+        sessionLastActivity: { ...state.sessionLastActivity, [currentSessionKey]: nowMs },
+        sessions: state.sessions.map((session) => (
+          session.key === currentSessionKey
+            ? {
+                ...session,
+                label: session.label && session.label !== session.key ? session.label : title,
+                displayName: session.displayName && session.displayName !== session.key ? session.displayName : title,
+                updatedAt: Math.max(session.updatedAt ?? 0, nowMs),
+              }
+            : session
+        )),
+      };
+    });
+    void hostApiFetch('/api/sessions/native-cli-session', {
+      method: 'POST',
+      body: JSON.stringify({
+        sessionKey: currentSessionKey,
+        provider: nativeCliProvider,
+        label: title,
+      }),
+    }).catch(() => {});
+  }, [currentSessionKey, nativeCliProvider]);
 
   const cleanupEmptySession = useChatStore((s) => s.cleanupEmptySession);
 
@@ -253,8 +260,8 @@ export function Chat() {
   }, [cleanupEmptySession]);
 
   useEffect(() => {
-    void fetchAgents();
-  }, [fetchAgents]);
+    void useAgentsStore.getState().fetchAgents();
+  }, []);
 
   // Fetch models on mount
   useEffect(() => {
@@ -303,10 +310,14 @@ export function Chat() {
       {isNativeCli ? (
         <div className="flex-1 min-h-0 overflow-hidden">
           <NativeCliTerminal
+            key={currentSessionKey}
             agentId={currentAgentId}
             sessionKey={currentSessionKey}
             cliSessionId={nativeCliSessionId}
             cliSessionProvider={nativeCliProvider}
+            sessionTitle={currentSession?.label ?? currentSession?.displayName}
+            sessionUpdatedAt={currentSession?.updatedAt}
+            onUserText={handleNativeCliUserText}
           />
         </div>
       ) : (

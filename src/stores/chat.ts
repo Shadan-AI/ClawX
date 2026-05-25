@@ -788,7 +788,11 @@ function buildFallbackMainSessionKey(agentId: string): string {
 
 function buildNativeCliSessionKey(agentId: string): string {
   const shortId = Math.random().toString(36).slice(2, 10);
-  return `agent:${normalizeAgentId(agentId)}:cli:${shortId}`;
+  return `agent:${normalizeAgentId(agentId)}:cli:${Date.now().toString(36)}-${shortId}`;
+}
+
+function buildAgentAdhocSessionKey(agentId: string): string {
+  return `agent:${normalizeAgentId(agentId)}:session-${Date.now()}`;
 }
 
 function resolveMainSessionKeyForAgent(agentId: string | undefined | null): string | null {
@@ -1129,6 +1133,9 @@ function shouldHideIncompleteSession(session: ChatSession, sessionLabels: Record
   if (session.key.endsWith(':main')) {
     return false;
   }
+  if (/^agent:[^:]+:cli:/i.test(session.key)) {
+    return false;
+  }
 
   const labelCandidates = [
     sessionLabels[session.key],
@@ -1175,6 +1182,9 @@ function mergeSessionLists(primarySessions: ChatSession[], supplementSessions: C
       updatedAt: existing.updatedAt ?? session.updatedAt,
       sessionId: existing.sessionId ?? session.sessionId,
       sessionFile: existing.sessionFile ?? session.sessionFile,
+      cliSessionIds: existing.cliSessionIds ?? session.cliSessionIds,
+      cliSessionId: existing.cliSessionId ?? session.cliSessionId,
+      claudeCliSessionId: existing.claudeCliSessionId ?? session.claudeCliSessionId,
       lastChannel: existing.lastChannel ?? session.lastChannel,
       lastAccountId: existing.lastAccountId ?? session.lastAccountId,
       deliveryContext: existing.deliveryContext ?? session.deliveryContext,
@@ -2131,6 +2141,64 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   // ── New session ──
+
+  newSessionForAgent: (agentId, options) => {
+    const normalizedAgentId = normalizeAgentId(agentId);
+    const { currentSessionKey, messages, sessionLastActivity, sessionLabels } = get();
+    captureSessionRuntime(get());
+    const leavingEmpty = isUnusedDraftSession(
+      currentSessionKey,
+      messages,
+      sessionLastActivity,
+      sessionLabels,
+    );
+    const agent = useAgentsStore.getState().agents.find((candidate) => candidate.id === normalizedAgentId);
+    const nativeCli = options?.nativeCli === true || agent?.runtime?.type === 'native-cli';
+    const newKey = nativeCli
+      ? buildNativeCliSessionKey(normalizedAgentId)
+      : buildAgentAdhocSessionKey(normalizedAgentId);
+    const nowMs = Date.now();
+    const newSessionEntry: ChatSession = { key: newKey, displayName: newKey, updatedAt: nowMs };
+    set((s) => ({
+      currentSessionKey: newKey,
+      currentAgentId: normalizedAgentId,
+      sessions: [
+        ...(leavingEmpty ? s.sessions.filter((sess) => sess.key !== currentSessionKey) : s.sessions),
+        newSessionEntry,
+      ],
+      sessionLabels: leavingEmpty
+        ? Object.fromEntries(Object.entries(s.sessionLabels).filter(([k]) => k !== currentSessionKey))
+        : s.sessionLabels,
+      sessionLastActivity: leavingEmpty
+        ? {
+          ...Object.fromEntries(Object.entries(s.sessionLastActivity).filter(([k]) => k !== currentSessionKey)),
+          [newKey]: nowMs,
+        }
+        : { ...s.sessionLastActivity, [newKey]: nowMs },
+      messages: [],
+      streamingText: '',
+      streamingMessage: null,
+      streamingTools: [],
+      pendingFinal: false,
+      activeRunId: null,
+      error: null,
+      lastUserMessageAt: null,
+      pendingToolImages: [],
+    }));
+    clearSessionRuntime(newKey);
+    if (nativeCli) {
+      void hostApiFetch('/api/sessions/native-cli-session', {
+        method: 'POST',
+        body: JSON.stringify({
+          sessionKey: newKey,
+          provider: agent?.runtime?.nativeCli?.provider,
+        }),
+      }).catch(() => {
+        // Best effort; the live store still contains the new session immediately.
+      });
+    }
+    return newKey;
+  },
 
   newSession: () => {
     // Generate a new unique session key and switch to it.

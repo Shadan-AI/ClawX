@@ -21,6 +21,55 @@ const AGENT_BOOTSTRAP_FILES = [
   'IDENTITY.md',
   'BOOT.md',
 ];
+
+function asStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const items = value.filter((item): item is string => typeof item === 'string');
+  return items.length > 0 ? items : undefined;
+}
+
+function normalizeNativeCliProvider(provider: unknown, command: unknown): string {
+  const configured = typeof provider === 'string' ? provider.trim().toLowerCase() : '';
+  if (configured) return configured;
+  const commandName = typeof command === 'string'
+    ? command.trim().toLowerCase().split(/[\\/]/).pop() ?? ''
+    : '';
+  if (commandName.includes('codex')) return 'codex';
+  if (commandName.includes('claude')) return 'claude';
+  return 'custom';
+}
+
+function defaultNativeCliResumeArgs(provider: string, args: string[] | undefined): string[] | undefined {
+  const existingArgs = args ?? [];
+  if (provider === 'claude') return ['--resume', '{sessionId}', ...existingArgs];
+  if (provider === 'codex') return ['resume', '{sessionId}', ...existingArgs];
+  return undefined;
+}
+
+function normalizeAgentRuntime(runtime: Record<string, unknown>): Record<string, unknown> {
+  if (runtime.type !== 'native-cli') return runtime;
+  const nativeCli = runtime.nativeCli;
+  if (!nativeCli || typeof nativeCli !== 'object' || Array.isArray(nativeCli)) return runtime;
+
+  const nativeCliRecord = nativeCli as Record<string, unknown>;
+  const command = typeof nativeCliRecord.command === 'string' ? nativeCliRecord.command.trim() : '';
+  if (!command) return runtime;
+
+  const provider = normalizeNativeCliProvider(nativeCliRecord.provider, command);
+  const args = asStringArray(nativeCliRecord.args);
+  const resumeArgs = asStringArray(nativeCliRecord.resumeArgs) ?? defaultNativeCliResumeArgs(provider, args);
+
+  return {
+    ...runtime,
+    nativeCli: {
+      ...nativeCliRecord,
+      provider,
+      command,
+      ...(args ? { args } : {}),
+      ...(resumeArgs ? { resumeArgs } : {}),
+    },
+  };
+}
 const AGENT_RUNTIME_FILES = [
   'auth-profiles.json',
   'models.json',
@@ -90,7 +139,7 @@ export interface AgentSummary {
   mainSessionKey: string;
   channelTypes: string[];
   skills?: string[];
-  runtime?: { type: string; nativeCli?: { provider: string; command: string } };
+  runtime?: { type: string; nativeCli?: { provider: string; command: string; args?: string[]; resumeArgs?: string[] } };
 }
 
 export interface AgentsSnapshot {
@@ -525,7 +574,7 @@ async function buildSnapshotFromConfig(config: AgentConfigDocument, preloadedCha
         .filter((ct) => ownedChannels.has(ct))
         .map((channelType) => toUiChannelType(channelType)),
       skills: Array.isArray(entry.skills) ? entry.skills : undefined,
-      runtime: entry.runtime as { type: string; nativeCli?: { provider: string; command: string } } | undefined,
+      runtime: entry.runtime as { type: string; nativeCli?: { provider: string; command: string; args?: string[]; resumeArgs?: string[] } } | undefined,
     };
   });
 
@@ -1002,7 +1051,8 @@ export async function updateAgentRuntime(agentId: string, runtime: Record<string
       throw new Error(`Agent "${agentId}" not found`);
     }
 
-    const nextEntry: AgentListEntry = { ...entries[index], runtime };
+    const normalizedRuntime = normalizeAgentRuntime(runtime);
+    const nextEntry: AgentListEntry = { ...entries[index], runtime: normalizedRuntime };
     entries[index] = nextEntry;
     config.agents = {
       ...agentsConfig,
@@ -1010,8 +1060,36 @@ export async function updateAgentRuntime(agentId: string, runtime: Record<string
     };
 
     await writeOpenClawConfig(config);
-    const runtimeType = typeof runtime.type === 'string' ? runtime.type : undefined;
+    const runtimeType = typeof normalizedRuntime.type === 'string' ? normalizedRuntime.type : undefined;
     logger.info('Updated agent runtime', { agentId, runtimeType });
     return buildSnapshotFromConfig(config);
+  });
+}
+
+export async function ensureNativeCliRuntimeResumeArgs(): Promise<boolean> {
+  return withConfigLock(async () => {
+    const config = await readOpenClawConfig() as AgentConfigDocument;
+    const { agentsConfig, entries } = normalizeAgentsConfig(config);
+    let changed = false;
+    const nextEntries = entries.map((entry) => {
+      const runtime = entry.runtime;
+      if (!runtime || typeof runtime !== 'object' || Array.isArray(runtime)) return entry;
+      const normalizedRuntime = normalizeAgentRuntime(runtime as Record<string, unknown>);
+      if (normalizedRuntime === runtime) return entry;
+      const before = JSON.stringify(runtime);
+      const after = JSON.stringify(normalizedRuntime);
+      if (before === after) return entry;
+      changed = true;
+      return { ...entry, runtime: normalizedRuntime };
+    });
+
+    if (!changed) return false;
+    config.agents = {
+      ...agentsConfig,
+      list: nextEntries,
+    };
+    await writeOpenClawConfig(config);
+    logger.info('Repaired native-cli runtime resumeArgs');
+    return true;
   });
 }
