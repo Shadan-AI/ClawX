@@ -1209,7 +1209,7 @@ Additional context about the user's needs and expectations.
               </h3>
             </div>
             <p className="text-xs text-muted-foreground leading-relaxed">
-              选择模板快速配置技能
+              选择岗位快速配置员工技能
             </p>
           </div>
           
@@ -1361,15 +1361,6 @@ Additional context about the user's needs and expectations.
             {/* 视图切换按钮 */}
             <div className="flex items-center gap-1.5 p-1 bg-black/5 dark:bg-white/5 rounded-lg border border-black/10 dark:border-white/10">
               <Button
-                variant={viewMode === 'skills' ? 'default' : 'ghost'}
-                size="sm"
-                onClick={() => setViewMode('skills')}
-                className="h-8 text-xs font-bold rounded-md px-4"
-              >
-                <Puzzle className="h-4 w-4 mr-1.5" />
-                已选技能
-              </Button>
-              <Button
                 variant={viewMode === 'profile' ? 'default' : 'ghost'}
                 size="sm"
                 onClick={() => setViewMode('profile')}
@@ -1378,6 +1369,15 @@ Additional context about the user's needs and expectations.
               >
                 <FileText className="h-4 w-4 mr-1.5" />
                 岗位定义
+              </Button>
+              <Button
+                variant={viewMode === 'skills' ? 'default' : 'ghost'}
+                size="sm"
+                onClick={() => setViewMode('skills')}
+                className="h-8 text-xs font-bold rounded-md px-4"
+              >
+                <Puzzle className="h-4 w-4 mr-1.5" />
+                岗位技能包
               </Button>
             </div>
             {viewMode === 'skills' && (

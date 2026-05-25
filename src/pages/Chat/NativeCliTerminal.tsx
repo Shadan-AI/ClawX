@@ -2,20 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import {
-  Globe,
-  Image,
   Loader2,
-  Mic,
-  MoreHorizontal,
-  PenLine,
-  Plus,
-  Send,
-  Terminal as TerminalIcon,
-  Zap,
 } from 'lucide-react';
 import { invokeIpc } from '@/lib/api-client';
 import { hostApiFetch } from '@/lib/host-api';
 import { useChatStore } from '@/stores/chat';
+import { ChatInput } from './ChatInput';
 import '@xterm/xterm/css/xterm.css';
 
 interface NativeCliTerminalProps {
@@ -422,15 +414,15 @@ function NativeCliTerminalStyles() {
       .native-cli-terminal__mount {
         position: absolute;
         top: 20px;
+        bottom: 132px;
         left: 0;
         width: 100%;
-        height: calc(100% - 20px);
         overflow: hidden;
         background: var(--native-cli-background);
       }
       .native-cli-terminal__loading {
         position: absolute;
-        inset: 20px 0 0;
+        inset: 20px 0 132px;
         z-index: 3;
         display: flex;
         align-items: center;
@@ -518,117 +510,6 @@ function NativeCliTerminalStyles() {
         white-space: pre-wrap;
         overflow-wrap: anywhere;
       }
-      .native-cli-terminal__compose {
-        flex-shrink: 0;
-        position: relative;
-        z-index: 4;
-        width: 100%;
-        padding: 14px max(24px, calc((100vw - var(--terminal-content-width)) / 2)) 18px;
-        background: var(--native-cli-background);
-      }
-      .native-cli-terminal__box {
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-        max-width: var(--terminal-content-width);
-        margin: 0 auto;
-        border: 1px solid transparent;
-        border-radius: 22px;
-        background: var(--native-cli-card);
-        padding: 14px 14px 12px 16px;
-        box-shadow: 0 18px 54px rgb(37 99 235 / .13), 0 2px 10px rgb(15 23 42 / .04);
-      }
-      .native-cli-terminal__box:focus-within {
-        border-color: #bfdbfe;
-      }
-      .native-cli-terminal textarea {
-        resize: none;
-        min-height: 44px;
-        max-height: 132px;
-        border: 0;
-        outline: 0;
-        padding: 2px 4px;
-        background: transparent;
-        color: var(--native-cli-foreground);
-        font: inherit;
-        font-size: 15px;
-        line-height: 1.45;
-      }
-      .native-cli-terminal textarea::placeholder {
-        color: #9ca3af;
-      }
-      .native-cli-terminal__footer {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 14px;
-        min-height: 34px;
-      }
-      .native-cli-terminal__tools,
-      .native-cli-terminal__actions {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        min-width: 0;
-      }
-      .native-cli-terminal__actions {
-        flex-shrink: 0;
-        gap: 8px;
-      }
-      .native-cli-terminal__tool {
-        display: inline-flex;
-        align-items: center;
-        gap: 5px;
-        height: 30px;
-        padding: 0 8px;
-        border-radius: 10px;
-        color: var(--native-cli-foreground);
-        font-size: 13px;
-        white-space: nowrap;
-      }
-      .native-cli-terminal__tool--icon {
-        width: 30px;
-        padding: 0;
-        justify-content: center;
-        border-radius: 999px;
-      }
-      .native-cli-terminal svg {
-        width: 16px;
-        height: 16px;
-        fill: none;
-        stroke: currentColor;
-        stroke-width: 2;
-        stroke-linecap: round;
-        stroke-linejoin: round;
-      }
-      .native-cli-terminal__send,
-      .native-cli-terminal__voice {
-        width: 38px;
-        height: 38px;
-        border: 0;
-        border-radius: 999px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-      }
-      .native-cli-terminal__send {
-        cursor: pointer;
-        color: #fff;
-        background: #2563eb;
-      }
-      .native-cli-terminal__send:disabled {
-        opacity: .45;
-        cursor: default;
-      }
-      .native-cli-terminal__voice {
-        color: var(--native-cli-foreground);
-        background: hsl(var(--muted));
-      }
-      @media (max-width: 760px) {
-        .native-cli-terminal__tool span { display: none; }
-        .native-cli-terminal__tool { width: 30px; padding: 0; justify-content: center; }
-        .native-cli-terminal__tools { gap: 2px; }
-      }
     `}</style>
   );
 }
@@ -675,7 +556,6 @@ export function NativeCliTerminal({
   const [awaitingInitialOutput, setAwaitingInitialOutput] = useState(false);
   const [displayedLoadingLabel, setDisplayedLoadingLabel] = useState('');
   const [loadingExiting, setLoadingExiting] = useState(false);
-  const [draft, setDraft] = useState('');
 
   const normalizedProvider = useMemo(() => normalizeProvider(cliSessionProvider), [cliSessionProvider]);
 
@@ -1195,7 +1075,6 @@ export function NativeCliTerminal({
 
   const sendShellCompose = useCallback((text: string, notifyUserText = true) => {
     if (notifyUserText) onUserText?.(text);
-    setDraft('');
     if (!userHasInteractedRef.current) {
       userHasInteractedRef.current = true;
       termRef.current?.clear();
@@ -1223,7 +1102,6 @@ export function NativeCliTerminal({
       userHasInteractedRef.current = true;
       termRef.current?.clear();
     }
-    setDraft('');
     decorateLocalTerminalTurn(text);
     ws.send(JSON.stringify({ type: 'user_text', text }));
     startCliSessionIdFallbackResolver(text, startedAt);
@@ -1231,54 +1109,15 @@ export function NativeCliTerminal({
     persistState();
   }, [decorateLocalTerminalTurn, onUserText, persistState, scheduleTerminalUserEchoStyle, sendShellCompose, startCliSessionIdFallbackResolver]);
 
-  const handleKeyDown = useCallback((event: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === 'Enter' && !event.shiftKey) {
-      event.preventDefault();
-      if (draft.trim()) {
-        if (shellPassthroughRef.current) {
-          sendShellCompose(draft);
-        } else {
-          sendText(draft);
-        }
-      } else if (sendTerminalData('\r')) {
-        setDraft('');
-      }
+  const handleChatInputSend = useCallback((text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    if (shellPassthroughRef.current) {
+      sendShellCompose(trimmed);
       return;
     }
-
-    if (event.metaKey || event.altKey || event.shiftKey) return;
-
-    if (event.ctrlKey) {
-      const data = ({ c: '\x03', d: '\x04', l: '\x0c' } as Record<string, string>)[event.key.toLowerCase()];
-      if (data) {
-        event.preventDefault();
-        sendTerminalData(data);
-      }
-      return;
-    }
-
-    if (event.key === 'Tab') {
-      event.preventDefault();
-      const prefix = draft;
-      setDraft('');
-      sendTerminalData(`${prefix}\t`);
-      return;
-    }
-
-    if (draft.length > 0) return;
-    const data = ({
-      ArrowUp: '\x1b[A',
-      ArrowDown: '\x1b[B',
-      ArrowRight: '\x1b[C',
-      ArrowLeft: '\x1b[D',
-      Escape: '\x1b',
-      Backspace: '\x7f',
-    } as Record<string, string>)[event.key];
-    if (data) {
-      event.preventDefault();
-      sendTerminalData(data);
-    }
-  }, [draft, sendShellCompose, sendTerminalData, sendText]);
+    sendText(trimmed);
+  }, [sendShellCompose, sendText]);
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -1375,7 +1214,6 @@ export function NativeCliTerminal({
     }
   }, [bindNativeCliSessionId, cliSessionId, connect]);
 
-  const canSend = status === 'connected' && draft.trim().length > 0;
   const desiredLoadingLabel = status === 'connected' && !awaitingInitialOutput
     ? ''
     : connectionPhase === 'resuming'
@@ -1425,39 +1263,15 @@ export function NativeCliTerminal({
           </div>
         ) : null}
       </div>
-      <div className="native-cli-terminal__compose">
-        <div className="native-cli-terminal__box">
-          <textarea
-            value={draft}
-            rows={1}
-            placeholder={status === 'connected' ? '发消息或输入命令' : desiredLoadingLabel}
+      <div className="pointer-events-none absolute bottom-4 left-0 right-0 z-10">
+        <div className="pointer-events-none h-20 bg-gradient-to-t from-background/20 to-transparent" />
+        <div className="pointer-events-auto">
+          <ChatInput
+            onSend={handleChatInputSend}
             disabled={status !== 'connected'}
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={handleKeyDown}
+            sending={false}
+            isExpanded
           />
-          <div className="native-cli-terminal__footer">
-            <div className="native-cli-terminal__tools" aria-hidden="true">
-              <span className="native-cli-terminal__tool native-cli-terminal__tool--icon"><Plus /></span>
-              <span className="native-cli-terminal__tool"><Zap /><span>快速</span></span>
-              <span className="native-cli-terminal__tool"><PenLine /><span>写作</span></span>
-              <span className="native-cli-terminal__tool"><TerminalIcon /><span>编程</span></span>
-              <span className="native-cli-terminal__tool"><Image /><span>图像</span></span>
-              <span className="native-cli-terminal__tool"><Globe /><span>翻译</span></span>
-              <span className="native-cli-terminal__tool"><MoreHorizontal /><span>更多</span></span>
-            </div>
-            <div className="native-cli-terminal__actions">
-              <span className="native-cli-terminal__voice" aria-hidden="true"><Mic /></span>
-              <button
-                type="button"
-                className="native-cli-terminal__send"
-                title="Send"
-                disabled={!canSend}
-                onClick={() => sendText(draft)}
-              >
-                <Send />
-              </button>
-            </div>
-          </div>
         </div>
       </div>
     </div>

@@ -162,6 +162,7 @@ export function Agents() {
   const [hasCompletedInitialLoad, setHasCompletedInitialLoad] = useState(() => agents.length > 0);
 
   const [showAddDialog, setShowAddDialog] = useState(false);
+  const [editingAgent, setEditingAgent] = useState<AgentSummary | null>(null);
   const [activeAgentId, setActiveAgentId] = useState<string | null>(null);
   const [agentToDelete, setAgentToDelete] = useState<AgentSummary | null>(null);
   const [showTemplateDialog, setShowTemplateDialog] = useState(false);
@@ -468,7 +469,7 @@ export function Agents() {
               className="h-9 text-[13px] font-medium rounded-full px-4 border-black/10 dark:border-white/10 bg-transparent hover:bg-black/5 dark:hover:bg-white/5 shadow-none text-foreground/80 hover:text-foreground transition-colors"
             >
               <Layout className="h-3.5 w-3.5 mr-2" />
-              模板管理
+              岗位管理
             </Button>
             <Button
               onClick={() => setShowAddDialog(true)}
@@ -568,7 +569,13 @@ export function Agents() {
                         key={agent.id}
                         agent={agent}
                         channelGroups={visibleChannelGroups}
-                        onOpenSettings={() => setActiveAgentId(agent.id)}
+                        onOpenSettings={() => {
+                          if (agent.isDigitalEmployee) {
+                            setEditingAgent(agent);
+                          } else {
+                            setActiveAgentId(agent.id);
+                          }
+                        }}
                         onDelete={() => setAgentToDelete(agent)}
                         onDigitalEmployeeClick={handleDigitalEmployeeClick}
                       />
@@ -608,6 +615,14 @@ export function Agents() {
       {showAddDialog && (
         <AddAgentDialog
           onClose={() => setShowAddDialog(false)}
+          onRefresh={fetchChannelAccounts}
+        />
+      )}
+
+      {editingAgent && (
+        <AddAgentDialog
+          agent={editingAgent}
+          onClose={() => setEditingAgent(null)}
           onRefresh={fetchChannelAccounts}
         />
       )}
@@ -851,7 +866,7 @@ function AgentCard({
         {agent.isDigitalEmployee && (
           <div className="text-[12px] text-muted-foreground flex items-start gap-1.5">
             <span className="opacity-70 shrink-0">📋</span>
-            <span className="line-clamp-2">模板: {agent.templateName || '无'}</span>
+            <span className="line-clamp-2">岗位: {agent.templateName || '无'}</span>
           </div>
         )}
       </div>
@@ -944,21 +959,37 @@ function ChannelLogo({ type }: { type: ChannelType }) {
   }
 }
 
+function getRuntimeConfig(preset: string): { command: string; resumeArgs?: string[] } {
+  switch (preset) {
+    case 'claude':
+      return { command: 'claude', resumeArgs: ['--resume', '{sessionId}'] };
+    case 'codex':
+      return { command: 'codex', resumeArgs: ['resume', '{sessionId}'] };
+    case 'kiro':
+      return { command: 'kiro-cli' };
+    case 'opencode':
+      return { command: 'opencode', resumeArgs: ['--resume', '{sessionId}'] };
+    default:
+      return { command: preset };
+  }
+}
+
 function AddAgentDialog({
   onClose,
   onRefresh,
+  agent: editAgent,
 }: {
   onClose: () => void;
   onRefresh: () => Promise<void>;
+  agent?: AgentSummary;
 }) {
   const { t } = useTranslation('agents');
-  const [name, setName] = useState('');
+  const isEditMode = !!editAgent;
+  const [name, setName] = useState(editAgent?.name || '');
   const [headImage, setHeadImage] = useState('');
-  const [selectedModel, setSelectedModel] = useState('');
+  const [selectedModel, setSelectedModel] = useState(editAgent?.overrideModelRef || editAgent?.modelRef || '');
   const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(null);
-  const [runtimeType, setRuntimeType] = useState<'embedded' | 'native-cli'>('embedded');
-  const [cliCommand, setCliCommand] = useState('');
-  const [cliArgs, setCliArgs] = useState('');
+  const [runtimePreset, setRuntimePreset] = useState<string>(editAgent?.runtime?.nativeCli?.provider || 'embedded');
   const [saving, setSaving] = useState(false);
   
   const { models, fetchModels, createDigitalEmployee, fetchDigitalEmployees } = useModelsStore();
@@ -997,9 +1028,44 @@ function AddAgentDialog({
     }
     setSaving(true);
     try {
-      // 创建数字员工
+      if (isEditMode && editAgent) {
+        // 编辑模式：更新已有数字员工
+        const { updateAgent } = useAgentsStore.getState();
+        await updateAgent(editAgent.id, name.trim());
+
+        // 更新 runtime 配置
+        if (runtimePreset !== 'embedded') {
+          const { command, resumeArgs } = getRuntimeConfig(runtimePreset);
+          const runtime = {
+            type: 'native-cli' as const,
+            nativeCli: {
+              provider: runtimePreset,
+              command,
+              ...(resumeArgs ? { resumeArgs } : {}),
+            },
+          };
+          await hostApiFetch(`/api/agents/${encodeURIComponent(editAgent.id)}/runtime`, {
+            method: 'PUT',
+            body: JSON.stringify({ runtime }),
+          });
+        } else {
+          // 切回 embedded 模式
+          await hostApiFetch(`/api/agents/${encodeURIComponent(editAgent.id)}/runtime`, {
+            method: 'PUT',
+            body: JSON.stringify({ runtime: { type: 'embedded' } }),
+          });
+        }
+
+        await fetchAgents();
+        await onRefresh();
+        toast.success('数字员工已更新');
+        onClose();
+        return;
+      }
+
+      // 创建模式
       const employee = await createDigitalEmployee(name.trim(), headImage, selectedModel);
-      
+
       // 如果选择了模板，应用模板的技能和profile文件
       if (selectedTemplateId) {
         const template = templates.find(t => t.id === selectedTemplateId);
@@ -1007,27 +1073,27 @@ function AddAgentDialog({
           // 将 template.skills (slugs) 转换为 skill IDs
           const { useSkillsStore } = await import('@/stores/skills');
           const allSkills = useSkillsStore.getState().skills;
-          
+
           const skillIds = template.skills
             .map(skillSlug => {
               const skill = allSkills.find(s => (s.slug || s.id) === skillSlug);
               return skill?.id;
             })
             .filter((id): id is string => id !== undefined);
-          
+
           console.log('[AddAgentDialog] Converting template skills:', {
             templateSlugs: template.skills,
             skillIds,
           });
-          
+
           if (skillIds.length > 0) {
             const { updateEmployeeSkills } = useModelsStore.getState();
             await updateEmployeeSkills(employee.id, skillIds);
-            
+
             // 保存模板关联
             const { useAgentsStore } = await import('@/stores/agents');
             const { updateAgentTemplate } = useAgentsStore.getState();
-            
+
             // 更新技能和模板
             useAgentsStore.setState((state) => ({
               agentSkills: {
@@ -1035,32 +1101,32 @@ function AddAgentDialog({
                 [employee.openclawAgentId]: skillIds,
               },
             }));
-            
+
             await updateAgentTemplate(employee.openclawAgentId, selectedTemplateId);
-            
+
             // 等待模板状态更新完成
             await new Promise(resolve => setTimeout(resolve, 100));
           }
         }
-        
+
         // 加载并应用模板的profile文件
         try {
           console.log('[AddAgentDialog] Loading template profile files...');
           const { fetchTemplateProfiles } = useAgentTemplatesStore.getState();
           const profileFiles = await fetchTemplateProfiles(selectedTemplateId);
-          
+
           if (profileFiles && Object.keys(profileFiles).length > 0) {
             console.log('[AddAgentDialog] Applying profile files:', Object.keys(profileFiles));
-            
+
             // 写入每个profile文件
             for (const [filename, content] of Object.entries(profileFiles)) {
-              await invokeIpc('agent-profile:save', { 
-                agentId: employee.openclawAgentId, 
-                filename, 
-                content 
+              await invokeIpc('agent-profile:save', {
+                agentId: employee.openclawAgentId,
+                filename,
+                content
               });
             }
-            
+
             console.log('[AddAgentDialog] Profile files applied successfully');
             const templateLabel = template?.nameZh || template?.name || '已选模板';
             toast.success(`已应用模板 "${templateLabel}" 的配置文件`);
@@ -1070,45 +1136,33 @@ function AddAgentDialog({
           toast.warning('技能已应用，但配置文件加载失败');
         }
       }
-      
+
       toast.success('数字员工创建成功');
-      
+
       // 等待一小段时间，确保 IM 平台已经完全创建了 bot
       await new Promise(resolve => setTimeout(resolve, 500));
-      
+
       // 刷新列表（包括频道）
       await Promise.all([fetchDigitalEmployees(), fetchAgents()]);
-      
+
       // 同步 bots 到配置文件（创建频道绑定）
       try {
         console.log('[AddAgentDialog] Syncing bots to create channel bindings...');
         await invokeIpc('box-im:syncBots');
         console.log('[AddAgentDialog] Bots synced successfully');
-        
+
         // 再次刷新以显示新的频道和模板
         await Promise.all([onRefresh(), fetchAgents()]);
 
         // 写入 runtime 配置（如果选择了 native-cli）
-        if (runtimeType === 'native-cli' && cliCommand.trim()) {
+        if (runtimePreset !== 'embedded') {
           try {
-            const command = cliCommand.trim();
-            const provider = command.toLowerCase().includes('codex')
-              ? 'codex'
-              : command.toLowerCase().includes('claude')
-                ? 'claude'
-                : command.split('/')[0] || 'custom';
-            const args = cliArgs.trim() ? cliArgs.trim().split(/\s+/) : [];
-            const resumeArgs = provider === 'codex'
-              ? ['resume', '{sessionId}', ...args]
-              : provider === 'claude'
-                ? ['--resume', '{sessionId}', ...args]
-                : undefined;
+            const { command, resumeArgs } = getRuntimeConfig(runtimePreset);
             const runtime = {
               type: 'native-cli' as const,
               nativeCli: {
-                provider,
+                provider: runtimePreset,
                 command,
-                ...(args.length > 0 ? { args } : {}),
                 ...(resumeArgs ? { resumeArgs } : {}),
               },
             };
@@ -1127,11 +1181,10 @@ function AddAgentDialog({
         console.error('[AddAgentDialog] Failed to sync bots:', syncErr);
         toast.error('频道同步失败: ' + String(syncErr));
       }
-      
+
       onClose();
     } catch (error) {
       toast.error(t('toast.agentCreateFailed', { error: String(error) }));
-      setSaving(false);
       setSaving(false);
       return;
     }
@@ -1143,10 +1196,10 @@ function AddAgentDialog({
       <Card className="w-full max-w-md rounded-3xl border-0 shadow-2xl bg-[#f3f1e9] dark:bg-card overflow-hidden">
         <CardHeader className="pb-2">
           <CardTitle className="text-2xl font-serif font-normal tracking-tight">
-            {t('createDialog.title')}
+            {isEditMode ? '编辑数字员工' : t('createDialog.title')}
           </CardTitle>
           <CardDescription className="text-[15px] mt-1 text-foreground/70">
-            {t('createDialog.description')}
+            {isEditMode ? `修改「${editAgent?.name}」的配置` : t('createDialog.description')}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6 pt-4 p-6">
@@ -1196,7 +1249,7 @@ function AddAgentDialog({
           
           {/* 模板选择 */}
           <div className="space-y-2.5">
-            <Label htmlFor="template-select" className={labelClasses}>技能模板（可选）</Label>
+            <Label htmlFor="template-select" className={labelClasses}>岗位模板（可选）</Label>
             <select
               id="template-select"
               value={selectedTemplateId || ''}
@@ -1217,43 +1270,17 @@ function AddAgentDialog({
           <div className="space-y-2.5">
             <Label className={labelClasses}>运行方式</Label>
             <select
-              value={runtimeType}
-              onChange={(e) => setRuntimeType(e.target.value as 'embedded' | 'native-cli')}
+              value={runtimePreset}
+              onChange={(e) => setRuntimePreset(e.target.value)}
               className={`${selectClasses} cursor-pointer`}
             >
-              <option value="embedded">默认（内置）</option>
-              <option value="native-cli">本地 CLI</option>
+              <option value="embedded">小龙虾（内置默认）</option>
+              <option value="claude">Claude Code</option>
+              <option value="codex">Codex</option>
+              <option value="kiro">Kiro-Cli</option>
+              <option value="opencode">OpenCode</option>
             </select>
-            <p className="text-[12px] text-foreground/60">
-              {runtimeType === 'embedded'
-                ? 'AI 对话由内置引擎处理'
-                : '通过本地终端启动 CLI 工具（如 Claude Code）'}
-            </p>
           </div>
-
-          {/* Native CLI 配置 */}
-          {runtimeType === 'native-cli' && (
-            <>
-              <div className="space-y-2.5">
-                <Label className={labelClasses}>启动命令</Label>
-                <Input
-                  value={cliCommand}
-                  onChange={(e) => setCliCommand(e.target.value)}
-                  placeholder="如：claude、codex"
-                  className={inputClasses}
-                />
-              </div>
-              <div className="space-y-2.5">
-                <Label className={labelClasses}>参数（可选）</Label>
-                <Input
-                  value={cliArgs}
-                  onChange={(e) => setCliArgs(e.target.value)}
-                  placeholder="如：--dangerously-skip-permissions"
-                  className={inputClasses}
-                />
-              </div>
-            </>
-          )}
           
           <div className="flex justify-end gap-2">
             <Button
@@ -1271,7 +1298,7 @@ function AddAgentDialog({
               {saving ? (
                 <>
                   <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
-                  {t('creating')}
+                  {isEditMode ? '保存中...' : t('creating')}
                 </>
               ) : (
                 t('common:actions.save')

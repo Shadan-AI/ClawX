@@ -163,10 +163,10 @@ export function TemplateManagementDialog({ isOpen, onClose }: TemplateManagement
         <div className="flex items-center justify-between p-6 border-b border-black/10 dark:border-white/10">
           <div>
             <h2 className="text-2xl font-serif text-foreground font-normal tracking-tight">
-              模板管理
+              岗位管理
             </h2>
             <p className="text-sm text-foreground/70 mt-1">
-              管理数字员工预设模板
+              管理数字员工预设岗位模板
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -176,7 +176,7 @@ export function TemplateManagementDialog({ isOpen, onClose }: TemplateManagement
                 className="h-9 text-[13px] font-medium rounded-full px-4"
               >
                 <Plus className="h-3.5 w-3.5 mr-2" />
-                创建模板
+                创建新岗位
               </Button>
             )}
             <Button

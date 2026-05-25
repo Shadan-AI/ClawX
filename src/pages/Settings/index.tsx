@@ -13,6 +13,7 @@ import {
   Copy,
   FileText,
   LogOut,
+  Terminal,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
@@ -255,6 +256,23 @@ export function Settings() {
     }
   };
 
+  const handleOpenOpenClawPage = async () => {
+    try {
+      const result = await hostApiFetch<{
+        success: boolean;
+        url?: string;
+        error?: string;
+      }>('/api/gateway/control-ui');
+      if (result.success && result.url) {
+        window.electron.openExternal(result.url);
+      } else {
+        console.error('Failed to get OpenClaw page URL:', result.error);
+      }
+    } catch (err) {
+      console.error('Error opening OpenClaw page:', err);
+    }
+  };
+
   const handleCopyGatewayToken = async () => {
     if (!controlUiInfo?.token) return;
     try {
@@ -336,7 +354,6 @@ export function Settings() {
 
   useEffect(() => {
     void refreshControlUiInfo();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -678,6 +695,26 @@ export function Settings() {
                   checked={gatewayAutoStart}
                   onCheckedChange={setGatewayAutoStart}
                 />
+              </div>
+
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div>
+                  <Label className="text-[15px] font-medium text-foreground">{t('gateway.openClawPage')}</Label>
+                  <p className="text-[13px] text-muted-foreground mt-1">
+                    {t('gateway.openClawPageDesc')}
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={handleOpenOpenClawPage}
+                  data-testid="settings-open-openclaw-page"
+                  className="rounded-full h-9 px-4 border-black/10 dark:border-white/10 bg-transparent hover:bg-black/5 dark:hover:bg-white/5"
+                >
+                  <Terminal className="h-3.5 w-3.5 mr-1.5" />
+                  {t('gateway.openClawPageAction')}
+                  <ExternalLink className="h-3 w-3 ml-1.5 opacity-60" />
+                </Button>
               </div>
 
               <div className="space-y-2">
