@@ -667,6 +667,17 @@ export function NativeCliTerminal({
     row.removeAttribute('data-openclaw-user-text');
   }, []);
 
+  const resetVisibleTerminalForResume = useCallback(() => {
+    termRef.current?.clear();
+    bufferRef.current = '';
+    markerBufferRef.current = '';
+    recentOutputRef.current = '';
+    terminalTurnsRef.current = [];
+    activeTerminalTurnIdRef.current = null;
+    userHasInteractedRef.current = true;
+    persistState();
+  }, [persistState]);
+
   const decorateTerminalUserEchoRow = useCallback((row: HTMLElement, userText: string) => {
     const trimmed = userText.trim();
     if (row.classList.contains('openclaw-user-echo-row') && row.dataset.openclawUserText === trimmed) return;
@@ -923,6 +934,7 @@ export function NativeCliTerminal({
     const knownCliSessionId = cliSessionIdRef.current || resolveStoredCliSessionId(sessionKey, cliSessionId) || hostResolvedCliSessionId;
     cliSessionIdRef.current = knownCliSessionId;
     if (knownCliSessionId) {
+      resetVisibleTerminalForResume();
       persistNativeCliSessionId(sessionKey, knownCliSessionId, normalizedProvider);
       persistState();
     }
@@ -1013,6 +1025,7 @@ export function NativeCliTerminal({
     handleTerminalStreamMarker,
     normalizedProvider,
     persistState,
+    resetVisibleTerminalForResume,
     sessionKey,
     upsertTerminalTurn,
   ]);
@@ -1124,9 +1137,10 @@ export function NativeCliTerminal({
     disposedRef.current = false;
 
     const persisted = loadPersistedTerminalState(sessionKey);
-    cliSessionIdRef.current = resolveStoredCliSessionId(sessionKey, cliSessionId) || persisted.cliSessionId || '';
+    const initialCliSessionId = resolveStoredCliSessionId(sessionKey, cliSessionId) || persisted.cliSessionId || '';
+    cliSessionIdRef.current = initialCliSessionId;
     userHasInteractedRef.current = Boolean(cliSessionIdRef.current || persisted.userHasInteracted);
-    bufferRef.current = persisted.buffer ?? '';
+    bufferRef.current = initialCliSessionId ? '' : persisted.buffer ?? '';
 
     const term = createTerminalInstance();
     const fitAddon = new FitAddon();
@@ -1139,7 +1153,7 @@ export function NativeCliTerminal({
       return true;
     });
     term.open(mount);
-    if (userHasInteractedRef.current && bufferRef.current) {
+    if (!initialCliSessionId && userHasInteractedRef.current && bufferRef.current) {
       term.write(bufferRef.current);
     }
     term.onData((data) => {
