@@ -480,6 +480,21 @@ function NativeCliTerminalStyles() {
       .native-cli-terminal__mount .xterm-viewport {
         background: var(--native-cli-background) !important;
         overflow-y: auto !important;
+        scrollbar-width: thin;
+        scrollbar-color: hsl(var(--foreground) / 0.1) transparent;
+      }
+      .native-cli-terminal__mount .xterm-viewport::-webkit-scrollbar {
+        width: 4px;
+      }
+      .native-cli-terminal__mount .xterm-viewport::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      .native-cli-terminal__mount .xterm-viewport::-webkit-scrollbar-thumb {
+        background: hsl(var(--foreground) / 0.1);
+        border-radius: 4px;
+      }
+      .native-cli-terminal__mount .xterm-viewport::-webkit-scrollbar-thumb:hover {
+        background: hsl(var(--foreground) / 0.2);
       }
       .native-cli-terminal__mount .xterm-rows div.openclaw-user-echo-row {
         display: flex !important;
@@ -548,6 +563,7 @@ export function NativeCliTerminal({
   const cliSessionIdPropRef = useRef(cliSessionId);
   const sessionTitleRef = useRef(sessionTitle);
   const sessionUpdatedAtRef = useRef(sessionUpdatedAt);
+  const skipResumeResolveRef = useRef(false);
   const reconnectDelayRef = useRef(1000);
   const disposedRef = useRef(false);
 
@@ -916,7 +932,10 @@ export function NativeCliTerminal({
 
     const storedCliSessionId = cliSessionIdRef.current || resolveStoredCliSessionId(sessionKey, cliSessionIdPropRef.current);
     const hasHistoricalTitle = Boolean(sessionTitleRef.current?.trim() && sessionTitleRef.current.trim() !== sessionKey);
-    const shouldWaitForResumeSessionId = !storedCliSessionId && hasHistoricalTitle && isNativeCliSessionKey(sessionKey);
+    const shouldWaitForResumeSessionId = !storedCliSessionId
+      && hasHistoricalTitle
+      && isNativeCliSessionKey(sessionKey)
+      && !skipResumeResolveRef.current;
     setStatus('connecting');
     setConnectionPhase(storedCliSessionId ? 'resuming' : shouldWaitForResumeSessionId ? 'preparing' : 'starting');
     setAwaitingInitialOutput(true);
@@ -929,7 +948,7 @@ export function NativeCliTerminal({
       if (activeSessionResolveRef.current === resolveKey) return;
       activeSessionResolveRef.current = resolveKey;
       void (async () => {
-        for (let attempt = 0; attempt < 20; attempt += 1) {
+        for (let attempt = 0; attempt < 5; attempt += 1) {
           const resolvedSessionId = await resolveNativeCliSessionIdToHost({
             sessionKey,
             provider: normalizedProvider,
@@ -943,8 +962,13 @@ export function NativeCliTerminal({
             void connect();
             return;
           }
-          await wait(attempt < 3 ? 500 : 1500);
+          await wait(attempt < 2 ? 400 : 900);
         }
+        if (disposedRef.current || activeSessionResolveRef.current !== resolveKey || cliSessionIdRef.current) return;
+        skipResumeResolveRef.current = true;
+        activeSessionResolveRef.current = '';
+        setConnectionPhase('starting');
+        void connect();
       })();
       return;
     }
@@ -1269,6 +1293,7 @@ export function NativeCliTerminal({
           <ChatInput
             onSend={handleChatInputSend}
             disabled={status !== 'connected'}
+            disabledPlaceholder={desiredLoadingLabel || '正在连接会话'}
             sending={false}
             isExpanded
           />

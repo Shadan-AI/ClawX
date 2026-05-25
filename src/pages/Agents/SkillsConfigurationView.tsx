@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
-import { Bot, Check, Puzzle, RefreshCw, Search, X, Sparkles, ChevronDown, Loader2, FileText, Eye, Edit3, Save, RotateCcw, FolderOpen, FileCode, HelpCircle, Info, MessageSquare } from 'lucide-react';
+import { Bot, Check, Puzzle, RefreshCw, Search, X, Sparkles, ChevronDown, Loader2, FileText, Eye, Edit3, Save, RotateCcw, FolderOpen, FileCode, HelpCircle, Info, MessageSquare, Plus } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
@@ -1744,11 +1744,18 @@ Additional context about the user's needs and expectations.
       <div>
         <div className="flex items-center justify-between mb-4">
           <p className="text-[15px] font-serif font-semibold text-foreground" style={{ fontFamily: 'Georgia, Cambria, "Times New Roman", Times, serif' }}>
-            {filteredSkills.length === enabledSkills.length 
-              ? `可用技能 (${enabledSkills.length} 个已启用)`
+            {filteredSkills.length === enabledSkills.length
+              ? `本机已安装 (${enabledSkills.length} 个)`
               : `筛选结果 (${filteredSkills.length} / ${enabledSkills.length})`
             }
           </p>
+          <button
+            onClick={() => navigate('/skills')}
+            className="inline-flex items-center gap-1 text-[13px] font-medium text-primary/80 hover:text-primary transition-colors"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            新加技能
+          </button>
         </div>
         
         <AnimatePresence mode="wait">

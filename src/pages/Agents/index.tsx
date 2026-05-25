@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, Bot, Check, Plus, RefreshCw, Settings2, Trash2, X, Layout, Puzzle, Building2, MessageCircle, Loader2, Download } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -171,6 +171,25 @@ export function Agents() {
   const [globalConfetti, setGlobalConfetti] = useState<Array<{ id: number; x: number; y: number; explosionX: number; explosionY: number; color: string; size: number }>>([]);
   const lastClickTimeRef = useRef<number>(0);
   const pendingConfettiRef = useRef<Set<number>>(new Set());
+
+  // Handle URL params: ?edit=agentId&tab=skills
+  const [searchParams, setSearchParams] = useSearchParams();
+  useEffect(() => {
+    const editId = searchParams.get('edit');
+    const tab = searchParams.get('tab');
+    if (!editId) return;
+    const agent = agents.find((a) => a.id === editId);
+    if (!agent) return;
+    searchParams.delete('edit');
+    searchParams.delete('tab');
+    setSearchParams(searchParams, { replace: true });
+    if (tab === 'skills') {
+      setSkillsViewAgentId(agent.id);
+      setViewMode('skills');
+    } else {
+      setEditingAgent(agent);
+    }
+  }, [searchParams, agents, setSearchParams]);
 
   const fetchChannelAccounts = useCallback(async () => {
     try {

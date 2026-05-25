@@ -7,6 +7,7 @@
  * are sent with the message (no base64 over WebSocket).
  */
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { SendHorizontal, Square, X, Paperclip, FileText, Film, Music, FileArchive, File, Loader2, AtSign, ChevronDown, Check, RefreshCw, Brain, Bot, Puzzle } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
@@ -15,6 +16,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { hostApiFetch } from '@/lib/host-api';
 import { invokeIpc } from '@/lib/api-client';
 import { getAgentIdFromSessionKey, resolveSessionAgentIdByKey } from '@/lib/session-agent';
+import { AgentAvatar } from '@/components/common/AgentAvatar';
 import { SKILL_TRIAL_AGENT_ID } from '@/lib/skill-trial';
 import { cn } from '@/lib/utils';
 import { useAgentsStore } from '@/stores/agents';
@@ -50,6 +52,7 @@ interface ChatInputProps {
   onFocusChange?: (focused: boolean) => void;
   quickUseSkill?: { name: string; slug: string; description: string } | null;
   onSkillUsed?: () => void;
+  disabledPlaceholder?: string;
 }
 
 function modelIdFromRef(modelValue: string | null | undefined): string | null {
@@ -100,10 +103,94 @@ function readFileAsBase64(file: globalThis.File): Promise<string> {
   });
 }
 
+// ── 碎碎念生成器 ──────────────────────────────────────────────────
+
+interface MurmurContext {
+  agentName: string;
+  skillCount: number;
+  skillNames: string[];
+  templateName?: string;
+  modelDisplay?: string;
+  isDigitalEmployee?: boolean;
+  runtimeType?: string;
+}
+
+function generateMurmur(ctx: MurmurContext): string {
+  const { agentName, skillCount, skillNames, templateName, modelDisplay, isDigitalEmployee, runtimeType } = ctx;
+
+  const pool: string[] = [];
+
+  // 技能相关
+  if (skillCount === 0) {
+    pool.push('我还没学到任何技能呢...感觉自己像个白纸 😶');
+    pool.push('技能栏是空的，老板啥都没给我安排...');
+    pool.push('我现在只会聊天，别的啥也不会，别为难我哈');
+  } else if (skillCount <= 3) {
+    pool.push(`我会 ${skillCount} 个技能：${skillNames.join('、')}，勉强够用吧`);
+    pool.push(`技能不多但够用！${skillNames.join('、')} 都是我的拿手好戏`);
+    pool.push(`目前就 ${skillCount} 个技能，别嫌弃，我在努力学了`);
+  } else {
+    pool.push(`我可是会 ${skillCount} 个技能的全能选手！${skillNames.slice(0, 3).join('、')}...等等一大堆`);
+    pool.push(`技能栏满满的！${skillNames.slice(0, 2).join('、')}什么的都是基操`);
+    pool.push(`${skillCount} 个技能加身，有什么需要尽管吩咐！`);
+  }
+
+  // 岗位相关
+  if (templateName) {
+    pool.push(`我的岗位是「${templateName}」，听起来很厉害的样子`);
+    pool.push(`身为「${templateName}」，我可是很专业的`);
+    pool.push(`「${templateName}」就是我，我就是「${templateName}」`);
+  } else {
+    pool.push('我好像还没定岗位...自由职业者？');
+    pool.push('没有岗位模板的束缚，我是自由的灵魂！');
+  }
+
+  // 模型相关
+  if (modelDisplay) {
+    pool.push(`我现在的脑子是 ${modelDisplay}，转得还挺快的`);
+    pool.push(`用的是 ${modelDisplay} 模型，思考中...请稍等...`);
+  }
+
+  // 运行方式
+  if (runtimeType === 'native-cli') {
+    pool.push('我现在跑在本地 CLI 上，自由自在！');
+    pool.push('独立进程运行中，跟内置引擎不是一个档次的哼~');
+  }
+
+  // 通用碎碎念
+  pool.push(`${agentName} 在线，有什么可以帮你的？`);
+  pool.push('嘿！别光看着我，有什么想聊的快说呀');
+  pool.push('我在这儿呢，随时待命！');
+  pool.push('今天天气不错，适合跟我聊聊天');
+  pool.push('你知道吗，其实我一直在等你跟我说话...');
+  pool.push('工作使我快乐...真的...（并不）');
+  pool.push('摸鱼中...啊不，我在认真待命！');
+  pool.push('你可以用 @ 提到其他同事哦，不一定要只跟我聊');
+  pool.push('试试左边的技能按钮，可以让我展示更多才艺');
+  pool.push('有什么文件直接扔过来就行，我接得住');
+
+  if (isDigitalEmployee) {
+    pool.push('我可是正儿八经的数字员工，有编制的那种');
+    pool.push('作为数字员工，我不下班不休假，性价比超高');
+  }
+
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
 // ── Component ────────────────────────────────────────────────────
 
-export function ChatInput({ onSend, onStop, disabled = false, sending = false, isExpanded = true, onFocusChange, quickUseSkill, onSkillUsed }: ChatInputProps) {
+interface MurmurBubble {
+  id: number;
+  text: string;
+  offsetX: number;
+  driftX: number;
+  floatY: number;
+  duration: number;
+}
+
+export function ChatInput({ onSend, onStop, disabled = false, sending = false, isExpanded = true, onFocusChange, quickUseSkill, onSkillUsed, disabledPlaceholder }: ChatInputProps) {
   const { t } = useTranslation('chat');
+  const navigate = useNavigate();
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState<FileAttachment[]>([]);
   const [targetAgentId, setTargetAgentId] = useState<string | null>(null);
@@ -301,6 +388,65 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
     },
     [agents, displayAgentId],
   );
+
+  const currentAgentObj = useMemo(
+    () => (agents ?? []).find((agent) => agent.id === displayAgentId),
+    [agents, displayAgentId],
+  );
+
+  // 碎碎念 state - 气泡流
+  const [murmurBubbles, setMurmurBubbles] = useState<MurmurBubble[]>([]);
+  const murmurIdRef = useRef(0);
+  const murmurIntervalRef = useRef<ReturnType<typeof setInterval>>(undefined);
+  const murmurLeaveTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const isHoveringRef = useRef(false);
+
+  const emitBubble = useCallback(() => {
+    const agentSkillIds = currentAgentObj ? (agentSkills[currentAgentObj.id] || []) : [];
+    const skillNames = agentSkillIds
+      .map(id => skills.find(s => s.id === id)?.name)
+      .filter(Boolean) as string[];
+    const text = generateMurmur({
+      agentName: currentAgentName,
+      skillCount: agentSkillIds.length,
+      skillNames: skillNames.slice(0, 5),
+      templateName: currentAgentObj?.templateName,
+      modelDisplay: currentAgentObj?.modelDisplay,
+      isDigitalEmployee: currentAgentObj?.isDigitalEmployee,
+      runtimeType: currentAgentObj?.runtime?.type,
+    });
+    const bubble: MurmurBubble = {
+      id: ++murmurIdRef.current,
+      text,
+      offsetX: -15 + Math.random() * 30,
+      driftX: (Math.random() - 0.5) * 12,
+      floatY: -(160 + Math.random() * 160),
+      duration: 14000 + Math.random() * 6000,
+    };
+    setMurmurBubbles(prev => [...prev.slice(-8), bubble]);
+    setTimeout(() => {
+      setMurmurBubbles(prev => prev.filter(b => b.id !== bubble.id));
+    }, bubble.duration);
+  }, [currentAgentObj, currentAgentName, agentSkills, skills]);
+
+  const handleAgentHover = useCallback(() => {
+    isHoveringRef.current = true;
+    clearTimeout(murmurLeaveTimerRef.current);
+    clearInterval(murmurIntervalRef.current);
+    emitBubble();
+    murmurIntervalRef.current = setInterval(() => {
+      if (isHoveringRef.current) emitBubble();
+    }, 2500 + Math.random() * 1500);
+  }, [emitBubble]);
+
+  const handleAgentLeave = useCallback(() => {
+    isHoveringRef.current = false;
+    murmurLeaveTimerRef.current = setTimeout(() => {
+      clearInterval(murmurIntervalRef.current);
+      setMurmurBubbles([]);
+    }, 800);
+  }, []);
+
   const mentionableAgents = useMemo(
     () => (agents ?? []).filter((agent) => agent.id !== displayAgentId),
     [agents, displayAgentId],
@@ -761,12 +907,62 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      <div className="w-full">
+      <div className="w-full relative">
+        {/* Agent indicator - 输入框左上角外侧 */}
+        <div className="absolute top-px left-5 -translate-y-full z-10">
+          <div
+            className="relative flex items-center gap-2 rounded-t-xl border border-b-0 border-black/8 bg-white/90 dark:border-white/12 dark:bg-background/90 px-3 py-1 text-[13px] font-medium text-foreground/70 shadow-sm backdrop-blur-sm cursor-pointer transition-all duration-200 hover:shadow-md hover:border-primary/30 hover:text-foreground/90"
+            onMouseEnter={handleAgentHover}
+            onMouseLeave={handleAgentLeave}
+          >
+            {currentAgentObj ? (
+              <AgentAvatar
+                name={currentAgentObj.name}
+                seed={currentAgentObj.id}
+                avatarIndex={currentAgentObj.avatarIndex}
+                className="h-5 w-5"
+                fallbackClassName="text-[8px]"
+                iconClassName="h-3 w-3"
+              />
+            ) : (
+              <Bot className="h-3 w-3 text-primary" />
+            )}
+            <span className="max-w-[100px] truncate">{currentAgentName}</span>
+          </div>
+          {/* 碎碎念气泡流 - 头像上方发射，向上飘走 */}
+          <div className="absolute bottom-full left-0 mb-1 z-50 pointer-events-none" style={{ width: 0, height: 0 }}>
+            <AnimatePresence>
+              {murmurBubbles.map((bubble) => (
+                <motion.div
+                  key={bubble.id}
+                  initial={{ opacity: 0, y: 10, x: bubble.offsetX, scale: 0.85 }}
+                  animate={{
+                    opacity: [0, 0.95, 0.92, 0],
+                    y: [10, bubble.floatY * 0.15, bubble.floatY * 0.75, bubble.floatY],
+                    x: [bubble.offsetX, bubble.offsetX + bubble.driftX],
+                    scale: [0.85, 1, 1, 0.92],
+                  }}
+                  exit={{ opacity: 0, transition: { duration: 0.2 } }}
+                  transition={{
+                    duration: bubble.duration / 1000,
+                    times: [0, 0.06, 0.8, 1],
+                    ease: [0.25, 0.1, 0.25, 1],
+                  }}
+                  className="absolute bottom-0 left-0 w-48 rounded-xl bg-white dark:bg-popover border border-black/8 dark:border-white/10 px-3 py-2 text-[12px] leading-relaxed text-foreground shadow-lg backdrop-blur-sm"
+                  style={{ willChange: 'transform, opacity' }}
+                >
+                  {bubble.text}
+                </motion.div>
+              ))}
+            </AnimatePresence>
+          </div>
+        </div>
+
         {/* Input Box */}
         <div
           ref={inputBoxRef}
           className={cn(
-            "relative overflow-visible rounded-[26px] border border-black/8 bg-white shadow-[0_10px_24px_rgba(15,23,42,0.06)] backdrop-blur-md transition-[box-shadow,border-color] duration-200 ease-out supports-[backdrop-filter]:bg-white/94 dark:border-white/10 dark:bg-background/90",
+            "relative z-20 overflow-visible rounded-[26px] border border-black/8 bg-white shadow-[0_10px_24px_rgba(15,23,42,0.06)] backdrop-blur-md transition-[box-shadow,border-color] duration-200 ease-out supports-[backdrop-filter]:bg-white/94 dark:border-white/10 dark:bg-background/90",
             dragOver
               ? 'border-primary ring-2 ring-primary/30'
               : 'focus-within:border-black/20 focus-within:shadow-[0_14px_28px_rgba(15,23,42,0.08)] dark:focus-within:border-white/20 dark:focus-within:shadow-[0_14px_28px_rgba(0,0,0,0.26)]'
@@ -875,7 +1071,7 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                   }}
                   placeholder={
                     disabled
-                      ? t('composer.gatewayDisconnectedPlaceholder')
+                      ? (disabledPlaceholder || t('composer.gatewayDisconnectedPlaceholder'))
                       : activeSkill
                         ? activeSkill.description
                         : ''
@@ -932,14 +1128,8 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
               <div className={cn('min-h-0', isExpanded ? 'overflow-visible' : 'overflow-hidden')}>
                 {/* Bottom row: left buttons + right send/model */}
                 <div className="flex items-center justify-between px-2 pb-2 pt-1">
-                {/* Left: current agent + attach + @ */}
+                {/* Left: attach + @ */}
                 <div className="flex items-center gap-1">
-                  {/* 当前对话对象 */}
-                  <div className="flex items-center gap-1.5 rounded-full border border-black/6 bg-white px-2.5 py-1 text-[11px] font-medium text-foreground/70 shadow-sm dark:border-white/10 dark:bg-background/80 dark:text-foreground/80">
-                    <Bot className="h-3 w-3 text-primary" />
-                    <span>{currentAgentName}</span>
-                  </div>
-                  
                   <Button
                     variant="ghost"
                     size="icon"
@@ -1005,7 +1195,7 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                             animate={{ opacity: 1, y: 0, scale: 1 }}
                             exit={{ opacity: 0, y: 8, scale: 0.95 }}
                             transition={{ duration: 0.15, ease: 'easeOut' }}
-                            className="absolute left-0 bottom-full z-20 mb-2 w-72 overflow-hidden rounded-2xl border border-black/10 bg-white p-1.5 shadow-xl dark:border-white/10 dark:bg-card"
+                            className="absolute left-0 bottom-full z-50 mb-2 w-72 overflow-hidden rounded-2xl border border-black/10 bg-white p-1.5 shadow-xl dark:border-white/10 dark:bg-card"
                           >
                             <div className="px-3 py-2 text-[11px] font-medium text-muted-foreground/80">
                               {`选择技能 · ${isUniversalSkillAgent ? 'OpenClaw助手' : (skillOwnerAgent?.name || '当前数字员工')}`}
@@ -1063,10 +1253,22 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                             ) : (
                               <div className="px-3 py-6 text-center text-[12px] text-muted-foreground">
                                 {!isUniversalSkillAgent && skillOwnerSkillIds.length === 0 ? (
-                                  <>
-                                    {(skillOwnerAgent?.name || '当前数字员工')} 还没有配置技能<br />
-                                    <span className="text-[11px]">先去员工技能配置里给它分配技能</span>
-                                  </>
+                                  <div className="flex flex-col items-center gap-3">
+                                    <div>
+                                      {(skillOwnerAgent?.name || '当前数字员工')} 还没有配置技能<br />
+                                      <span className="text-[11px]">先去员工技能配置里给它分配技能</span>
+                                    </div>
+                                    <button
+                                      onClick={() => {
+                                        setSkillPickerOpen(false);
+                                        const agentId = skillOwnerAgent?.id;
+                                        navigate(agentId ? `/agents?edit=${encodeURIComponent(agentId)}&tab=skills` : '/agents');
+                                      }}
+                                      className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 px-3 py-1.5 text-[12px] font-medium text-primary transition-colors hover:bg-primary/20"
+                                    >
+                                      添加技能
+                                    </button>
+                                  </div>
                                 ) : availableSkills.length === 0 ? (
                                   <>
                                     {(skillOwnerAgent?.name || '当前数字员工')} 的技能暂时不可用<br />
@@ -1107,7 +1309,7 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                             animate={{ opacity: 1, y: 0, scale: 1 }}
                             exit={{ opacity: 0, y: 8, scale: 0.95 }}
                             transition={{ duration: 0.15, ease: 'easeOut' }}
-                            className="absolute left-0 bottom-full z-20 mb-2 w-72 overflow-hidden rounded-2xl border border-black/10 bg-white p-1.5 shadow-xl dark:border-white/10 dark:bg-card"
+                            className="absolute left-0 bottom-full z-50 mb-2 w-72 overflow-hidden rounded-2xl border border-black/10 bg-white p-1.5 shadow-xl dark:border-white/10 dark:bg-card"
                           >
                             <div className="px-3 py-2 text-[11px] font-medium text-muted-foreground/80">
                               {t('composer.agentPickerTitle', { currentAgent: currentAgentName })}

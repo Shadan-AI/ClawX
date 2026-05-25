@@ -33,6 +33,18 @@ function parseSessionUpdatedAtMs(value: unknown): number | undefined {
   return undefined;
 }
 
+function coerceStringRecord(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  const entries = Object.entries(value as Record<string, unknown>)
+    .flatMap(([key, entry]) => {
+      if (typeof entry !== 'string' || !entry.trim()) return [];
+      return [[key, entry.trim()] as const];
+    });
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
 export function createSessionActions(
   set: ChatSet,
   get: ChatGet,
@@ -66,6 +78,11 @@ export function createSessionActions(
               thinkingLevel: s.thinkingLevel ? String(s.thinkingLevel) : undefined,
               model: s.model ? String(s.model) : undefined,
               updatedAt: parseSessionUpdatedAtMs(s.updatedAt),
+              sessionId: s.sessionId ? String(s.sessionId) : undefined,
+              sessionFile: s.sessionFile ? String(s.sessionFile) : undefined,
+              cliSessionIds: coerceStringRecord(s.cliSessionIds),
+              cliSessionId: s.cliSessionId ? String(s.cliSessionId) : undefined,
+              claudeCliSessionId: s.claudeCliSessionId ? String(s.claudeCliSessionId) : undefined,
               origin: origin ? {
                 accountId: origin.accountId ? String(origin.accountId) : undefined,
                 provider: origin.provider ? String(origin.provider) : undefined,

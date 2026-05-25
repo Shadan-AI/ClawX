@@ -197,6 +197,7 @@ function isRawBotSessionLabel(value: string | undefined): boolean {
 
 export function Sidebar() {
   const sidebarCollapsed = useSettingsStore((state) => state.sidebarCollapsed);
+  const sidebarWidth = useSettingsStore((state) => state.sidebarWidth);
   const setSidebarCollapsed = useSettingsStore((state) => state.setSidebarCollapsed);
 
   const sessions = useChatStore((s) => s.sessions);
@@ -406,9 +407,10 @@ export function Sidebar() {
     <aside
       data-testid="sidebar"
       className={cn(
-        'flex min-h-0 shrink-0 flex-col overflow-hidden border-r bg-[#eae8e1]/60 dark:bg-background transition-all duration-300',
-        sidebarCollapsed ? 'w-16' : 'w-64'
+        'flex min-h-0 shrink-0 flex-col overflow-hidden border-r bg-[#eae8e1]/60 dark:bg-background',
+        sidebarCollapsed ? 'w-16 transition-all duration-300' : 'transition-none'
       )}
+      {...(!sidebarCollapsed && { style: { width: sidebarWidth } })}
     >
       {/* Top Header Toggle */}
       <div className={cn("flex items-center p-2 h-12", sidebarCollapsed ? "justify-center" : "justify-between")}>

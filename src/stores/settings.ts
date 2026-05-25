@@ -36,6 +36,7 @@ interface SettingsState {
 
   // UI State
   sidebarCollapsed: boolean;
+  sidebarWidth: number;
   devModeUnlocked: boolean;
 
   // Setup
@@ -62,6 +63,7 @@ interface SettingsState {
   setAutoCheckUpdate: (value: boolean) => void;
   setAutoDownloadUpdate: (value: boolean) => void;
   setSidebarCollapsed: (value: boolean) => void;
+  setSidebarWidth: (width: number) => void;
   setDevModeUnlocked: (value: boolean) => void;
   markSetupComplete: () => void;
   markBoxImGateComplete: () => void;
@@ -87,6 +89,7 @@ const defaultSettings = {
   autoCheckUpdate: true,
   autoDownloadUpdate: false,
   sidebarCollapsed: false,
+  sidebarWidth: 256,
   devModeUnlocked: false,
   setupComplete: false,
   boxImGateComplete: false,
@@ -184,6 +187,7 @@ export const useSettingsStore = create<SettingsState>()(
         }).catch(() => {});
       },
       setSidebarCollapsed: (sidebarCollapsed) => set({ sidebarCollapsed }),
+      setSidebarWidth: (sidebarWidth) => set({ sidebarWidth: Math.max(64, Math.min(480, Math.round(sidebarWidth))) }),
       setDevModeUnlocked: (devModeUnlocked) => {
         set({ devModeUnlocked });
         void hostApiFetch('/api/settings/devModeUnlocked', {
