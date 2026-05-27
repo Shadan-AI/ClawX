@@ -4,7 +4,6 @@
  */
 import { useCallback, useState } from 'react';
 import { useLocation, useOutlet } from 'react-router-dom';
-import { AnimatePresence, motion } from 'framer-motion';
 import { Sidebar } from './Sidebar';
 import { TitleBar } from './TitleBar';
 import { useSettingsStore } from '@/stores/settings';
@@ -17,22 +16,16 @@ export function MainLayout() {
   return (
     <div data-testid="main-layout" className="flex h-screen flex-col overflow-hidden bg-background">
       <TitleBar />
-      <div className="flex min-h-0 flex-1 overflow-hidden">
+      <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
         <Sidebar />
         <ResizeHandle />
-        <main data-testid="main-content" className="min-h-0 flex-1 overflow-hidden relative">
-          <AnimatePresence mode="wait" initial={false}>
-            <motion.div
-              key={location.pathname}
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.2, ease: 'easeInOut' }}
-              className={location.pathname === '/' ? "absolute inset-0" : "absolute inset-0 overflow-auto p-6"}
-            >
-              {outlet}
-            </motion.div>
-          </AnimatePresence>
+        <main data-testid="main-content" className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
+          <div
+            key={location.pathname}
+            className={location.pathname === '/' ? 'h-full min-h-0 overflow-hidden' : 'h-full min-h-0 overflow-auto p-6'}
+          >
+            {outlet}
+          </div>
         </main>
       </div>
     </div>
@@ -52,7 +45,9 @@ function ResizeHandle() {
     setDragging(true);
 
     const startX = e.clientX;
-    const startWidth = sidebarWidth;
+    const startWidth = Number.isFinite(sidebarWidth)
+      ? Math.max(64, Math.min(480, Math.round(sidebarWidth)))
+      : 256;
 
     const onMouseMove = (ev: MouseEvent) => {
       setSidebarWidth(startWidth + ev.clientX - startX);

@@ -34,6 +34,12 @@ function isNativeCliSessionKey(sessionKey: string) {
   return /^agent:[^:]+:cli:/i.test(sessionKey);
 }
 
+function getAgentIdFromSessionKey(sessionKey: string) {
+  if (!sessionKey.startsWith('agent:')) return 'main';
+  const [, agentId] = sessionKey.split(':');
+  return agentId?.trim().toLowerCase() || 'main';
+}
+
 export function Chat() {
   const { t } = useTranslation('chat');
   const location = useLocation();
@@ -113,7 +119,10 @@ export function Chat() {
   const sendMessage = useChatStore((s) => s.sendMessage);
   const abortRun = useChatStore((s) => s.abortRun);
   const clearError = useChatStore((s) => s.clearError);
-  const currentAgent = (agents ?? []).find((a) => a.id === currentAgentId);
+  const resolvedCurrentAgentId = isNativeCliSessionKey(currentSessionKey)
+    ? getAgentIdFromSessionKey(currentSessionKey)
+    : currentAgentId;
+  const currentAgent = (agents ?? []).find((a) => a.id === resolvedCurrentAgentId);
   const isNativeCli = currentAgent?.runtime?.type === 'native-cli' || isNativeCliSessionKey(currentSessionKey);
   const nativeCliProvider = currentAgent?.runtime?.nativeCli?.provider?.trim().toLowerCase() || undefined;
   const currentSession = sessions.find((session) => session.key === currentSessionKey);
@@ -305,13 +314,13 @@ export function Chat() {
   const isLoading = loading && messages.length === 0 && !sending;
 
   return (
-    <div className={cn("relative flex flex-col transition-colors duration-500 dark:bg-background h-full")}>
+    <div className={cn("relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden transition-colors duration-500 dark:bg-background")}>
       {/* Native CLI Terminal */}
       {isNativeCli ? (
-        <div className="flex-1 min-h-0 overflow-hidden">
+        <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
           <NativeCliTerminal
             key={currentSessionKey}
-            agentId={currentAgentId}
+            agentId={resolvedCurrentAgentId}
             sessionKey={currentSessionKey}
             cliSessionId={nativeCliSessionId}
             cliSessionProvider={nativeCliProvider}

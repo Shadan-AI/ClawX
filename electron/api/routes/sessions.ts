@@ -195,7 +195,9 @@ async function persistNativeCliSessionIndex(params: {
   const agentId = parseAgentIdFromSessionKey(params.sessionKey);
   if (!agentId) throw new Error(`Invalid sessionKey: ${params.sessionKey}`);
 
-  const provider = normalizeNativeCliProvider(params.provider);
+  const provider = params.provider?.trim()
+    ? normalizeNativeCliProvider(params.provider)
+    : (await resolveNativeCliRuntimeContext(agentId))?.provider ?? 'claude';
   const cliSessionId = params.cliSessionId?.trim() || '';
   const label = params.label?.trim() || '';
   const sessionsDir = join(getOpenClawConfigDir(), 'agents', agentId, 'sessions');
@@ -360,13 +362,15 @@ async function resolveNativeCliRuntimeContext(agentId: string): Promise<{
 
 async function resolveNativeCliSessionFromFiles(params: {
   agentId: string;
-  provider: string;
+  provider?: string;
   userText: string;
   startedAt?: number;
 }): Promise<NativeCliResolveResult | null> {
   const context = await resolveNativeCliRuntimeContext(params.agentId);
   if (!context) return null;
-  const provider = normalizeNativeCliProvider(params.provider || context.provider);
+  const provider = params.provider?.trim()
+    ? normalizeNativeCliProvider(params.provider)
+    : context.provider;
   const startedAt = Number.isFinite(params.startedAt) && params.startedAt ? Number(params.startedAt) : Date.now() - 60_000;
   const minMtime = startedAt - 120_000;
 
@@ -391,8 +395,8 @@ async function resolveNativeCliSessionFromFiles(params: {
     }
   }
 
-  const newest = recentFiles[0];
-  return newest ? { sessionId: newest.sessionId, sessionFile: newest.path } : null;
+  // No file matched the user text — return null instead of a wrong session.
+  return null;
 }
 
 function getSessionKeyTail(sessionKey: string): string {
@@ -418,6 +422,27 @@ function isMeaningfulSessionTitle(title: string | undefined, sessionKey: string)
     return false;
   }
   return !isGeneratedSessionIdentifier(trimmed);
+}
+
+function isNativeCliSessionKey(sessionKey: string): boolean {
+  return /^agent:[^:]+:cli:/i.test(sessionKey);
+}
+
+function hasNativeCliSessionId(session: LocalSessionIndexEntry): boolean {
+  return Boolean(
+    session.cliSessionId
+      || session.claudeCliSessionId
+      || (session.cliSessionIds && Object.keys(session.cliSessionIds).length > 0),
+  );
+}
+
+function shouldPreserveNativeCliSession(session: LocalSessionIndexEntry): boolean {
+  if (!isNativeCliSessionKey(session.key)) {
+    return false;
+  }
+  return hasNativeCliSessionId(session)
+    || isMeaningfulSessionTitle(session.label, session.key)
+    || isMeaningfulSessionTitle(session.displayName, session.key);
 }
 
 function extractTranscriptText(content: unknown): string {
@@ -514,6 +539,10 @@ async function shouldPruneEmptyTranscriptSessionEntry(
     return false;
   }
 
+  if (shouldPreserveNativeCliSession(session)) {
+    return false;
+  }
+
   const updatedAt = session.updatedAt ?? 0;
   if (!updatedAt || Date.now() - updatedAt < DANGLING_SESSION_PRUNE_AGE_MS) {
     return false;
@@ -584,6 +613,10 @@ async function shouldPruneDanglingSessionEntry(
   }
 
   if (session.key.endsWith(':main')) {
+    return false;
+  }
+
+  if (shouldPreserveNativeCliSession(session)) {
     return false;
   }
 
@@ -883,13 +916,12 @@ export async function handleSessionRoutes(
       const sessionKey = body.sessionKey?.trim() || '';
       const cliSessionId = body.cliSessionId?.trim() || '';
       const label = body.label?.trim() || '';
-      const provider = (body.provider?.trim().toLowerCase() || 'claude').replace(/[^a-z0-9_-]/g, '') || 'claude';
       if (!parseAgentIdFromSessionKey(sessionKey)) {
         sendJson(res, 400, { success: false, error: 'sessionKey is required' });
         return true;
       }
 
-      await persistNativeCliSessionIndex({ sessionKey, cliSessionId, provider, label });
+      await persistNativeCliSessionIndex({ sessionKey, cliSessionId, provider: body.provider, label });
       sendJson(res, 200, { success: true });
     } catch (error) {
       sendJson(res, 500, { success: false, error: String(error) });
@@ -912,10 +944,9 @@ export async function handleSessionRoutes(
         sendJson(res, 400, { success: false, error: 'sessionKey and userText are required' });
         return true;
       }
-      const provider = normalizeNativeCliProvider(body.provider);
       const resolved = await resolveNativeCliSessionFromFiles({
         agentId,
-        provider,
+        provider: body.provider,
         userText,
         startedAt: body.startedAt,
       });
@@ -925,7 +956,7 @@ export async function handleSessionRoutes(
       }
       await persistNativeCliSessionIndex({
         sessionKey,
-        provider,
+        provider: body.provider,
         cliSessionId: resolved.sessionId,
       });
       sendJson(res, 200, {

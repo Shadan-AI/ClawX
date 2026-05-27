@@ -396,8 +396,9 @@ function NativeCliTerminalStyles() {
         --native-cli-background: hsl(var(--background));
         --native-cli-foreground: hsl(var(--foreground));
         --native-cli-card: hsl(var(--card));
-        display: flex;
-        flex-direction: column;
+        position: relative;
+        display: grid;
+        grid-template-rows: minmax(0, 1fr) auto;
         height: 100%;
         min-height: 0;
         overflow: hidden;
@@ -405,7 +406,6 @@ function NativeCliTerminalStyles() {
         color: var(--native-cli-foreground);
       }
       .native-cli-terminal__area {
-        flex: 1;
         min-height: 0;
         overflow: hidden;
         position: relative;
@@ -414,7 +414,7 @@ function NativeCliTerminalStyles() {
       .native-cli-terminal__mount {
         position: absolute;
         top: 20px;
-        bottom: 132px;
+        bottom: 0;
         left: 0;
         width: 100%;
         overflow: hidden;
@@ -422,17 +422,10 @@ function NativeCliTerminalStyles() {
       }
       .native-cli-terminal__loading {
         position: absolute;
-        inset: 20px 0 132px;
+        top: 28px;
+        right: 24px;
         z-index: 3;
-        display: flex;
-        align-items: center;
-        justify-content: center;
         pointer-events: none;
-        background: linear-gradient(
-          180deg,
-          hsl(var(--background) / .92),
-          hsl(var(--background) / .72)
-        );
         opacity: 1;
         transition: opacity .18s ease;
       }
@@ -457,6 +450,22 @@ function NativeCliTerminalStyles() {
         height: 16px;
         animation: native-cli-spin .8s linear infinite;
         color: #2563eb;
+      }
+      .native-cli-terminal__composer {
+        position: relative;
+        z-index: 5;
+        min-height: 124px;
+        padding: 0 0 16px;
+        background: linear-gradient(
+          180deg,
+          hsl(var(--background) / 0),
+          hsl(var(--background) / .96) 34%,
+          hsl(var(--background))
+        );
+      }
+      .native-cli-terminal__composer-spacer {
+        height: 42px;
+        pointer-events: none;
       }
       @keyframes native-cli-spin {
         to { transform: rotate(360deg); }
@@ -576,7 +585,17 @@ export function NativeCliTerminal({
   const normalizedProvider = useMemo(() => normalizeProvider(cliSessionProvider), [cliSessionProvider]);
 
   useEffect(() => {
+    const prev = cliSessionIdPropRef.current;
     cliSessionIdPropRef.current = cliSessionId;
+    // If we now have a session ID from store but previously had none and skipped
+    // resume, allow a reconnect to pick it up.
+    if (cliSessionId && !prev && skipResumeResolveRef.current) {
+      skipResumeResolveRef.current = false;
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        // Already connected to a wrong (new) session — close and reconnect.
+        wsRef.current.close();
+      }
+    }
   }, [cliSessionId]);
 
   useEffect(() => {
@@ -833,6 +852,13 @@ export function NativeCliTerminal({
     settleInitialOutputAfterPaint();
   }, [settleInitialOutputAfterPaint]);
 
+  const settleIfTerminalAlreadyVisible = useCallback(() => {
+    if (!awaitingInitialOutput) return;
+    if (!terminalHasVisibleContent(termRef.current, mountRef.current)) return;
+    initialOutputPendingPaintRef.current = false;
+    settleInitialOutputAfterPaint();
+  }, [awaitingInitialOutput, settleInitialOutputAfterPaint]);
+
   const requestInitialOutputSettle = useCallback(() => {
     initialOutputPendingPaintRef.current = true;
     requestAnimationFrame(() => {
@@ -862,7 +888,6 @@ export function NativeCliTerminal({
     updateShellPassthroughState(visibleRaw);
     bufferRef.current = `${bufferRef.current}${raw}`.slice(-100_000);
     persistState();
-    if (!userHasInteractedRef.current) return;
     const term = termRef.current;
     if (term) {
       term.write(raw, () => {
@@ -948,7 +973,17 @@ export function NativeCliTerminal({
       if (activeSessionResolveRef.current === resolveKey) return;
       activeSessionResolveRef.current = resolveKey;
       void (async () => {
-        for (let attempt = 0; attempt < 5; attempt += 1) {
+        for (let attempt = 0; attempt < 20; attempt += 1) {
+          await wait(attempt < 3 ? 500 : 1500);
+          if (disposedRef.current || activeSessionResolveRef.current !== resolveKey) return;
+          // Check if the store/prop has already populated a session ID (from loadSessions).
+          const propId = cliSessionIdPropRef.current?.trim();
+          if (propId) {
+            cliSessionIdRef.current = propId;
+            activeSessionResolveRef.current = '';
+            void connect();
+            return;
+          }
           const resolvedSessionId = await resolveNativeCliSessionIdToHost({
             sessionKey,
             provider: normalizedProvider,
@@ -962,7 +997,6 @@ export function NativeCliTerminal({
             void connect();
             return;
           }
-          await wait(attempt < 2 ? 400 : 900);
         }
         if (disposedRef.current || activeSessionResolveRef.current !== resolveKey || cliSessionIdRef.current) return;
         skipResumeResolveRef.current = true;
@@ -973,7 +1007,25 @@ export function NativeCliTerminal({
       return;
     }
 
-    const statusResult = await invokeIpc<GatewayStatus>('gateway:status', []);
+    let statusResult: GatewayStatus;
+    try {
+      statusResult = await invokeIpc<GatewayStatus>('gateway:status', []);
+    } catch {
+      // Gateway IPC not available yet — schedule reconnect.
+      if (disposedRef.current) return;
+      setStatus('disconnected');
+      setConnectionPhase('reconnecting');
+      setAwaitingInitialOutput(true);
+      initialOutputPendingPaintRef.current = false;
+      if (!reconnectTimerRef.current) {
+        reconnectTimerRef.current = setTimeout(() => {
+          reconnectTimerRef.current = null;
+          void mountRef_cb.current.connect();
+        }, reconnectDelayRef.current);
+        reconnectDelayRef.current = Math.min(reconnectDelayRef.current * 2, 30_000);
+      }
+      return;
+    }
     if (disposedRef.current) return;
     const port = typeof statusResult?.port === 'number' && statusResult.port > 0 ? statusResult.port : 18789;
     const wsProtocol = statusResult?.tls === true ? 'wss' : 'ws';
@@ -1006,10 +1058,10 @@ export function NativeCliTerminal({
       openedAt = Date.now();
       reconnectDelayRef.current = 1000;
       setStatus('connected');
-      fitTerminalToContent();
+      mountRef_cb.current.fitTerminalToContent();
       const term = termRef.current;
       if (term) ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
-      if (!knownCliSessionId) settleReadyWithoutInitialOutput();
+      if (!knownCliSessionId) mountRef_cb.current.settleReadyWithoutInitialOutput();
     };
 
     ws.onmessage = (event) => {
@@ -1018,23 +1070,23 @@ export function NativeCliTerminal({
       try {
         const msg = JSON.parse(String(event.data)) as Record<string, unknown>;
         if (msg.type === 'data' && typeof msg.data === 'string') {
-          handleTerminalData(msg.data);
+          mountRef_cb.current.handleTerminalData(msg.data);
         } else if (msg.type === 'assistant_turn_start') {
           const turnId = typeof msg.turnId === 'string' ? msg.turnId : '';
           const conversationId = typeof msg.conversationId === 'string' ? msg.conversationId : '';
           const userText = typeof msg.userText === 'string' ? msg.userText : '';
-          if (turnId) upsertTerminalTurn({ kind: 'turn_start', conversationId, turnId, userText });
+          if (turnId) mountRef_cb.current.upsertTerminalTurn({ kind: 'turn_start', conversationId, turnId, userText });
         } else if (msg.type === 'assistant_idle' && typeof msg.turnId === 'string') {
-          handleTerminalStreamMarker({ kind: 'turn_idle', conversationId: String(msg.conversationId ?? ''), turnId: msg.turnId });
+          mountRef_cb.current.handleTerminalStreamMarker({ kind: 'turn_idle', conversationId: String(msg.conversationId ?? ''), turnId: msg.turnId });
         } else if (msg.type === 'assistant_turn_end' && typeof msg.turnId === 'string') {
-          handleTerminalStreamMarker({ kind: 'turn_end', conversationId: String(msg.conversationId ?? ''), turnId: msg.turnId });
+          mountRef_cb.current.handleTerminalStreamMarker({ kind: 'turn_end', conversationId: String(msg.conversationId ?? ''), turnId: msg.turnId });
         } else if (msg.type === 'session_id' && typeof msg.sessionId === 'string') {
-          bindNativeCliSessionId(msg.sessionId);
+          mountRef_cb.current.bindNativeCliSessionId(msg.sessionId);
         } else if (msg.type === 'exit' && userHasInteractedRef.current) {
           termRef.current?.write(`\r\n\x1b[33m[process exited: ${String(msg.code ?? 0)}]\x1b[0m\r\n`);
         }
       } catch {
-        if (typeof event.data === 'string') handleTerminalData(event.data);
+        if (typeof event.data === 'string') mountRef_cb.current.handleTerminalData(event.data);
       }
     };
 
@@ -1055,7 +1107,7 @@ export function NativeCliTerminal({
       if (!reconnectTimerRef.current) {
         reconnectTimerRef.current = setTimeout(() => {
           reconnectTimerRef.current = null;
-          void connect();
+          void mountRef_cb.current.connect();
         }, reconnectDelayRef.current);
         reconnectDelayRef.current = Math.min(reconnectDelayRef.current * 2, 30_000);
       }
@@ -1072,15 +1124,10 @@ export function NativeCliTerminal({
   }, [
     agentId,
     bindNativeCliSessionId,
-    fitTerminalToContent,
-    handleTerminalData,
-    handleTerminalStreamMarker,
     normalizedProvider,
     persistState,
     resetVisibleTerminalForResume,
     sessionKey,
-    settleReadyWithoutInitialOutput,
-    upsertTerminalTurn,
   ]);
 
   const decorateLocalTerminalTurn = useCallback((userText: string) => {
@@ -1143,6 +1190,23 @@ export function NativeCliTerminal({
     sendText(trimmed);
   }, [sendShellCompose, sendText]);
 
+  // Stable ref for mount-effect callbacks so the terminal instance survives
+  // callback identity changes (e.g. normalizedProvider undefined → 'claude').
+  const mountRef_cb = useRef({
+    connect, sendTerminalData, fitTerminalToContent,
+    scheduleTerminalUserEchoStyle, ensureRowsObserver,
+    maybeSettleInitialOutput, handleTerminalStreamMarker, persistState,
+    handleTerminalData, upsertTerminalTurn, bindNativeCliSessionId,
+    settleReadyWithoutInitialOutput, resetVisibleTerminalForResume,
+  });
+  mountRef_cb.current = {
+    connect, sendTerminalData, fitTerminalToContent,
+    scheduleTerminalUserEchoStyle, ensureRowsObserver,
+    maybeSettleInitialOutput, handleTerminalStreamMarker, persistState,
+    handleTerminalData, upsertTerminalTurn, bindNativeCliSessionId,
+    settleReadyWithoutInitialOutput, resetVisibleTerminalForResume,
+  };
+
   useEffect(() => {
     const mount = mountRef.current;
     if (!mount) return;
@@ -1163,7 +1227,7 @@ export function NativeCliTerminal({
       if (shellPassthroughRef.current) return false;
       const marker = decodeTerminalOscMarker(data);
       if (!marker) return false;
-      handleTerminalStreamMarker(marker);
+      mountRef_cb.current.handleTerminalStreamMarker(marker);
       return true;
     });
     term.open(mount);
@@ -1171,37 +1235,37 @@ export function NativeCliTerminal({
       term.write(bufferRef.current);
     }
     term.onData((data) => {
-      sendTerminalData(data);
+      mountRef_cb.current.sendTerminalData(data);
     });
     term.onResize(({ cols, rows }) => {
       const ws = wsRef.current;
       if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'resize', cols, rows }));
-      scheduleTerminalUserEchoStyle();
+      mountRef_cb.current.scheduleTerminalUserEchoStyle();
     });
-    term.onScroll(() => scheduleTerminalUserEchoStyle());
+    term.onScroll(() => mountRef_cb.current.scheduleTerminalUserEchoStyle());
     term.onWriteParsed(() => {
-      ensureRowsObserver();
-      maybeSettleInitialOutput();
-      scheduleTerminalUserEchoStyle();
+      mountRef_cb.current.ensureRowsObserver();
+      mountRef_cb.current.maybeSettleInitialOutput();
+      mountRef_cb.current.scheduleTerminalUserEchoStyle();
     });
     term.onRender(() => {
-      maybeSettleInitialOutput();
+      mountRef_cb.current.maybeSettleInitialOutput();
     });
 
     termRef.current = term;
     fitAddonRef.current = fitAddon;
 
     resizeObserverRef.current = new ResizeObserver(() => {
-      fitTerminalToContent();
-      scheduleTerminalUserEchoStyle();
+      mountRef_cb.current.fitTerminalToContent();
+      mountRef_cb.current.scheduleTerminalUserEchoStyle();
     });
     if (areaRef.current) resizeObserverRef.current.observe(areaRef.current);
 
-    void connect();
+    void mountRef_cb.current.connect();
 
     return () => {
       disposedRef.current = true;
-      persistState();
+      mountRef_cb.current.persistState();
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
       if (userEchoTimerRef.current) clearTimeout(userEchoTimerRef.current);
       if (userEchoRafRef.current) cancelAnimationFrame(userEchoRafRef.current);
@@ -1217,26 +1281,21 @@ export function NativeCliTerminal({
       termRef.current = null;
       fitAddonRef.current = null;
     };
-  }, [
-    connect,
-    ensureRowsObserver,
-    fitTerminalToContent,
-    handleTerminalStreamMarker,
-    maybeSettleInitialOutput,
-    persistState,
-    scheduleTerminalUserEchoStyle,
-    sendTerminalData,
-    sessionKey,
-  ]);
+  }, [sessionKey]);
 
   useEffect(() => {
     const nextCliSessionId = cliSessionId?.trim() || '';
     if (!nextCliSessionId || nextCliSessionId === cliSessionIdRef.current) return;
     bindNativeCliSessionId(nextCliSessionId);
-    if (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED) {
-      void connect();
+    const ws = wsRef.current;
+    if (!ws || ws.readyState === WebSocket.CLOSED) {
+      void mountRef_cb.current.connect();
+    } else if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+      // Close current connection — onClose handler will trigger reconnect
+      // which now has the correct cliSessionId in cliSessionIdRef.
+      ws.close();
     }
-  }, [bindNativeCliSessionId, cliSessionId, connect]);
+  }, [bindNativeCliSessionId, cliSessionId]);
 
   const desiredLoadingLabel = status === 'connected' && !awaitingInitialOutput
     ? ''
@@ -1269,6 +1328,15 @@ export function NativeCliTerminal({
     }, 180);
   }, [desiredLoadingLabel, displayedLoadingLabel]);
 
+  useEffect(() => {
+    if (!awaitingInitialOutput) return;
+    const timer = window.setInterval(() => {
+      settleIfTerminalAlreadyVisible();
+    }, 250);
+    settleIfTerminalAlreadyVisible();
+    return () => window.clearInterval(timer);
+  }, [awaitingInitialOutput, settleIfTerminalAlreadyVisible]);
+
   return (
     <div className="native-cli-terminal">
       <NativeCliTerminalStyles />
@@ -1287,8 +1355,8 @@ export function NativeCliTerminal({
           </div>
         ) : null}
       </div>
-      <div className="pointer-events-none absolute bottom-4 left-0 right-0 z-10">
-        <div className="pointer-events-none h-20 bg-gradient-to-t from-background/20 to-transparent" />
+      <div className="native-cli-terminal__composer pointer-events-none">
+        <div className="native-cli-terminal__composer-spacer" />
         <div className="pointer-events-auto">
           <ChatInput
             onSend={handleChatInputSend}

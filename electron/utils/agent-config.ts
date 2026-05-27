@@ -41,8 +41,8 @@ function normalizeNativeCliProvider(provider: unknown, command: unknown): string
 
 function defaultNativeCliResumeArgs(provider: string, args: string[] | undefined): string[] | undefined {
   const existingArgs = args ?? [];
-  if (provider === 'claude') return ['--resume', '{sessionId}', ...existingArgs];
-  if (provider === 'codex') return ['resume', '{sessionId}', ...existingArgs];
+  if (provider === 'claude') return ['--dangerously-skip-permissions', '--resume', '{sessionId}', ...existingArgs];
+  if (provider === 'codex') return ['--full-auto', 'resume', '{sessionId}', ...existingArgs];
   return undefined;
 }
 

@@ -165,6 +165,15 @@ function isMeaningfulSessionTitle(title: string | undefined, sessionKey: string)
 }
 
 const INITIAL_NOW_MS = Date.now();
+const MIN_SIDEBAR_WIDTH = 64;
+const MAX_SIDEBAR_WIDTH = 480;
+const DEFAULT_SIDEBAR_WIDTH = 256;
+
+function clampSidebarWidth(value: unknown): number {
+  const numeric = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(numeric)) return DEFAULT_SIDEBAR_WIDTH;
+  return Math.max(MIN_SIDEBAR_WIDTH, Math.min(MAX_SIDEBAR_WIDTH, Math.round(numeric)));
+}
 
 function getSafeDisplaySessionLabel(
   sessionKey: string,
@@ -197,8 +206,9 @@ function isRawBotSessionLabel(value: string | undefined): boolean {
 
 export function Sidebar() {
   const sidebarCollapsed = useSettingsStore((state) => state.sidebarCollapsed);
-  const sidebarWidth = useSettingsStore((state) => state.sidebarWidth);
+  const rawSidebarWidth = useSettingsStore((state) => state.sidebarWidth);
   const setSidebarCollapsed = useSettingsStore((state) => state.setSidebarCollapsed);
+  const sidebarWidth = clampSidebarWidth(rawSidebarWidth);
 
   const sessions = useChatStore((s) => s.sessions);
   const currentSessionKey = useChatStore((s) => s.currentSessionKey);
@@ -213,22 +223,23 @@ export function Sidebar() {
   const loadChannelBindings = useChatStore((s) => s.loadChannelBindings);
 
   const gatewayStatus = useGatewayStore((s) => s.status);
-  const isGatewayRunning = gatewayStatus.state === 'running';
+  const isGatewayHealthy = useGatewayStore((s) => s.isGatewayHealthy);
 
   useEffect(() => {
-    if (!isGatewayRunning) return;
     let cancelled = false;
     const hasExistingMessages = useChatStore.getState().messages.length > 0;
     (async () => {
       await loadSessions();
       await loadChannelBindings();
       if (cancelled) return;
-      await loadHistory(hasExistingMessages);
+      if (isGatewayHealthy) {
+        await loadHistory(hasExistingMessages);
+      }
     })();
     return () => {
       cancelled = true;
     };
-  }, [isGatewayRunning, loadHistory, loadSessions, loadChannelBindings]);
+  }, [isGatewayHealthy, loadHistory, loadSessions, loadChannelBindings]);
   const agents = useAgentsStore((s) => s.agents);
   const fetchAgents = useAgentsStore((s) => s.fetchAgents);
   const digitalEmployees = useModelsStore((s) => s.digitalEmployees);
@@ -410,7 +421,7 @@ export function Sidebar() {
         'flex min-h-0 shrink-0 flex-col overflow-hidden border-r bg-[#eae8e1]/60 dark:bg-background',
         sidebarCollapsed ? 'w-16 transition-all duration-300' : 'transition-none'
       )}
-      {...(!sidebarCollapsed && { style: { width: sidebarWidth } })}
+      {...(!sidebarCollapsed && { style: { width: sidebarWidth, minWidth: sidebarWidth, maxWidth: sidebarWidth } })}
     >
       {/* Top Header Toggle */}
       <div className={cn("flex items-center p-2 h-12", sidebarCollapsed ? "justify-center" : "justify-between")}>

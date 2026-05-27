@@ -95,6 +95,15 @@ const defaultSettings = {
   boxImGateComplete: false,
 };
 
+const MIN_SIDEBAR_WIDTH = 64;
+const MAX_SIDEBAR_WIDTH = 480;
+
+function clampSidebarWidth(value: unknown): number {
+  const numeric = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(numeric)) return defaultSettings.sidebarWidth;
+  return Math.max(MIN_SIDEBAR_WIDTH, Math.min(MAX_SIDEBAR_WIDTH, Math.round(numeric)));
+}
+
 export const useSettingsStore = create<SettingsState>()(
   persist(
     (set) => ({
@@ -109,6 +118,7 @@ export const useSettingsStore = create<SettingsState>()(
           set((state) => ({
             ...state,
             ...settings,
+            sidebarWidth: clampSidebarWidth(settings.sidebarWidth ?? state.sidebarWidth),
             ...(resolvedLanguage ? { language: resolvedLanguage } : {}),
           }));
           if (resolvedLanguage) {

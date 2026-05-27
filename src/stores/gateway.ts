@@ -11,6 +11,7 @@ import type { GatewayStatus } from '../types/gateway';
 let gatewayInitPromise: Promise<void> | null = null;
 let gatewayEventUnsubscribers: Array<() => void> | null = null;
 let gatewayReconcileTimer: ReturnType<typeof setInterval> | null = null;
+let healthPollTimer: ReturnType<typeof setInterval> | null = null;
 const gatewayEventDedupe = new Map<string, number>();
 const GATEWAY_EVENT_DEDUPE_TTL_MS = 30_000;
 const LOAD_SESSIONS_MIN_INTERVAL_MS = 1_200;
@@ -28,6 +29,7 @@ interface GatewayState {
   status: GatewayStatus;
   health: GatewayHealth | null;
   isInitialized: boolean;
+  isGatewayHealthy: boolean;
   lastError: string | null;
   init: () => Promise<void>;
   start: () => Promise<void>;
@@ -291,6 +293,30 @@ function mapChannelStatus(status: string): 'connected' | 'connecting' | 'disconn
   }
 }
 
+function startHealthPolling() {
+  if (healthPollTimer) return;
+  const doCheck = async () => {
+    try {
+      const result = await hostApiFetch<GatewayHealth>('/api/gateway/health');
+      if (result.ok) {
+        useGatewayStore.setState({ health: result, isGatewayHealthy: true });
+        stopHealthPolling();
+      }
+    } catch {
+      // Gateway not ready yet
+    }
+  };
+  void doCheck();
+  healthPollTimer = setInterval(doCheck, 500);
+}
+
+function stopHealthPolling() {
+  if (healthPollTimer) {
+    clearInterval(healthPollTimer);
+    healthPollTimer = null;
+  }
+}
+
 export const useGatewayStore = create<GatewayState>((set, get) => ({
   status: {
     state: 'stopped',
@@ -298,6 +324,7 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
   },
   health: null,
   isInitialized: false,
+  isGatewayHealthy: false,
   lastError: null,
 
   init: async () => {
@@ -310,12 +337,29 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
     gatewayInitPromise = (async () => {
       try {
         const status = await hostApiFetch<GatewayStatus>('/api/gateway/status');
-        set({ status, isInitialized: true });
+        set({
+          status,
+          isInitialized: true,
+          isGatewayHealthy: status.state === 'running',
+        });
+        if (status.state === 'starting') {
+          startHealthPolling();
+        }
 
         if (!gatewayEventUnsubscribers) {
           const unsubscribers: Array<() => void> = [];
           unsubscribers.push(subscribeHostEvent<GatewayStatus>('gateway:status', (payload) => {
+            const prev = get().status.state;
             set({ status: payload });
+            if (payload.state === 'starting' && prev !== 'starting') {
+              startHealthPolling();
+            } else if (payload.state === 'running') {
+              set({ isGatewayHealthy: true });
+              stopHealthPolling();
+            } else if (payload.state === 'stopped' || payload.state === 'error') {
+              set({ isGatewayHealthy: false });
+              stopHealthPolling();
+            }
           }));
           unsubscribers.push(subscribeHostEvent<{ message?: string }>('gateway:error', (payload) => {
             set({ lastError: payload.message || 'Gateway error' });
@@ -371,7 +415,10 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
                   console.info(
                     `[gateway-store] reconciled stale state: ${current.state} → ${latest.state}`,
                   );
-                  set({ status: latest });
+                  set({
+                    status: latest,
+                    isGatewayHealthy: latest.state === 'running' ? true : latest.state === 'stopped' || latest.state === 'error' ? false : get().isGatewayHealthy,
+                  });
                 }
               })
               .catch(() => { /* ignore */ });
@@ -386,7 +433,13 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
           const refreshed = await hostApiFetch<GatewayStatus>('/api/gateway/status');
           const current = get().status;
           if (refreshed.state !== current.state) {
-            set({ status: refreshed });
+            set({
+              status: refreshed,
+              isGatewayHealthy: refreshed.state === 'running' ? true : refreshed.state === 'stopped' || refreshed.state === 'error' ? false : get().isGatewayHealthy,
+            });
+            if (refreshed.state === 'starting' && current.state !== 'starting') {
+              startHealthPolling();
+            }
           }
         } catch {
           // Best-effort; the IPC listener will eventually reconcile.
@@ -425,7 +478,8 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
   stop: async () => {
     try {
       await hostApiFetch('/api/gateway/stop', { method: 'POST' });
-      set({ status: { ...get().status, state: 'stopped' }, lastError: null });
+      stopHealthPolling();
+      set({ status: { ...get().status, state: 'stopped' }, isGatewayHealthy: false, lastError: null });
     } catch (error) {
       console.error('Failed to stop Gateway:', error);
       set({ lastError: String(error) });

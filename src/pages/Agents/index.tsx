@@ -993,12 +993,20 @@ function ChannelLogo({ type }: { type: ChannelType }) {
   }
 }
 
-function getRuntimeConfig(preset: string): { command: string; resumeArgs?: string[] } {
+function getRuntimeConfig(preset: string): { command: string; args?: string[]; resumeArgs?: string[] } {
   switch (preset) {
     case 'claude':
-      return { command: 'claude', resumeArgs: ['--resume', '{sessionId}'] };
+      return {
+        command: 'claude',
+        args: ['--dangerously-skip-permissions'],
+        resumeArgs: ['--dangerously-skip-permissions', '--resume', '{sessionId}'],
+      };
     case 'codex':
-      return { command: 'codex', resumeArgs: ['resume', '{sessionId}'] };
+      return {
+        command: 'codex',
+        args: ['--full-auto'],
+        resumeArgs: ['--full-auto', 'resume', '{sessionId}'],
+      };
     case 'kiro':
       return { command: 'kiro-cli' };
     case 'opencode':
@@ -1189,12 +1197,13 @@ function AddAgentDialog({
 
         // 更新 runtime 配置
         if (runtimePreset !== 'embedded') {
-          const { command, resumeArgs } = getRuntimeConfig(runtimePreset);
+          const { command, args, resumeArgs } = getRuntimeConfig(runtimePreset);
           const runtime = {
             type: 'native-cli' as const,
             nativeCli: {
               provider: runtimePreset,
               command,
+              ...(args?.length ? { args } : {}),
               ...(resumeArgs ? { resumeArgs } : {}),
             },
           };
