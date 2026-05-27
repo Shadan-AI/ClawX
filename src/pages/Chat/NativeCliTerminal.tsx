@@ -28,6 +28,7 @@ interface GatewayStatus {
 
 type TerminalStatus = 'disconnected' | 'connecting' | 'connected';
 type TerminalConnectionPhase = 'idle' | 'preparing' | 'starting' | 'resuming' | 'reconnecting';
+type InputShellState = 'collapsed' | 'auto' | 'focused';
 
 type TerminalStreamMarker =
   | { kind: 'turn_start'; conversationId: string; turnId: string; userText: string }
@@ -138,6 +139,12 @@ function terminalHasVisibleContent(term: Terminal | null, mount: HTMLElement | n
     if (buffer.getLine(lineIndex)?.translateToString(true).trim()) return true;
   }
   return Boolean(mount.querySelector<HTMLElement>('.xterm-rows')?.textContent?.trim());
+}
+
+function isTerminalNearBottom(term: Terminal | null) {
+  if (!term) return true;
+  const buffer = term.buffer.active;
+  return buffer.baseY - buffer.viewportY <= 1;
 }
 
 function normalizeProvider(provider?: string) {
@@ -393,6 +400,7 @@ function NativeCliTerminalStyles() {
     <style>{`
       .native-cli-terminal {
         --terminal-content-width: 960px;
+        --terminal-screen-width: min(var(--terminal-content-width), calc(100% - 48px));
         --native-cli-background: hsl(var(--background));
         --native-cli-foreground: hsl(var(--foreground));
         --native-cli-card: hsl(var(--card));
@@ -412,6 +420,7 @@ function NativeCliTerminalStyles() {
         background: var(--native-cli-background);
       }
       .native-cli-terminal__mount {
+        --terminal-content-inset: max(24px, calc((100% - var(--terminal-screen-width)) / 2));
         position: absolute;
         top: 20px;
         bottom: 132px;
@@ -475,6 +484,10 @@ function NativeCliTerminalStyles() {
         height: 42px;
         pointer-events: none;
       }
+      .native-cli-terminal__composer-inner {
+        width: min(var(--terminal-screen-width), var(--terminal-content-width), calc(100% - 48px));
+        margin: 0 auto;
+      }
       @keyframes native-cli-spin {
         to { transform: rotate(360deg); }
       }
@@ -486,13 +499,13 @@ function NativeCliTerminalStyles() {
       }
       .native-cli-terminal__mount .xterm-screen {
         background: var(--native-cli-background) !important;
-        margin-left: max(24px, calc((100vw - var(--terminal-content-width)) / 2));
+        margin-left: var(--terminal-content-inset);
       }
       .native-cli-terminal__mount .xterm-screen canvas {
         background: var(--native-cli-background) !important;
       }
       .native-cli-terminal__mount .xterm-helpers {
-        left: max(24px, calc((100vw - var(--terminal-content-width)) / 2));
+        left: var(--terminal-content-inset);
       }
       .native-cli-terminal__mount .xterm-viewport {
         background: var(--native-cli-background) !important;
@@ -517,7 +530,7 @@ function NativeCliTerminalStyles() {
         display: flex !important;
         justify-content: flex-end;
         align-items: center;
-        width: min(var(--terminal-content-width), calc(100vw - 48px)) !important;
+        width: min(var(--terminal-content-width), calc(100% - 48px)) !important;
         min-height: 2.2em;
         padding: 8px 0;
         pointer-events: auto;
@@ -589,8 +602,14 @@ export function NativeCliTerminal({
   const [awaitingInitialOutput, setAwaitingInitialOutput] = useState(false);
   const [displayedLoadingLabel, setDisplayedLoadingLabel] = useState('');
   const [loadingExiting, setLoadingExiting] = useState(false);
+  const [inputShellState, setInputShellState] = useState<InputShellState>('auto');
+  const inputShellStateRef = useRef<InputShellState>(inputShellState);
 
   const normalizedProvider = useMemo(() => normalizeProvider(cliSessionProvider), [cliSessionProvider]);
+
+  useEffect(() => {
+    inputShellStateRef.current = inputShellState;
+  }, [inputShellState]);
 
   useEffect(() => {
     const prev = cliSessionIdPropRef.current;
@@ -618,6 +637,24 @@ export function NativeCliTerminal({
       cliSessionId: cliSessionIdRef.current,
     });
   }, [sessionKey]);
+
+  const getScrollDrivenInputState = useCallback((): InputShellState => (
+    isTerminalNearBottom(termRef.current) ? 'auto' : 'collapsed'
+  ), []);
+
+  const updateInputShellStateFromTerminalScroll = useCallback(() => {
+    if (inputShellStateRef.current === 'focused') return;
+    const nextState = getScrollDrivenInputState();
+    setInputShellState((prev) => (prev === nextState ? prev : nextState));
+  }, [getScrollDrivenInputState]);
+
+  const handleInputFocusChange = useCallback((focused: boolean) => {
+    if (focused) {
+      setInputShellState('focused');
+      return;
+    }
+    setInputShellState(getScrollDrivenInputState());
+  }, [getScrollDrivenInputState]);
 
   const clearTerminalUserEchoRow = useCallback((row: HTMLElement) => {
     row.classList.remove('openclaw-user-echo-row');
@@ -952,9 +989,10 @@ export function NativeCliTerminal({
       fitAddon.fit();
       return;
     }
-    const configuredWidth = Math.min(area.clientWidth, 960);
+    const configuredWidth = Math.min(Math.max(0, area.clientWidth - 48), 960);
     const cols = Math.max(TERMINAL_MIN_COLS, Math.floor(configuredWidth / cellWidth));
     const rows = Math.max(1, proposed.rows);
+    area.parentElement?.style.setProperty('--terminal-screen-width', `${Math.ceil(cols * cellWidth)}px`);
     if (term.cols !== cols || term.rows !== rows) term.resize(cols, rows);
   }, []);
 
@@ -1206,6 +1244,7 @@ export function NativeCliTerminal({
     maybeSettleInitialOutput, handleTerminalStreamMarker, persistState,
     handleTerminalData, upsertTerminalTurn, bindNativeCliSessionId,
     settleReadyWithoutInitialOutput, resetVisibleTerminalForResume,
+    updateInputShellStateFromTerminalScroll,
   });
   mountRef_cb.current = {
     connect, sendTerminalData, fitTerminalToContent,
@@ -1213,6 +1252,7 @@ export function NativeCliTerminal({
     maybeSettleInitialOutput, handleTerminalStreamMarker, persistState,
     handleTerminalData, upsertTerminalTurn, bindNativeCliSessionId,
     settleReadyWithoutInitialOutput, resetVisibleTerminalForResume,
+    updateInputShellStateFromTerminalScroll,
   };
 
   useEffect(() => {
@@ -1250,11 +1290,15 @@ export function NativeCliTerminal({
       if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'resize', cols, rows }));
       mountRef_cb.current.scheduleTerminalUserEchoStyle();
     });
-    term.onScroll(() => mountRef_cb.current.scheduleTerminalUserEchoStyle());
+    term.onScroll(() => {
+      mountRef_cb.current.scheduleTerminalUserEchoStyle();
+      mountRef_cb.current.updateInputShellStateFromTerminalScroll();
+    });
     term.onWriteParsed(() => {
       mountRef_cb.current.ensureRowsObserver();
       mountRef_cb.current.maybeSettleInitialOutput();
       mountRef_cb.current.scheduleTerminalUserEchoStyle();
+      mountRef_cb.current.updateInputShellStateFromTerminalScroll();
     });
     term.onRender(() => {
       mountRef_cb.current.maybeSettleInitialOutput();
@@ -1365,13 +1409,14 @@ export function NativeCliTerminal({
       </div>
       <div className="native-cli-terminal__composer pointer-events-none">
         <div className="native-cli-terminal__composer-spacer" />
-        <div className="pointer-events-auto">
+        <div className="native-cli-terminal__composer-inner pointer-events-auto">
           <ChatInput
             onSend={handleChatInputSend}
             disabled={status !== 'connected'}
             disabledPlaceholder={desiredLoadingLabel || '正在连接会话'}
             sending={false}
-            isExpanded
+            isExpanded={inputShellState !== 'collapsed'}
+            onFocusChange={handleInputFocusChange}
           />
         </div>
       </div>
