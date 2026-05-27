@@ -317,7 +317,7 @@ export function Chat() {
     <div className={cn("relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden transition-colors duration-500 dark:bg-background")}>
       {/* Native CLI Terminal */}
       {isNativeCli ? (
-        <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
+        <div className="absolute inset-0 min-h-0 min-w-0 overflow-hidden">
           <NativeCliTerminal
             key={currentSessionKey}
             agentId={resolvedCurrentAgentId}
@@ -477,7 +477,7 @@ export function Chat() {
 
       {/* Transparent loading overlay */}
       {!isNativeCli && minLoading && !sending && (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/20 backdrop-blur-[1px] rounded-xl pointer-events-auto">
+        <div className="pointer-events-none absolute inset-x-0 top-0 bottom-32 z-[1] flex items-center justify-center bg-background/20 backdrop-blur-[1px] rounded-xl">
           <div className="bg-background shadow-lg rounded-full p-2.5 border border-border">
             <LoadingSpinner size="md" />
           </div>

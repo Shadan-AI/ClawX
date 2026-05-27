@@ -397,8 +397,7 @@ function NativeCliTerminalStyles() {
         --native-cli-foreground: hsl(var(--foreground));
         --native-cli-card: hsl(var(--card));
         position: relative;
-        display: grid;
-        grid-template-rows: minmax(0, 1fr) auto;
+        display: block;
         height: 100%;
         min-height: 0;
         overflow: hidden;
@@ -406,15 +405,16 @@ function NativeCliTerminalStyles() {
         color: var(--native-cli-foreground);
       }
       .native-cli-terminal__area {
+        position: absolute;
+        inset: 0;
         min-height: 0;
         overflow: hidden;
-        position: relative;
         background: var(--native-cli-background);
       }
       .native-cli-terminal__mount {
         position: absolute;
         top: 20px;
-        bottom: 0;
+        bottom: 132px;
         left: 0;
         width: 100%;
         overflow: hidden;
@@ -452,8 +452,11 @@ function NativeCliTerminalStyles() {
         color: #2563eb;
       }
       .native-cli-terminal__composer {
-        position: relative;
-        z-index: 5;
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 20;
         min-height: 124px;
         padding: 0 0 16px;
         background: linear-gradient(

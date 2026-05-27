@@ -70,6 +70,7 @@ export function useStickToBottomInstant(resetKey?: string) {
         clearTimeout(scrollTimeoutRef.current);
         scrollTimeoutRef.current = null;
       }
+      scrollElement.style.visibility = "";
     };
   }, [scrollRef, resetKey]);
 
