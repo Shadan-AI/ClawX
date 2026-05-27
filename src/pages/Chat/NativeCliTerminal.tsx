@@ -422,9 +422,14 @@ function NativeCliTerminalStyles() {
       }
       .native-cli-terminal__loading {
         position: absolute;
-        top: 28px;
-        right: 24px;
-        z-index: 3;
+        top: 20px;
+        right: 0;
+        bottom: 132px;
+        left: 0;
+        z-index: 10;
+        display: flex;
+        align-items: center;
+        justify-content: center;
         pointer-events: none;
         opacity: 1;
         transition: opacity .18s ease;
