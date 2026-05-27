@@ -574,6 +574,7 @@ export function NativeCliTerminal({
   const fitAddonRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
+  const resizeRafRef = useRef<number>(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const userEchoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const userEchoRafRef = useRef<number>(0);
@@ -996,6 +997,19 @@ export function NativeCliTerminal({
     if (term.cols !== cols || term.rows !== rows) term.resize(cols, rows);
   }, []);
 
+  const scheduleTerminalResize = useCallback(() => {
+    if (resizeRafRef.current) {
+      cancelAnimationFrame(resizeRafRef.current);
+    }
+    resizeRafRef.current = requestAnimationFrame(() => {
+      resizeRafRef.current = 0;
+      if (disposedRef.current) return;
+      fitTerminalToContent();
+      scheduleTerminalUserEchoStyle();
+      updateInputShellStateFromTerminalScroll();
+    });
+  }, [fitTerminalToContent, scheduleTerminalUserEchoStyle, updateInputShellStateFromTerminalScroll]);
+
   const connect = useCallback(async () => {
     if (disposedRef.current) return;
     if (!termRef.current) return;
@@ -1239,7 +1253,7 @@ export function NativeCliTerminal({
   // Stable ref for mount-effect callbacks so the terminal instance survives
   // callback identity changes (e.g. normalizedProvider undefined → 'claude').
   const mountRef_cb = useRef({
-    connect, sendTerminalData, fitTerminalToContent,
+    connect, sendTerminalData, fitTerminalToContent, scheduleTerminalResize,
     scheduleTerminalUserEchoStyle, ensureRowsObserver,
     maybeSettleInitialOutput, handleTerminalStreamMarker, persistState,
     handleTerminalData, upsertTerminalTurn, bindNativeCliSessionId,
@@ -1247,7 +1261,7 @@ export function NativeCliTerminal({
     updateInputShellStateFromTerminalScroll,
   });
   mountRef_cb.current = {
-    connect, sendTerminalData, fitTerminalToContent,
+    connect, sendTerminalData, fitTerminalToContent, scheduleTerminalResize,
     scheduleTerminalUserEchoStyle, ensureRowsObserver,
     maybeSettleInitialOutput, handleTerminalStreamMarker, persistState,
     handleTerminalData, upsertTerminalTurn, bindNativeCliSessionId,
@@ -1308,10 +1322,19 @@ export function NativeCliTerminal({
     fitAddonRef.current = fitAddon;
 
     resizeObserverRef.current = new ResizeObserver(() => {
-      mountRef_cb.current.fitTerminalToContent();
-      mountRef_cb.current.scheduleTerminalUserEchoStyle();
+      mountRef_cb.current.scheduleTerminalResize();
     });
     if (areaRef.current) resizeObserverRef.current.observe(areaRef.current);
+    if (mountRef.current) resizeObserverRef.current.observe(mountRef.current);
+    if (mount.parentElement) resizeObserverRef.current.observe(mount.parentElement);
+
+    const handleWindowResize = () => {
+      mountRef_cb.current.scheduleTerminalResize();
+    };
+    window.addEventListener('resize', handleWindowResize);
+    window.visualViewport?.addEventListener('resize', handleWindowResize);
+
+    mountRef_cb.current.scheduleTerminalResize();
 
     void mountRef_cb.current.connect();
 
@@ -1321,11 +1344,14 @@ export function NativeCliTerminal({
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
       if (userEchoTimerRef.current) clearTimeout(userEchoTimerRef.current);
       if (userEchoRafRef.current) cancelAnimationFrame(userEchoRafRef.current);
+      if (resizeRafRef.current) cancelAnimationFrame(resizeRafRef.current);
       if (initialOutputRafRef.current) cancelAnimationFrame(initialOutputRafRef.current);
       if (loadingExitTimerRef.current) clearTimeout(loadingExitTimerRef.current);
       initialOutputPendingPaintRef.current = false;
       rowsObserverRef.current?.disconnect();
       resizeObserverRef.current?.disconnect();
+      window.removeEventListener('resize', handleWindowResize);
+      window.visualViewport?.removeEventListener('resize', handleWindowResize);
       const ws = wsRef.current;
       wsRef.current = null;
       ws?.close();
