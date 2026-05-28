@@ -239,7 +239,7 @@ describe('chat target routing', () => {
     expect(state.error).toContain('native CLI');
     expect(gatewayRpcMock.mock.calls.some(([method]) => method === 'chat.send')).toBe(false);
     expect(hostApiFetchMock).toHaveBeenCalledWith(
-      '/api/sessions/native-cli-session',
+      '/api/runtime/sessions/native-cli',
       expect.objectContaining({
         method: 'POST',
         body: expect.stringContaining('agent:cli-agent:cli:'),

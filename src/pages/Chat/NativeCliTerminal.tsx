@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import {
@@ -7,6 +7,12 @@ import {
 import { invokeIpc } from '@/lib/api-client';
 import { hostApiFetch } from '@/lib/host-api';
 import { useChatStore } from '@/stores/chat';
+import {
+  initialNativeCliTerminalState,
+  nativeCliTerminalCanSend,
+  nativeCliTerminalLoadingLabel,
+  nativeCliTerminalReducer,
+} from '@/lib/native-cli-terminal-state';
 import { ChatInput } from './ChatInput';
 import '@xterm/xterm/css/xterm.css';
 
@@ -26,8 +32,6 @@ interface GatewayStatus {
   tls?: boolean;
 }
 
-type TerminalStatus = 'disconnected' | 'connecting' | 'connected';
-type TerminalConnectionPhase = 'idle' | 'preparing' | 'starting' | 'resuming' | 'reconnecting';
 type InputShellState = 'collapsed' | 'auto' | 'focused';
 
 type TerminalStreamMarker =
@@ -61,6 +65,8 @@ type HostNativeCliResolveResponse = {
 };
 
 const NATIVE_CLI_SESSIONS_KEY = 'openclaw-native-cli-sessions';
+const RUNTIME_NATIVE_CLI_SESSION_PATH = '/api/runtime/sessions/native-cli';
+const RUNTIME_NATIVE_CLI_RESOLVE_PATH = '/api/runtime/sessions/native-cli/resolve';
 const TERMINAL_STREAM_MARKER_PREFIX = '\x1b]777;OPENCLAW;';
 const TERMINAL_STREAM_MARKER_SUFFIX = '\x07';
 const TERMINAL_STREAM_OSC_PREFIX = 'OPENCLAW;';
@@ -205,7 +211,7 @@ function persistNativeCliSessionId(sessionKey: string, cliSessionId: string, pro
 
 async function persistNativeCliSessionIdToHost(sessionKey: string, cliSessionId: string, provider?: string) {
   try {
-    await hostApiFetch('/api/sessions/native-cli-session', {
+    await hostApiFetch(RUNTIME_NATIVE_CLI_SESSION_PATH, {
       method: 'POST',
       body: JSON.stringify({
         sessionKey,
@@ -229,7 +235,7 @@ async function resolveNativeCliSessionIdToHost(params: {
   startedAt: number;
 }): Promise<string> {
   try {
-    const response = await hostApiFetch<HostNativeCliResolveResponse>('/api/sessions/native-cli-resolve', {
+    const response = await hostApiFetch<HostNativeCliResolveResponse>(RUNTIME_NATIVE_CLI_RESOLVE_PATH, {
       method: 'POST',
       body: JSON.stringify({
         sessionKey: params.sessionKey,
@@ -598,9 +604,11 @@ export function NativeCliTerminal({
   const reconnectDelayRef = useRef(1000);
   const disposedRef = useRef(false);
 
-  const [status, setStatus] = useState<TerminalStatus>('disconnected');
-  const [connectionPhase, setConnectionPhase] = useState<TerminalConnectionPhase>('idle');
-  const [awaitingInitialOutput, setAwaitingInitialOutput] = useState(false);
+  const [terminalState, dispatchTerminalState] = useReducer(
+    nativeCliTerminalReducer,
+    initialNativeCliTerminalState,
+  );
+  const awaitingInitialOutput = terminalState.awaitingInitialOutput;
   const [displayedLoadingLabel, setDisplayedLoadingLabel] = useState('');
   const [loadingExiting, setLoadingExiting] = useState(false);
   const [inputShellState, setInputShellState] = useState<InputShellState>('auto');
@@ -884,8 +892,7 @@ export function NativeCliTerminal({
         initialOutputRafRef.current = requestAnimationFrame(() => {
           initialOutputRafRef.current = 0;
           if (disposedRef.current) return;
-          setAwaitingInitialOutput(false);
-          setConnectionPhase('idle');
+          dispatchTerminalState({ type: 'initial_output_settled' });
         });
       });
     });
@@ -923,8 +930,7 @@ export function NativeCliTerminal({
       initialOutputRafRef.current = requestAnimationFrame(() => {
         initialOutputRafRef.current = 0;
         if (disposedRef.current) return;
-        setAwaitingInitialOutput(false);
-        setConnectionPhase('idle');
+        dispatchTerminalState({ type: 'ready_without_initial_output' });
       });
     });
   }, []);
@@ -1031,9 +1037,10 @@ export function NativeCliTerminal({
       && hasHistoricalTitle
       && isNativeCliSessionKey(sessionKey)
       && !skipResumeResolveRef.current;
-    setStatus('connecting');
-    setConnectionPhase(storedCliSessionId ? 'resuming' : shouldWaitForResumeSessionId ? 'preparing' : 'starting');
-    setAwaitingInitialOutput(true);
+    dispatchTerminalState({
+      type: 'connect_requested',
+      phase: storedCliSessionId ? 'resuming' : shouldWaitForResumeSessionId ? 'preparing' : 'starting',
+    });
     initialOutputPendingPaintRef.current = false;
 
     if (shouldWaitForResumeSessionId) {
@@ -1071,7 +1078,7 @@ export function NativeCliTerminal({
         if (disposedRef.current || activeSessionResolveRef.current !== resolveKey || cliSessionIdRef.current) return;
         skipResumeResolveRef.current = true;
         activeSessionResolveRef.current = '';
-        setConnectionPhase('starting');
+        dispatchTerminalState({ type: 'connect_requested', phase: 'starting' });
         void connect();
       })();
       return;
@@ -1083,9 +1090,7 @@ export function NativeCliTerminal({
     } catch {
       // Gateway IPC not available yet — schedule reconnect.
       if (disposedRef.current) return;
-      setStatus('disconnected');
-      setConnectionPhase('reconnecting');
-      setAwaitingInitialOutput(true);
+      dispatchTerminalState({ type: 'gateway_unavailable' });
       initialOutputPendingPaintRef.current = false;
       if (!reconnectTimerRef.current) {
         reconnectTimerRef.current = setTimeout(() => {
@@ -1102,12 +1107,12 @@ export function NativeCliTerminal({
     const knownCliSessionId = storedCliSessionId;
     cliSessionIdRef.current = knownCliSessionId;
     if (knownCliSessionId) {
-      setConnectionPhase('resuming');
+      dispatchTerminalState({ type: 'connect_requested', phase: 'resuming' });
       resetVisibleTerminalForResume();
       persistNativeCliSessionId(sessionKey, knownCliSessionId, normalizedProvider);
       persistState();
     } else {
-      setConnectionPhase('starting');
+      dispatchTerminalState({ type: 'connect_requested', phase: 'starting' });
     }
 
     const params = new URLSearchParams({
@@ -1127,7 +1132,7 @@ export function NativeCliTerminal({
       if (wsRef.current !== ws) return;
       openedAt = Date.now();
       reconnectDelayRef.current = 1000;
-      setStatus('connected');
+      dispatchTerminalState({ type: 'websocket_opened' });
       mountRef_cb.current.fitTerminalToContent();
       const term = termRef.current;
       if (term) ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
@@ -1164,9 +1169,7 @@ export function NativeCliTerminal({
       if (disposedRef.current) return;
       if (wsRef.current !== ws) return;
       if (wsRef.current === ws) wsRef.current = null;
-      setStatus('disconnected');
-      setConnectionPhase('reconnecting');
-      setAwaitingInitialOutput(true);
+      dispatchTerminalState({ type: 'websocket_closed' });
       initialOutputPendingPaintRef.current = false;
       if (userHasInteractedRef.current) {
         termRef.current?.write('\r\n\x1b[31m[disconnected]\x1b[0m\r\n');
@@ -1186,9 +1189,7 @@ export function NativeCliTerminal({
     ws.onerror = () => {
       if (disposedRef.current) return;
       if (wsRef.current !== ws) return;
-      setStatus('disconnected');
-      setConnectionPhase('reconnecting');
-      setAwaitingInitialOutput(true);
+      dispatchTerminalState({ type: 'websocket_error' });
       initialOutputPendingPaintRef.current = false;
     };
   }, [
@@ -1289,7 +1290,10 @@ export function NativeCliTerminal({
     cliSessionIdRef.current = initialCliSessionId;
     userHasInteractedRef.current = Boolean(cliSessionIdRef.current || persisted.userHasInteracted);
     bufferRef.current = initialCliSessionId ? '' : persisted.buffer ?? '';
-    setAwaitingInitialOutput(true);
+    dispatchTerminalState({
+      type: 'connect_requested',
+      phase: initialCliSessionId ? 'resuming' : 'starting',
+    });
     initialOutputPendingPaintRef.current = false;
 
     const term = createTerminalInstance();
@@ -1361,6 +1365,7 @@ export function NativeCliTerminal({
 
     return () => {
       disposedRef.current = true;
+      dispatchTerminalState({ type: 'disposed' });
       mountRef_cb.current.persistState();
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
       if (userEchoTimerRef.current) clearTimeout(userEchoTimerRef.current);
@@ -1397,15 +1402,7 @@ export function NativeCliTerminal({
     }
   }, [bindNativeCliSessionId, cliSessionId]);
 
-  const desiredLoadingLabel = status === 'connected' && !awaitingInitialOutput
-    ? ''
-    : connectionPhase === 'resuming'
-      ? '正在恢复会话'
-      : connectionPhase === 'preparing'
-        ? '正在准备会话'
-        : connectionPhase === 'reconnecting'
-          ? '正在重新连接'
-          : '正在创建会话';
+  const desiredLoadingLabel = nativeCliTerminalLoadingLabel(terminalState);
 
   useEffect(() => {
     if (loadingExitTimerRef.current) {
@@ -1460,7 +1457,7 @@ export function NativeCliTerminal({
         <div className="native-cli-terminal__composer-inner pointer-events-auto">
           <ChatInput
             onSend={handleChatInputSend}
-            disabled={status !== 'connected'}
+            disabled={!nativeCliTerminalCanSend(terminalState)}
             disabledPlaceholder={desiredLoadingLabel || '正在连接会话'}
             sending={false}
             isExpanded={inputShellState !== 'collapsed'}

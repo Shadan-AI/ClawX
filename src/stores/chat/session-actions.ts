@@ -339,7 +339,7 @@ export function createSessionActions(
       }));
       if (isNativeCli) {
         const provider = agents.find((a) => a.id === normalizedAgentId)?.runtime?.nativeCli?.provider;
-        void hostApiFetch('/api/sessions/native-cli-session', {
+        void hostApiFetch('/api/runtime/sessions/native-cli', {
           method: 'POST',
           body: JSON.stringify({
             sessionKey: newKey,

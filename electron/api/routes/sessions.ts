@@ -9,6 +9,14 @@ import { parseJsonBody, sendJson } from '../route-utils';
 
 const SAFE_SESSION_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 const DANGLING_SESSION_PRUNE_AGE_MS = 10 * 60 * 1000;
+const NATIVE_CLI_SESSION_PATHS = new Set([
+  '/api/sessions/native-cli-session',
+  '/api/runtime/sessions/native-cli',
+]);
+const NATIVE_CLI_RESOLVE_PATHS = new Set([
+  '/api/sessions/native-cli-resolve',
+  '/api/runtime/sessions/native-cli/resolve',
+]);
 
 type LocalSessionIndexEntry = {
   key: string;
@@ -905,7 +913,7 @@ export async function handleSessionRoutes(
     return true;
   }
 
-  if (url.pathname === '/api/sessions/native-cli-session' && req.method === 'POST') {
+  if (NATIVE_CLI_SESSION_PATHS.has(url.pathname) && req.method === 'POST') {
     try {
       const body = await parseJsonBody<{
         sessionKey?: string;
@@ -922,14 +930,14 @@ export async function handleSessionRoutes(
       }
 
       await persistNativeCliSessionIndex({ sessionKey, cliSessionId, provider: body.provider, label });
-      sendJson(res, 200, { success: true });
+      sendJson(res, 200, { success: true, runtimeType: 'native-cli', sessionKey });
     } catch (error) {
       sendJson(res, 500, { success: false, error: String(error) });
     }
     return true;
   }
 
-  if (url.pathname === '/api/sessions/native-cli-resolve' && req.method === 'POST') {
+  if (NATIVE_CLI_RESOLVE_PATHS.has(url.pathname) && req.method === 'POST') {
     try {
       const body = await parseJsonBody<{
         sessionKey?: string;
@@ -951,7 +959,7 @@ export async function handleSessionRoutes(
         startedAt: body.startedAt,
       });
       if (!resolved?.sessionId) {
-        sendJson(res, 200, { success: true, resolved: false });
+        sendJson(res, 200, { success: true, runtimeType: 'native-cli', sessionKey, resolved: false });
         return true;
       }
       await persistNativeCliSessionIndex({
@@ -961,6 +969,8 @@ export async function handleSessionRoutes(
       });
       sendJson(res, 200, {
         success: true,
+        runtimeType: 'native-cli',
+        sessionKey,
         resolved: true,
         sessionId: resolved.sessionId,
         sessionFile: resolved.sessionFile,

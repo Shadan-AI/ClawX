@@ -66,7 +66,7 @@ describe('native-cli runtime store invariants', () => {
     hostApiFetchMock.mockReset();
     hostApiFetchMock.mockImplementation(async (url: string) => {
       if (url === '/api/sessions/repair-indexes') return { success: true };
-      if (url === '/api/sessions/native-cli-session') return { success: true };
+      if (url === '/api/runtime/sessions/native-cli') return { success: true };
       if (url.startsWith('/api/sessions/transcript')) return { success: true, messages: [] };
       return { success: true, sessions: [] };
     });
@@ -121,7 +121,7 @@ describe('native-cli runtime store invariants', () => {
         };
       }
       if (url === '/api/sessions/repair-indexes') return { success: true };
-      if (url === '/api/sessions/native-cli-session') return { success: true };
+      if (url === '/api/runtime/sessions/native-cli') return { success: true };
       if (url.startsWith('/api/sessions/transcript')) return { success: true, messages: [] };
       return { success: true, sessions: [] };
     });
@@ -145,7 +145,7 @@ describe('native-cli runtime store invariants', () => {
     expect(currentSessionKey).toMatch(/^agent:cli-agent:cli:/);
     expect(useChatStore.getState().sessions.some((session) => session.key === currentSessionKey)).toBe(true);
     expect(hostApiFetchMock).toHaveBeenCalledWith(
-      '/api/sessions/native-cli-session',
+      '/api/runtime/sessions/native-cli',
       expect.objectContaining({
         method: 'POST',
         body: expect.stringContaining(currentSessionKey),

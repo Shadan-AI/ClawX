@@ -145,4 +145,39 @@ describe('handleSessionRoutes', () => {
       },
     });
   });
+
+  it('persists native-cli sessions through the runtime session API', async () => {
+    parseJsonBodyMock.mockResolvedValueOnce({
+      sessionKey: 'agent:coder:cli:runtime-session',
+      cliSessionId: 'claude-session-456',
+      provider: 'claude',
+    });
+
+    const { handleSessionRoutes } = await import('@electron/api/routes/sessions');
+
+    await handleSessionRoutes(
+      { method: 'POST' } as IncomingMessage,
+      {} as ServerResponse,
+      new URL('http://127.0.0.1:13210/api/runtime/sessions/native-cli'),
+      {} as never,
+    );
+
+    const sessionsJsonPath = join(testOpenClawConfigDir, 'agents', 'coder', 'sessions', 'sessions.json');
+    const sessionsJson = JSON.parse(readFileSync(sessionsJsonPath, 'utf8')) as Record<string, Record<string, unknown>>;
+    expect(sessionsJson['agent:coder:cli:runtime-session']).toMatchObject({
+      cliSessionId: 'claude-session-456',
+      cliSessionIds: {
+        claude: 'claude-session-456',
+      },
+    });
+    expect(sendJsonMock).toHaveBeenCalledWith(
+      expect.anything(),
+      200,
+      expect.objectContaining({
+        success: true,
+        runtimeType: 'native-cli',
+        sessionKey: 'agent:coder:cli:runtime-session',
+      }),
+    );
+  });
 });

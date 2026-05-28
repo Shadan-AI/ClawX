@@ -28,6 +28,8 @@ import {
   resolveRuntimeSession,
 } from '@/lib/runtime-session';
 
+const RUNTIME_NATIVE_CLI_SESSION_PATH = '/api/runtime/sessions/native-cli';
+
 type InputShellState = 'collapsed' | 'auto' | 'focused';
 
 type ChatRouteState = {
@@ -159,7 +161,7 @@ export function Chat() {
         )),
       };
     });
-    void hostApiFetch('/api/sessions/native-cli-session', {
+    void hostApiFetch(RUNTIME_NATIVE_CLI_SESSION_PATH, {
       method: 'POST',
       body: JSON.stringify({
         sessionKey: currentSessionKey,

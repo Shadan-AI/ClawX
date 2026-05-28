@@ -75,6 +75,8 @@ const CHAT_EVENT_DEDUPE_TTL_MS = 30_000;
 const SESSION_SIDEBAR_META_CONCURRENCY = 2;
 const ACTIVE_HISTORY_RPC_TIMEOUT_MS = 60_000;
 const NATIVE_CLI_SESSION_ID_REPAIR_RETRY_MS = 60_000;
+const RUNTIME_NATIVE_CLI_SESSION_PATH = '/api/runtime/sessions/native-cli';
+const RUNTIME_NATIVE_CLI_RESOLVE_PATH = '/api/runtime/sessions/native-cli/resolve';
 const DELETED_SESSION_KEYS_STORAGE_KEY = 'clawx-deleted-session-keys';
 const MAX_DELETED_SESSION_KEYS = 500;
 const _chatEventDedupe = new Map<string, number>();
@@ -862,7 +864,7 @@ function findNativeCliSessionForAgent(
 }
 
 function persistNativeCliSessionIndex(sessionKey: string, provider: string | undefined): void {
-  void hostApiFetch('/api/sessions/native-cli-session', {
+  void hostApiFetch(RUNTIME_NATIVE_CLI_SESSION_PATH, {
     method: 'POST',
     body: JSON.stringify({
       sessionKey,
@@ -1235,7 +1237,7 @@ function repairMissingNativeCliSessionIdsInBackground(
     _nativeCliSessionIdRepairLastAttempt.set(repairKey, now);
     _nativeCliSessionIdRepairInFlight.add(repairKey);
 
-    void hostApiFetch<{ success: boolean; resolved?: boolean; sessionId?: string }>('/api/sessions/native-cli-resolve', {
+    void hostApiFetch<{ success: boolean; resolved?: boolean; sessionId?: string }>(RUNTIME_NATIVE_CLI_RESOLVE_PATH, {
       method: 'POST',
       body: JSON.stringify({
         sessionKey: session.key,
@@ -2431,7 +2433,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }));
     clearSessionRuntime(newKey);
     if (nativeCli) {
-      void hostApiFetch('/api/sessions/native-cli-session', {
+      void hostApiFetch(RUNTIME_NATIVE_CLI_SESSION_PATH, {
         method: 'POST',
         body: JSON.stringify({
           sessionKey: newKey,
