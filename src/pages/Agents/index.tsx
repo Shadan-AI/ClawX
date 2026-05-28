@@ -998,8 +998,8 @@ function getRuntimeConfig(preset: string): { command: string; args?: string[]; r
     case 'claude':
       return {
         command: 'claude',
-        args: ['--dangerously-skip-permissions'],
-        resumeArgs: ['--dangerously-skip-permissions', '--resume', '{sessionId}'],
+        args: ['--bare', '--dangerously-skip-permissions'],
+        resumeArgs: ['--bare', '--dangerously-skip-permissions', '--resume', '{sessionId}'],
       };
     case 'codex':
       return {
@@ -1044,7 +1044,6 @@ function buildClaudeNativeCliEnv(modelId: string, tokenKey: string): Record<stri
   return {
     ANTHROPIC_BASE_URL: ONEAPI_NATIVE_BASE_URL,
     ANTHROPIC_API_KEY: normalizedTokenKey,
-    ANTHROPIC_AUTH_TOKEN: normalizedTokenKey,
     ANTHROPIC_MODEL: normalizedModelId,
     ANTHROPIC_SMALL_FAST_MODEL: normalizedModelId,
     ANTHROPIC_DEFAULT_SONNET_MODEL: normalizedModelId,

@@ -14,6 +14,7 @@ const MAIN_AGENT_NAME = 'Main Agent';
 const DEFAULT_ACCOUNT_ID = 'default';
 const DEFAULT_WORKSPACE_PATH = '~/.openclaw/workspace';
 const SHADAN_ONEAPI_NATIVE_BASE_URL = 'https://one-api.shadanai.com/v1';
+const CLAUDE_CONFIG_DIR_ENV = 'CLAUDE_CONFIG_DIR';
 const AGENT_BOOTSTRAP_FILES = [
   'AGENTS.md',
   'SOUL.md',
@@ -37,11 +38,20 @@ function asStringRecord(value: unknown): Record<string, string> | undefined {
   return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
-function normalizeNativeCliEnv(provider: string, env: Record<string, string> | undefined): Record<string, string> | undefined {
-  if (!env) return undefined;
+function getClaudeConfigDir(agentId: string | undefined): string | undefined {
+  const normalizedAgentId = agentId?.trim();
+  if (!normalizedAgentId) return undefined;
+  return join(getOpenClawConfigDir(), 'agents', normalizedAgentId, 'claude-code');
+}
+
+function normalizeNativeCliEnv(
+  provider: string,
+  env: Record<string, string> | undefined,
+  options?: { agentId?: string },
+): Record<string, string> | undefined {
   if (provider !== 'claude') return env;
 
-  const next = { ...env };
+  const next = { ...(env ?? {}) };
   const baseUrl = next.ANTHROPIC_BASE_URL?.trim().replace(/\/+$/, '');
   if (baseUrl === 'https://one-api.shadanai.com') {
     next.ANTHROPIC_BASE_URL = SHADAN_ONEAPI_NATIVE_BASE_URL;
@@ -50,9 +60,14 @@ function normalizeNativeCliEnv(provider: string, env: Record<string, string> | u
   const apiKey = next.ANTHROPIC_API_KEY?.trim();
   const authToken = next.ANTHROPIC_AUTH_TOKEN?.trim();
   if (!apiKey && authToken) next.ANTHROPIC_API_KEY = authToken;
-  if (!authToken && apiKey) next.ANTHROPIC_AUTH_TOKEN = apiKey;
+  delete next.ANTHROPIC_AUTH_TOKEN;
 
-  return next;
+  const claudeConfigDir = getClaudeConfigDir(options?.agentId);
+  if (claudeConfigDir) {
+    next[CLAUDE_CONFIG_DIR_ENV] = claudeConfigDir;
+  }
+
+  return Object.keys(next).length > 0 ? next : undefined;
 }
 
 function normalizeNativeCliProvider(provider: unknown, command: unknown): string {
@@ -68,12 +83,38 @@ function normalizeNativeCliProvider(provider: unknown, command: unknown): string
 
 function defaultNativeCliResumeArgs(provider: string, args: string[] | undefined): string[] | undefined {
   const existingArgs = args ?? [];
-  if (provider === 'claude') return ['--dangerously-skip-permissions', '--resume', '{sessionId}', ...existingArgs];
+  if (provider === 'claude') {
+    const extraArgs = existingArgs.filter((arg) => arg !== '--bare' && arg !== '--dangerously-skip-permissions');
+    return normalizeClaudeResumeArgs(['--resume', '{sessionId}', ...extraArgs]);
+  }
   if (provider === 'codex') return ['--full-auto', 'resume', '{sessionId}', ...existingArgs];
   return undefined;
 }
 
-function normalizeAgentRuntime(runtime: Record<string, unknown>): Record<string, unknown> {
+function prependMissingArgs(args: string[] | undefined, requiredArgs: string[]): string[] {
+  const next = args ? [...args] : [];
+  for (let index = requiredArgs.length - 1; index >= 0; index -= 1) {
+    const requiredArg = requiredArgs[index];
+    if (!next.includes(requiredArg)) {
+      next.unshift(requiredArg);
+    }
+  }
+  return next;
+}
+
+function normalizeClaudeArgs(args: string[] | undefined): string[] {
+  return prependMissingArgs(args, ['--bare', '--dangerously-skip-permissions']);
+}
+
+function normalizeClaudeResumeArgs(resumeArgs: string[] | undefined): string[] {
+  const next = prependMissingArgs(resumeArgs, ['--bare', '--dangerously-skip-permissions']);
+  if (!next.includes('--resume') && !next.includes('-r')) {
+    next.push('--resume', '{sessionId}');
+  }
+  return next;
+}
+
+function normalizeAgentRuntime(runtime: Record<string, unknown>, options?: { agentId?: string }): Record<string, unknown> {
   if (runtime.type !== 'native-cli') return runtime;
   const nativeCli = runtime.nativeCli;
   if (!nativeCli || typeof nativeCli !== 'object' || Array.isArray(nativeCli)) return runtime;
@@ -83,9 +124,13 @@ function normalizeAgentRuntime(runtime: Record<string, unknown>): Record<string,
   if (!command) return runtime;
 
   const provider = normalizeNativeCliProvider(nativeCliRecord.provider, command);
-  const args = asStringArray(nativeCliRecord.args);
-  const resumeArgs = asStringArray(nativeCliRecord.resumeArgs) ?? defaultNativeCliResumeArgs(provider, args);
-  const env = normalizeNativeCliEnv(provider, asStringRecord(nativeCliRecord.env));
+  const rawArgs = asStringArray(nativeCliRecord.args);
+  const args = provider === 'claude' ? normalizeClaudeArgs(rawArgs) : rawArgs;
+  const rawResumeArgs = asStringArray(nativeCliRecord.resumeArgs);
+  const resumeArgs = provider === 'claude'
+    ? normalizeClaudeResumeArgs(rawResumeArgs ?? defaultNativeCliResumeArgs(provider, args))
+    : rawResumeArgs ?? defaultNativeCliResumeArgs(provider, args);
+  const env = normalizeNativeCliEnv(provider, asStringRecord(nativeCliRecord.env), options);
 
   return {
     ...runtime,
@@ -98,6 +143,17 @@ function normalizeAgentRuntime(runtime: Record<string, unknown>): Record<string,
       ...(env ? { env } : {}),
     },
   };
+}
+
+function getClaudeConfigDirForRuntime(agentId: string, runtime: Record<string, unknown>): string | undefined {
+  if (runtime.type !== 'native-cli') return undefined;
+  const nativeCli = runtime.nativeCli;
+  if (!nativeCli || typeof nativeCli !== 'object' || Array.isArray(nativeCli)) return undefined;
+
+  const nativeCliRecord = nativeCli as Record<string, unknown>;
+  const command = typeof nativeCliRecord.command === 'string' ? nativeCliRecord.command.trim() : '';
+  const provider = normalizeNativeCliProvider(nativeCliRecord.provider, command);
+  return provider === 'claude' ? getClaudeConfigDir(agentId) : undefined;
 }
 const AGENT_RUNTIME_FILES = [
   'auth-profiles.json',
@@ -1080,7 +1136,11 @@ export async function updateAgentRuntime(agentId: string, runtime: Record<string
       throw new Error(`Agent "${agentId}" not found`);
     }
 
-    const normalizedRuntime = normalizeAgentRuntime(runtime);
+    const normalizedRuntime = normalizeAgentRuntime(runtime, { agentId });
+    const claudeConfigDir = getClaudeConfigDirForRuntime(agentId, normalizedRuntime);
+    if (claudeConfigDir) {
+      await ensureDir(claudeConfigDir);
+    }
     const nextEntry: AgentListEntry = { ...entries[index], runtime: normalizedRuntime };
     entries[index] = nextEntry;
     config.agents = {
@@ -1103,7 +1163,7 @@ export async function ensureNativeCliRuntimeResumeArgs(): Promise<boolean> {
     const nextEntries = entries.map((entry) => {
       const runtime = entry.runtime;
       if (!runtime || typeof runtime !== 'object' || Array.isArray(runtime)) return entry;
-      const normalizedRuntime = normalizeAgentRuntime(runtime as Record<string, unknown>);
+      const normalizedRuntime = normalizeAgentRuntime(runtime as Record<string, unknown>, { agentId: entry.id });
       if (normalizedRuntime === runtime) return entry;
       const before = JSON.stringify(runtime);
       const after = JSON.stringify(normalizedRuntime);
@@ -1112,6 +1172,14 @@ export async function ensureNativeCliRuntimeResumeArgs(): Promise<boolean> {
       return { ...entry, runtime: normalizedRuntime };
     });
 
+    for (const entry of nextEntries) {
+      const runtime = entry.runtime;
+      if (!runtime || typeof runtime !== 'object' || Array.isArray(runtime)) continue;
+      const claudeConfigDir = getClaudeConfigDirForRuntime(entry.id, runtime as Record<string, unknown>);
+      if (claudeConfigDir) {
+        await ensureDir(claudeConfigDir);
+      }
+    }
     if (!changed) return false;
     config.agents = {
       ...agentsConfig,

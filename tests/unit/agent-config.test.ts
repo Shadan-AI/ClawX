@@ -479,4 +479,93 @@ describe('agent config lifecycle', () => {
     expect(agentIds).not.toContain('2');
     expect(agentIds).not.toContain('1');
   });
+
+  it('normalizes Claude native cli runtime to API-key auth with isolated config', async () => {
+    await writeOpenClawJson({
+      agents: {
+        list: [
+          { id: 'main', name: 'Main', default: true },
+          { id: 'coder', name: 'Coder' },
+        ],
+      },
+    });
+
+    const { updateAgentRuntime } = await import('@electron/utils/agent-config');
+
+    await updateAgentRuntime('coder', {
+      type: 'native-cli',
+      nativeCli: {
+        provider: 'claude',
+        command: 'claude',
+        env: {
+          ANTHROPIC_BASE_URL: 'https://one-api.shadanai.com',
+          ANTHROPIC_API_KEY: 'oneapi-key',
+          ANTHROPIC_AUTH_TOKEN: 'stale-claude-login-token',
+          ANTHROPIC_MODEL: 'deepseek-v4-flash',
+        },
+      },
+    });
+
+    const config = await readOpenClawJson();
+    const coder = ((config.agents as { list: Array<{ id: string; runtime?: { nativeCli?: { args?: string[]; resumeArgs?: string[]; env?: Record<string, string> } } }> }).list)
+      .find((agent) => agent.id === 'coder');
+    const nativeCli = coder?.runtime?.nativeCli;
+    const env = nativeCli?.env;
+
+    expect(nativeCli?.args).toEqual(['--bare', '--dangerously-skip-permissions']);
+    expect(nativeCli?.resumeArgs).toEqual(['--bare', '--dangerously-skip-permissions', '--resume', '{sessionId}']);
+    expect(env).toMatchObject({
+      ANTHROPIC_BASE_URL: 'https://one-api.shadanai.com/v1',
+      ANTHROPIC_API_KEY: 'oneapi-key',
+      ANTHROPIC_MODEL: 'deepseek-v4-flash',
+      CLAUDE_CONFIG_DIR: join(testHome, '.openclaw', 'agents', 'coder', 'claude-code'),
+    });
+    expect(env).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN');
+    await expect(access(join(testHome, '.openclaw', 'agents', 'coder', 'claude-code'))).resolves.toBeUndefined();
+  });
+
+  it('repairs existing Claude native cli auth env on startup migration', async () => {
+    await writeOpenClawJson({
+      agents: {
+        list: [
+          {
+            id: 'legacy',
+            name: 'Legacy',
+            runtime: {
+              type: 'native-cli',
+              nativeCli: {
+                command: 'claude',
+                args: ['--dangerously-skip-permissions'],
+                resumeArgs: ['--dangerously-skip-permissions', '--resume', '{sessionId}'],
+                env: {
+                  ANTHROPIC_AUTH_TOKEN: 'legacy-oneapi-key',
+                  ANTHROPIC_BASE_URL: 'https://one-api.shadanai.com',
+                },
+              },
+            },
+          },
+        ],
+      },
+    });
+
+    const { ensureNativeCliRuntimeResumeArgs } = await import('@electron/utils/agent-config');
+
+    await expect(ensureNativeCliRuntimeResumeArgs()).resolves.toBe(true);
+
+    const config = await readOpenClawJson();
+    const legacy = ((config.agents as { list: Array<{ id: string; runtime?: { nativeCli?: { provider?: string; resumeArgs?: string[]; env?: Record<string, string> } } }> }).list)
+      .find((agent) => agent.id === 'legacy');
+    const nativeCli = legacy?.runtime?.nativeCli;
+
+    expect(nativeCli?.provider).toBe('claude');
+    expect(nativeCli?.args).toEqual(['--bare', '--dangerously-skip-permissions']);
+    expect(nativeCli?.resumeArgs).toEqual(['--bare', '--dangerously-skip-permissions', '--resume', '{sessionId}']);
+    expect(nativeCli?.env).toMatchObject({
+      ANTHROPIC_API_KEY: 'legacy-oneapi-key',
+      ANTHROPIC_BASE_URL: 'https://one-api.shadanai.com/v1',
+      CLAUDE_CONFIG_DIR: join(testHome, '.openclaw', 'agents', 'legacy', 'claude-code'),
+    });
+    expect(nativeCli?.env).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN');
+    await expect(access(join(testHome, '.openclaw', 'agents', 'legacy', 'claude-code'))).resolves.toBeUndefined();
+  });
 });
