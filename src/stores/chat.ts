@@ -7,6 +7,15 @@ import { create } from 'zustand';
 import { hostApiFetch } from '@/lib/host-api';
 import { sanitizeSessionLabelText } from '@/lib/chat-display';
 import { buildChannelBindingLookupKeys, resolveSessionAgentIdByKey } from '@/lib/session-agent';
+import {
+  buildNativeCliSessionKey as buildRuntimeNativeCliSessionKey,
+  findNativeCliSessionForAgent as findRuntimeNativeCliSessionForAgent,
+  getAgentIdFromNativeCliSessionKey as getRuntimeAgentIdFromNativeCliSessionKey,
+  getNativeCliAgent as getRuntimeNativeCliAgent,
+  isNativeCliSessionKey as isRuntimeNativeCliSessionKey,
+  normalizeRuntimeAgentId,
+  resolveRuntimeSession,
+} from '@/lib/runtime-session';
 import { useGatewayStore } from './gateway';
 import { useAgentsStore } from './agents';
 import { buildCronSessionHistoryPath, isCronSessionKey } from './chat/cron-session-utils';
@@ -782,7 +791,7 @@ async function loadCronFallbackMessages(sessionKey: string, limit = 200): Promis
 }
 
 function normalizeAgentId(value: string | undefined | null): string {
-  return (value ?? '').trim().toLowerCase() || 'main';
+  return normalizeRuntimeAgentId(value);
 }
 
 function buildFallbackMainSessionKey(agentId: string): string {
@@ -790,18 +799,15 @@ function buildFallbackMainSessionKey(agentId: string): string {
 }
 
 function buildNativeCliSessionKey(agentId: string): string {
-  const shortId = Math.random().toString(36).slice(2, 10);
-  return `agent:${normalizeAgentId(agentId)}:cli:${Date.now().toString(36)}-${shortId}`;
+  return buildRuntimeNativeCliSessionKey(agentId);
 }
 
 function isNativeCliSessionKey(sessionKey: string): boolean {
-  return /^agent:[^:]+:cli:/i.test(sessionKey);
+  return isRuntimeNativeCliSessionKey(sessionKey);
 }
 
 function getAgentIdFromNativeCliSessionKey(sessionKey: string): string | null {
-  if (!isNativeCliSessionKey(sessionKey)) return null;
-  const [, agentId] = sessionKey.split(':');
-  return agentId ? normalizeAgentId(agentId) : null;
+  return getRuntimeAgentIdFromNativeCliSessionKey(sessionKey);
 }
 
 function getAgentIdFromAgentSessionKey(sessionKey: string): string | null {
@@ -845,20 +851,14 @@ function resolveMainSessionKeyForAgent(agentId: string | undefined | null): stri
 }
 
 function getNativeCliAgent(agentId: string | undefined | null) {
-  const normalizedAgentId = normalizeAgentId(agentId);
-  return useAgentsStore.getState().agents.find(
-    (agent) => normalizeAgentId(agent.id) === normalizedAgentId && agent.runtime?.type === 'native-cli',
-  );
+  return getRuntimeNativeCliAgent(useAgentsStore.getState().agents, agentId);
 }
 
 function findNativeCliSessionForAgent(
   sessions: ChatSession[],
   agentId: string | undefined | null,
 ): ChatSession | undefined {
-  const normalizedAgentId = normalizeAgentId(agentId);
-  return sessions.find(
-    (session) => getAgentIdFromNativeCliSessionKey(session.key) === normalizedAgentId,
-  );
+  return findRuntimeNativeCliSessionForAgent(sessions, agentId) as ChatSession | undefined;
 }
 
 function persistNativeCliSessionIndex(sessionKey: string, provider: string | undefined): void {
@@ -1944,6 +1944,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
             }
           }
 
+          const runtimeResolution = resolveRuntimeSession({
+            currentSessionKey: nextSessionKey,
+            currentAgentId: resolveSessionAgentIdByKey(nextSessionKey, visibleSessions, get().channelBindings),
+            sessions: visibleSessions,
+            agents: useAgentsStore.getState().agents,
+            channelBindings: get().channelBindings,
+          });
+          if (runtimeResolution.needsNativeCliSessionSwitch && runtimeResolution.agent?.runtime?.type === 'native-cli') {
+            const existingNativeSessionKey = isNativeCliSessionKey(runtimeResolution.recommendedSessionKey)
+              ? runtimeResolution.recommendedSessionKey
+              : null;
+            nextSessionKey = existingNativeSessionKey ?? buildNativeCliSessionKey(runtimeResolution.agentId);
+            if (!existingNativeSessionKey) {
+              persistNativeCliSessionIndex(nextSessionKey, runtimeResolution.agent.runtime.nativeCli?.provider);
+            }
+          }
+
           const sessionsWithCurrent = !visibleSessions.find((session) => session.key === nextSessionKey) && nextSessionKey
             ? [
               ...visibleSessions,
@@ -2810,6 +2827,28 @@ export const useChatStore = create<ChatState>((set, get) => ({
   ) => {
     const trimmed = text.trim();
     if (!trimmed && (!attachments || attachments.length === 0)) return;
+
+    const stateAtSend = get();
+    const requestedAgentId = targetAgentId
+      ? normalizeAgentId(targetAgentId)
+      : resolveSessionAgentIdByKey(
+        stateAtSend.currentSessionKey,
+        stateAtSend.sessions,
+        stateAtSend.channelBindings,
+      );
+    const requestedNativeCliAgent = getNativeCliAgent(requestedAgentId);
+    const currentSessionIsNativeCli = isNativeCliSessionKey(stateAtSend.currentSessionKey);
+    if (requestedNativeCliAgent || currentSessionIsNativeCli) {
+      const nextKey = requestedNativeCliAgent
+        ? get().ensureNativeCliSessionForAgent(requestedNativeCliAgent.id)
+        : stateAtSend.currentSessionKey;
+      set({
+        error: nextKey
+          ? 'This digital employee runs through native CLI. Switched to its terminal session; send from the terminal input.'
+          : 'This digital employee runs through native CLI. Use its terminal session to send messages.',
+      });
+      return;
+    }
 
     const targetSessionKey = resolveMainSessionKeyForAgent(targetAgentId) ?? get().currentSessionKey;
 

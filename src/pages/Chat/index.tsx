@@ -23,26 +23,16 @@ import { SKILL_TRIAL_AGENT_ID } from '@/lib/skill-trial';
 import { useStickToBottomInstant } from '@/hooks/use-stick-to-bottom-instant';
 import { useMinLoading } from '@/hooks/use-min-loading';
 import { hostApiFetch } from '@/lib/host-api';
+import {
+  isNativeCliSessionKey,
+  resolveRuntimeSession,
+} from '@/lib/runtime-session';
 
 type InputShellState = 'collapsed' | 'auto' | 'focused';
 
 type ChatRouteState = {
   quickUseSkill?: { name: string; slug: string; description: string };
 };
-
-function isNativeCliSessionKey(sessionKey: string) {
-  return /^agent:[^:]+:cli:/i.test(sessionKey);
-}
-
-function getAgentIdFromSessionKey(sessionKey: string) {
-  if (!sessionKey.startsWith('agent:')) return 'main';
-  const [, agentId] = sessionKey.split(':');
-  return agentId?.trim().toLowerCase() || 'main';
-}
-
-function normalizeAgentId(agentId: string | undefined | null) {
-  return agentId?.trim().toLowerCase() || 'main';
-}
 
 export function Chat() {
   const { t } = useTranslation('chat');
@@ -58,6 +48,7 @@ export function Chat() {
   const newSessionForAgent = useChatStore((s) => s.newSessionForAgent);
   const agents = useAgentsStore((s) => s.agents);
   const sessions = useChatStore((s) => s.sessions);
+  const channelBindings = useChatStore((s) => s.channelBindings);
   
   // 技能快速使用状态
   const [quickUseSkill, setQuickUseSkill] = useState<{ name: string; slug: string; description: string } | null>(null);
@@ -124,14 +115,17 @@ export function Chat() {
   const abortRun = useChatStore((s) => s.abortRun);
   const clearError = useChatStore((s) => s.clearError);
   const ensureNativeCliSessionForAgent = useChatStore((s) => s.ensureNativeCliSessionForAgent);
-  const sessionAgentId = getAgentIdFromSessionKey(currentSessionKey);
-  const normalizedCurrentAgentId = normalizeAgentId(currentAgentId);
-  const resolvedCurrentAgentId = currentSessionKey.startsWith('agent:')
-    ? sessionAgentId
-    : normalizedCurrentAgentId;
-  const currentAgent = (agents ?? []).find((a) => normalizeAgentId(a.id) === resolvedCurrentAgentId);
-  const isNativeCli = currentAgent?.runtime?.type === 'native-cli' || isNativeCliSessionKey(currentSessionKey);
-  const nativeCliProvider = currentAgent?.runtime?.nativeCli?.provider?.trim().toLowerCase() || undefined;
+  const runtimeSession = resolveRuntimeSession({
+    currentSessionKey,
+    currentAgentId,
+    sessions,
+    agents,
+    channelBindings,
+  });
+  const resolvedCurrentAgentId = runtimeSession.agentId;
+  const currentAgent = runtimeSession.agent;
+  const isNativeCli = runtimeSession.runtimeType === 'native-cli';
+  const nativeCliProvider = runtimeSession.provider;
   const currentSession = sessions.find((session) => session.key === currentSessionKey);
   const nativeCliSessionId = nativeCliProvider
     ? currentSession?.cliSessionIds?.[nativeCliProvider] ?? currentSession?.cliSessionId ?? currentSession?.sessionId

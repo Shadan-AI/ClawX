@@ -11,6 +11,7 @@ const { gatewayRpcMock, hostApiFetchMock, agentsState } = vi.hoisted(() => ({
 vi.mock('@/stores/gateway', () => ({
   useGatewayStore: {
     getState: () => ({
+      status: { state: 'running' },
       rpc: gatewayRpcMock,
     }),
   },
@@ -55,6 +56,24 @@ describe('chat target routing', () => {
         agentDir: '~/.openclaw/agents/research/agent',
         mainSessionKey: 'agent:research:desk',
         channelTypes: [],
+      },
+      {
+        id: 'cli-agent',
+        name: 'CLI Agent',
+        isDefault: false,
+        modelDisplay: 'Claude',
+        inheritedModel: false,
+        workspace: '~/.openclaw/workspace-cli',
+        agentDir: '~/.openclaw/agents/cli-agent/agent',
+        mainSessionKey: 'agent:cli-agent:main',
+        channelTypes: [],
+        runtime: {
+          type: 'native-cli',
+          nativeCli: {
+            provider: 'claude',
+            command: 'claude',
+          },
+        },
       },
     ];
 
@@ -184,7 +203,47 @@ describe('chat target routing', () => {
     };
 
     expect(payload.sessionKey).toBe('agent:research:desk');
-    expect(payload.message).toBe('Process the attached file(s).');
+    expect(payload.message).toBe('');
     expect(payload.media[0]?.filePath).toBe('/tmp/design.png');
+  });
+
+  it('blocks native-cli agents from the OpenClaw chat.send path', async () => {
+    const { useChatStore } = await import('@/stores/chat');
+
+    useChatStore.setState({
+      currentSessionKey: 'agent:main:main',
+      currentAgentId: 'main',
+      sessions: [{ key: 'agent:main:main' }, { key: 'agent:cli-agent:main' }],
+      messages: [],
+      sessionLabels: {},
+      sessionLastActivity: {},
+      sending: false,
+      activeRunId: null,
+      streamingText: '',
+      streamingMessage: null,
+      streamingTools: [],
+      pendingFinal: false,
+      lastUserMessageAt: null,
+      pendingToolImages: [],
+      error: null,
+      loading: false,
+      thinkingLevel: null,
+      showThinking: true,
+    });
+
+    await useChatStore.getState().sendMessage('Hello CLI', undefined, 'cli-agent');
+
+    const state = useChatStore.getState();
+    expect(state.currentSessionKey).toMatch(/^agent:cli-agent:cli:/);
+    expect(state.currentAgentId).toBe('cli-agent');
+    expect(state.error).toContain('native CLI');
+    expect(gatewayRpcMock.mock.calls.some(([method]) => method === 'chat.send')).toBe(false);
+    expect(hostApiFetchMock).toHaveBeenCalledWith(
+      '/api/sessions/native-cli-session',
+      expect.objectContaining({
+        method: 'POST',
+        body: expect.stringContaining('agent:cli-agent:cli:'),
+      }),
+    );
   });
 });
