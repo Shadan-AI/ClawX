@@ -47,7 +47,8 @@ function extractUpstreamModel(pathname: string): string | null {
 function upstreamPath(pathname: string): string | null {
   const match = pathname.match(/^\/native-claude\/[^/]+\/v1(\/.*)?$/);
   if (!match) return null;
-  return match[1] || '/';
+  const path = match[1] || '/';
+  return path.startsWith('/v1/') ? path.slice(3) : path;
 }
 
 function buildForwardHeaders(req: IncomingMessage): Headers {

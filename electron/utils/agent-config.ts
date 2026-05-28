@@ -50,11 +50,11 @@ function getClaudeConfigDir(agentId: string | undefined): string | undefined {
 }
 
 function getClaudeProxyBaseUrl(upstreamModel: string): string {
-  return `http://127.0.0.1:${CLAUDE_NATIVE_PROXY_PORT}/native-claude/${encodeURIComponent(upstreamModel)}/v1`;
+  return `http://127.0.0.1:${CLAUDE_NATIVE_PROXY_PORT}/native-claude/${encodeURIComponent(upstreamModel)}`;
 }
 
 function extractClaudeProxyModel(baseUrl: string | undefined): string | undefined {
-  const match = baseUrl?.match(/\/native-claude\/([^/]+)\/v1\/?$/);
+  const match = baseUrl?.match(/\/native-claude\/([^/]+)(?:\/v1)?\/?$/);
   if (!match) return undefined;
   try {
     return decodeURIComponent(match[1]).trim() || undefined;

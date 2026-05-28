@@ -515,7 +515,7 @@ describe('agent config lifecycle', () => {
     expect(nativeCli?.args).toEqual(['--bare', '--dangerously-skip-permissions', '--model', 'claude-sonnet-4-6']);
     expect(nativeCli?.resumeArgs).toEqual(['--bare', '--dangerously-skip-permissions', '--model', 'claude-sonnet-4-6', '--resume', '{sessionId}']);
     expect(env).toMatchObject({
-      ANTHROPIC_BASE_URL: 'http://127.0.0.1:13211/native-claude/deepseek-v4-flash/v1',
+      ANTHROPIC_BASE_URL: 'http://127.0.0.1:13211/native-claude/deepseek-v4-flash',
       ANTHROPIC_API_KEY: 'oneapi-key',
       ANTHROPIC_MODEL: 'claude-sonnet-4-6',
       ANTHROPIC_DEFAULT_SONNET_MODEL: 'claude-sonnet-4-6',
@@ -566,7 +566,7 @@ describe('agent config lifecycle', () => {
     expect(nativeCli?.resumeArgs).toEqual(['--bare', '--dangerously-skip-permissions', '--model', 'claude-sonnet-4-6', '--resume', '{sessionId}']);
     expect(nativeCli?.env).toMatchObject({
       ANTHROPIC_API_KEY: 'legacy-oneapi-key',
-      ANTHROPIC_BASE_URL: 'http://127.0.0.1:13211/native-claude/deepseek-v4-pro/v1',
+      ANTHROPIC_BASE_URL: 'http://127.0.0.1:13211/native-claude/deepseek-v4-pro',
       ANTHROPIC_MODEL: 'claude-sonnet-4-6',
       ANTHROPIC_DEFAULT_SONNET_MODEL: 'claude-sonnet-4-6',
       ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: 'deepseek-v4-pro',

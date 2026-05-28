@@ -1044,7 +1044,7 @@ function buildClaudeNativeCliEnv(modelId: string, tokenKey: string): Record<stri
   const normalizedModelId = normalizeOneApiModelId(modelId);
   const normalizedTokenKey = tokenKey.trim();
   return {
-    ANTHROPIC_BASE_URL: `http://127.0.0.1:${NATIVE_CLAUDE_PROXY_PORT}/native-claude/${encodeURIComponent(normalizedModelId)}/v1`,
+    ANTHROPIC_BASE_URL: `http://127.0.0.1:${NATIVE_CLAUDE_PROXY_PORT}/native-claude/${encodeURIComponent(normalizedModelId)}`,
     ANTHROPIC_API_KEY: normalizedTokenKey,
     ANTHROPIC_MODEL: NATIVE_CLAUDE_SONNET_ALIAS,
     ANTHROPIC_DEFAULT_SONNET_MODEL: NATIVE_CLAUDE_SONNET_ALIAS,
