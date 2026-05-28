@@ -84,8 +84,17 @@ function normalizeNativeCliProvider(provider: unknown, command: unknown): string
 function defaultNativeCliResumeArgs(provider: string, args: string[] | undefined): string[] | undefined {
   const existingArgs = args ?? [];
   if (provider === 'claude') {
-    const extraArgs = existingArgs.filter((arg) => arg !== '--bare' && arg !== '--dangerously-skip-permissions');
-    return normalizeClaudeResumeArgs(['--resume', '{sessionId}', ...extraArgs]);
+    const extraArgs: string[] = [];
+    for (let index = 0; index < existingArgs.length; index += 1) {
+      const arg = existingArgs[index];
+      if (arg === '--bare' || arg === '--dangerously-skip-permissions' || arg.startsWith('--model=')) continue;
+      if (arg === '--model') {
+        index += 1;
+        continue;
+      }
+      extraArgs.push(arg);
+    }
+    return normalizeClaudeResumeArgs(['--resume', '{sessionId}', ...extraArgs], undefined);
   }
   if (provider === 'codex') return ['--full-auto', 'resume', '{sessionId}', ...existingArgs];
   return undefined;
@@ -102,12 +111,26 @@ function prependMissingArgs(args: string[] | undefined, requiredArgs: string[]):
   return next;
 }
 
-function normalizeClaudeArgs(args: string[] | undefined): string[] {
-  return prependMissingArgs(args, ['--bare', '--dangerously-skip-permissions']);
+function hasClaudeModelArg(args: string[]): boolean {
+  return args.some((arg) => arg === '--model' || arg.startsWith('--model='));
 }
 
-function normalizeClaudeResumeArgs(resumeArgs: string[] | undefined): string[] {
-  const next = prependMissingArgs(resumeArgs, ['--bare', '--dangerously-skip-permissions']);
+function insertClaudeModelArg(args: string[], modelId: string | undefined): string[] {
+  const normalizedModelId = modelId?.trim();
+  if (!normalizedModelId || hasClaudeModelArg(args)) return args;
+  return ['--bare', '--dangerously-skip-permissions', '--model', normalizedModelId, ...args.filter((arg) => arg !== '--bare' && arg !== '--dangerously-skip-permissions')];
+}
+
+function normalizeClaudeArgs(args: string[] | undefined, modelId: string | undefined): string[] {
+  const next = prependMissingArgs(args, ['--bare', '--dangerously-skip-permissions']);
+  return insertClaudeModelArg(next, modelId);
+}
+
+function normalizeClaudeResumeArgs(resumeArgs: string[] | undefined, modelId: string | undefined): string[] {
+  const next = insertClaudeModelArg(
+    prependMissingArgs(resumeArgs, ['--bare', '--dangerously-skip-permissions']),
+    modelId,
+  );
   if (!next.includes('--resume') && !next.includes('-r')) {
     next.push('--resume', '{sessionId}');
   }
@@ -124,13 +147,14 @@ function normalizeAgentRuntime(runtime: Record<string, unknown>, options?: { age
   if (!command) return runtime;
 
   const provider = normalizeNativeCliProvider(nativeCliRecord.provider, command);
+  const env = normalizeNativeCliEnv(provider, asStringRecord(nativeCliRecord.env), options);
+  const modelId = provider === 'claude' ? env?.ANTHROPIC_MODEL : undefined;
   const rawArgs = asStringArray(nativeCliRecord.args);
-  const args = provider === 'claude' ? normalizeClaudeArgs(rawArgs) : rawArgs;
+  const args = provider === 'claude' ? normalizeClaudeArgs(rawArgs, modelId) : rawArgs;
   const rawResumeArgs = asStringArray(nativeCliRecord.resumeArgs);
   const resumeArgs = provider === 'claude'
-    ? normalizeClaudeResumeArgs(rawResumeArgs ?? defaultNativeCliResumeArgs(provider, args))
+    ? normalizeClaudeResumeArgs(rawResumeArgs ?? defaultNativeCliResumeArgs(provider, args), modelId)
     : rawResumeArgs ?? defaultNativeCliResumeArgs(provider, args);
-  const env = normalizeNativeCliEnv(provider, asStringRecord(nativeCliRecord.env), options);
 
   return {
     ...runtime,

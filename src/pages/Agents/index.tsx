@@ -998,8 +998,8 @@ function getRuntimeConfig(preset: string): { command: string; args?: string[]; r
     case 'claude':
       return {
         command: 'claude',
-        args: ['--bare', '--dangerously-skip-permissions'],
-        resumeArgs: ['--bare', '--dangerously-skip-permissions', '--resume', '{sessionId}'],
+        args: ['--bare', '--dangerously-skip-permissions', '--model', '{modelId}'],
+        resumeArgs: ['--bare', '--dangerously-skip-permissions', '--model', '{modelId}', '--resume', '{sessionId}'],
       };
     case 'codex':
       return {
@@ -1054,6 +1054,12 @@ function buildClaudeNativeCliEnv(modelId: string, tokenKey: string): Record<stri
   };
 }
 
+function formatNativeCliArgs(args: string[] | undefined, modelId: string): string[] | undefined {
+  if (!args) return undefined;
+  const normalizedModelId = normalizeOneApiModelId(modelId);
+  return args.map((arg) => arg === '{modelId}' ? normalizedModelId : arg);
+}
+
 async function verifyOneApiToken(tokenKey: string): Promise<{ ok: boolean; error?: string }> {
   try {
     const response = await fetch(`${ONEAPI_NATIVE_BASE_URL}/models`, {
@@ -1082,8 +1088,8 @@ async function buildNativeCliRuntimeConfig(runtimePreset: string, modelId: strin
     nativeCli: {
       provider: runtimePreset,
       command,
-      ...(args?.length ? { args } : {}),
-      ...(resumeArgs ? { resumeArgs } : {}),
+      ...(args?.length ? { args: formatNativeCliArgs(args, modelId) } : {}),
+      ...(resumeArgs ? { resumeArgs: formatNativeCliArgs(resumeArgs, modelId) } : {}),
       ...(env && Object.values(env).every(Boolean) ? { env } : {}),
     },
   };
