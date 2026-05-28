@@ -804,6 +804,12 @@ function getAgentIdFromNativeCliSessionKey(sessionKey: string): string | null {
   return agentId ? normalizeAgentId(agentId) : null;
 }
 
+function getAgentIdFromAgentSessionKey(sessionKey: string): string | null {
+  if (!sessionKey.startsWith('agent:')) return null;
+  const [, agentId] = sessionKey.split(':');
+  return agentId ? normalizeAgentId(agentId) : null;
+}
+
 function normalizeNativeCliProvider(provider: string | undefined): string {
   return provider?.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '') || 'claude';
 }
@@ -836,6 +842,35 @@ function resolveMainSessionKeyForAgent(agentId: string | undefined | null): stri
   const normalizedAgentId = normalizeAgentId(agentId);
   const summary = useAgentsStore.getState().agents.find((agent) => agent.id === normalizedAgentId);
   return summary?.mainSessionKey || buildFallbackMainSessionKey(normalizedAgentId);
+}
+
+function getNativeCliAgent(agentId: string | undefined | null) {
+  const normalizedAgentId = normalizeAgentId(agentId);
+  return useAgentsStore.getState().agents.find(
+    (agent) => normalizeAgentId(agent.id) === normalizedAgentId && agent.runtime?.type === 'native-cli',
+  );
+}
+
+function findNativeCliSessionForAgent(
+  sessions: ChatSession[],
+  agentId: string | undefined | null,
+): ChatSession | undefined {
+  const normalizedAgentId = normalizeAgentId(agentId);
+  return sessions.find(
+    (session) => getAgentIdFromNativeCliSessionKey(session.key) === normalizedAgentId,
+  );
+}
+
+function persistNativeCliSessionIndex(sessionKey: string, provider: string | undefined): void {
+  void hostApiFetch('/api/sessions/native-cli-session', {
+    method: 'POST',
+    body: JSON.stringify({
+      sessionKey,
+      provider,
+    }),
+  }).catch(() => {
+    // Best effort; the live store still contains the native session immediately.
+  });
 }
 
 function ensureSessionEntry(sessions: ChatSession[], sessionKey: string): ChatSession[] {
@@ -1360,6 +1395,36 @@ function buildSessionSwitchPatch(
       : state.sessionLastActivity,
     messages: [],
     ...nextRuntime,
+  };
+}
+
+function buildNativeCliSessionSwitchPatch(
+  state: Parameters<typeof buildSessionSwitchPatch>[0],
+  agentId: string,
+  nextSessionKey: string,
+  nowMs: number,
+): Partial<ChatState> {
+  const normalizedAgentId = normalizeAgentId(agentId);
+  const patch = buildSessionSwitchPatch(state, nextSessionKey);
+  const baseSessions = patch.sessions ?? state.sessions;
+  const sessionLastActivity = patch.sessionLastActivity ?? state.sessionLastActivity;
+
+  return {
+    ...patch,
+    currentAgentId: normalizedAgentId,
+    sessions: baseSessions.map((session) => (
+      session.key === nextSessionKey
+        ? {
+            ...session,
+            displayName: session.displayName ?? nextSessionKey,
+            updatedAt: session.updatedAt ?? nowMs,
+          }
+        : session
+    )),
+    sessionLastActivity: {
+      ...sessionLastActivity,
+      [nextSessionKey]: Math.max(sessionLastActivity[nextSessionKey] ?? 0, nowMs),
+    },
   };
 }
 
@@ -2175,10 +2240,57 @@ export const useChatStore = create<ChatState>((set, get) => ({
   // ── Switch session ──
 
   switchSession: (key: string) => {
-    if (key === get().currentSessionKey) return;
-    captureSessionRuntime(get());
+    const state = get();
+    const targetAgentId = resolveSessionAgentIdByKey(key, state.sessions, state.channelBindings)
+      || getAgentIdFromAgentSessionKey(key)
+      || 'main';
+    const targetNativeCliAgent = !isNativeCliSessionKey(key)
+      ? getNativeCliAgent(targetAgentId)
+      : undefined;
+
+    if (targetNativeCliAgent) {
+      const existingNativeSession = findNativeCliSessionForAgent(state.sessions, targetAgentId);
+      const nextKey = existingNativeSession?.key ?? buildNativeCliSessionKey(targetAgentId);
+      if (nextKey === state.currentSessionKey) return;
+      captureSessionRuntime(state);
+      set((s) => buildNativeCliSessionSwitchPatch(s, targetAgentId, nextKey, Date.now()));
+      persistNativeCliSessionIndex(nextKey, targetNativeCliAgent.runtime?.nativeCli?.provider);
+      get().loadHistory();
+      return;
+    }
+
+    if (key === state.currentSessionKey) return;
+    captureSessionRuntime(state);
     set((s) => buildSessionSwitchPatch(s, key));
     get().loadHistory();
+  },
+
+  ensureNativeCliSessionForAgent: (agentId: string) => {
+    const normalizedAgentId = normalizeAgentId(agentId);
+    const agent = getNativeCliAgent(normalizedAgentId);
+    const state = get();
+    if (!agent) {
+      return state.currentSessionKey;
+    }
+
+    if (
+      isNativeCliSessionKey(state.currentSessionKey)
+      && getAgentIdFromNativeCliSessionKey(state.currentSessionKey) === normalizedAgentId
+    ) {
+      return state.currentSessionKey;
+    }
+
+    const existingNativeSession = findNativeCliSessionForAgent(state.sessions, normalizedAgentId);
+    const nextKey = existingNativeSession?.key ?? buildNativeCliSessionKey(normalizedAgentId);
+    if (nextKey === state.currentSessionKey) {
+      return nextKey;
+    }
+
+    captureSessionRuntime(state);
+    set((s) => buildNativeCliSessionSwitchPatch(s, normalizedAgentId, nextKey, Date.now()));
+    persistNativeCliSessionIndex(nextKey, agent.runtime?.nativeCli?.provider);
+    get().loadHistory();
+    return nextKey;
   },
 
   // ── Delete session ──

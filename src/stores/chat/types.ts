@@ -116,6 +116,7 @@ export interface ChatState {
   loadSessions: () => Promise<void>;
   loadChannelBindings: () => Promise<void>;
   switchSession: (key: string) => void;
+  ensureNativeCliSessionForAgent: (agentId: string) => string;
   newSession: () => void;
   newSessionForAgent: (agentId: string, options?: { nativeCli?: boolean }) => string;
   deleteSession: (key: string) => Promise<void>;

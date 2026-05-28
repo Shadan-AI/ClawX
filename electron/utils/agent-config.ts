@@ -13,6 +13,7 @@ const MAIN_AGENT_ID = 'main';
 const MAIN_AGENT_NAME = 'Main Agent';
 const DEFAULT_ACCOUNT_ID = 'default';
 const DEFAULT_WORKSPACE_PATH = '~/.openclaw/workspace';
+const SHADAN_ONEAPI_NATIVE_BASE_URL = 'https://one-api.shadanai.com/v1';
 const AGENT_BOOTSTRAP_FILES = [
   'AGENTS.md',
   'SOUL.md',
@@ -26,6 +27,32 @@ function asStringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const items = value.filter((item): item is string => typeof item === 'string');
   return items.length > 0 ? items : undefined;
+}
+
+function asStringRecord(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .map(([key, item]) => [key.trim(), item] as const)
+    .filter((entry): entry is readonly [string, string] => !!entry[0] && typeof entry[1] === 'string');
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+function normalizeNativeCliEnv(provider: string, env: Record<string, string> | undefined): Record<string, string> | undefined {
+  if (!env) return undefined;
+  if (provider !== 'claude') return env;
+
+  const next = { ...env };
+  const baseUrl = next.ANTHROPIC_BASE_URL?.trim().replace(/\/+$/, '');
+  if (baseUrl === 'https://one-api.shadanai.com') {
+    next.ANTHROPIC_BASE_URL = SHADAN_ONEAPI_NATIVE_BASE_URL;
+  }
+
+  const apiKey = next.ANTHROPIC_API_KEY?.trim();
+  const authToken = next.ANTHROPIC_AUTH_TOKEN?.trim();
+  if (!apiKey && authToken) next.ANTHROPIC_API_KEY = authToken;
+  if (!authToken && apiKey) next.ANTHROPIC_AUTH_TOKEN = apiKey;
+
+  return next;
 }
 
 function normalizeNativeCliProvider(provider: unknown, command: unknown): string {
@@ -58,6 +85,7 @@ function normalizeAgentRuntime(runtime: Record<string, unknown>): Record<string,
   const provider = normalizeNativeCliProvider(nativeCliRecord.provider, command);
   const args = asStringArray(nativeCliRecord.args);
   const resumeArgs = asStringArray(nativeCliRecord.resumeArgs) ?? defaultNativeCliResumeArgs(provider, args);
+  const env = normalizeNativeCliEnv(provider, asStringRecord(nativeCliRecord.env));
 
   return {
     ...runtime,
@@ -67,6 +95,7 @@ function normalizeAgentRuntime(runtime: Record<string, unknown>): Record<string,
       command,
       ...(args ? { args } : {}),
       ...(resumeArgs ? { resumeArgs } : {}),
+      ...(env ? { env } : {}),
     },
   };
 }
@@ -139,7 +168,7 @@ export interface AgentSummary {
   mainSessionKey: string;
   channelTypes: string[];
   skills?: string[];
-  runtime?: { type: string; nativeCli?: { provider: string; command: string; args?: string[]; resumeArgs?: string[] } };
+  runtime?: { type: string; nativeCli?: { provider: string; command: string; args?: string[]; resumeArgs?: string[]; env?: Record<string, string> } };
 }
 
 export interface AgentsSnapshot {
@@ -574,7 +603,7 @@ async function buildSnapshotFromConfig(config: AgentConfigDocument, preloadedCha
         .filter((ct) => ownedChannels.has(ct))
         .map((channelType) => toUiChannelType(channelType)),
       skills: Array.isArray(entry.skills) ? entry.skills : undefined,
-      runtime: entry.runtime as { type: string; nativeCli?: { provider: string; command: string; args?: string[]; resumeArgs?: string[] } } | undefined,
+      runtime: entry.runtime as { type: string; nativeCli?: { provider: string; command: string; args?: string[]; resumeArgs?: string[]; env?: Record<string, string> } } | undefined,
     };
   });
 

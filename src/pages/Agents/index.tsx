@@ -1023,6 +1023,73 @@ const RUNTIME_CLI_PACKAGES: Record<string, string> = {
   opencode: 'opencode',
 };
 
+const ONEAPI_NATIVE_BASE_URL = 'https://one-api.shadanai.com/v1';
+const ONEAPI_MODEL_PROVIDER_PREFIX = 'shadan/';
+
+function normalizeOneApiModelId(modelRef: string | null | undefined): string {
+  const trimmed = (modelRef || '').trim();
+  return trimmed.startsWith(ONEAPI_MODEL_PROVIDER_PREFIX)
+    ? trimmed.slice(ONEAPI_MODEL_PROVIDER_PREFIX.length)
+    : trimmed;
+}
+
+function buildOneApiModelRef(modelId: string): string {
+  const normalized = normalizeOneApiModelId(modelId);
+  return normalized ? `${ONEAPI_MODEL_PROVIDER_PREFIX}${normalized}` : '';
+}
+
+function buildClaudeNativeCliEnv(modelId: string, tokenKey: string): Record<string, string> {
+  const normalizedModelId = normalizeOneApiModelId(modelId);
+  const normalizedTokenKey = tokenKey.trim();
+  return {
+    ANTHROPIC_BASE_URL: ONEAPI_NATIVE_BASE_URL,
+    ANTHROPIC_API_KEY: normalizedTokenKey,
+    ANTHROPIC_AUTH_TOKEN: normalizedTokenKey,
+    ANTHROPIC_MODEL: normalizedModelId,
+    ANTHROPIC_SMALL_FAST_MODEL: normalizedModelId,
+    ANTHROPIC_DEFAULT_SONNET_MODEL: normalizedModelId,
+    ANTHROPIC_DEFAULT_OPUS_MODEL: normalizedModelId,
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: normalizedModelId,
+    ANTHROPIC_CUSTOM_MODEL_OPTION: normalizedModelId,
+    CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: '1',
+  };
+}
+
+async function verifyOneApiToken(tokenKey: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const response = await fetch(`${ONEAPI_NATIVE_BASE_URL}/models`, {
+      headers: { Authorization: `Bearer ${tokenKey.trim()}` },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (response.ok) return { ok: true };
+    const message = response.status === 401
+      ? 'OneAPI Token 已过期或验证不正确，请重新登录'
+      : `OneAPI 验证失败: ${response.status}`;
+    return { ok: false, error: message };
+  } catch (error) {
+    return { ok: false, error: `OneAPI 验证失败: ${String(error)}` };
+  }
+}
+
+async function buildNativeCliRuntimeConfig(runtimePreset: string, modelId: string): Promise<AgentSummary['runtime']> {
+  if (runtimePreset === 'embedded') return { type: 'embedded' };
+  const { command, args, resumeArgs } = getRuntimeConfig(runtimePreset);
+  const env: Record<string, string> | undefined = runtimePreset === 'claude'
+    ? buildClaudeNativeCliEnv(modelId, (await useModelsStore.getState().getTokenKey())?.trim() || '')
+    : undefined;
+
+  return {
+    type: 'native-cli' as const,
+    nativeCli: {
+      provider: runtimePreset,
+      command,
+      ...(args?.length ? { args } : {}),
+      ...(resumeArgs ? { resumeArgs } : {}),
+      ...(env && Object.values(env).every(Boolean) ? { env } : {}),
+    },
+  };
+}
+
 type EnvStepStatus = 'pending' | 'checking' | 'installing' | 'success' | 'error';
 
 interface EnvStep {
@@ -1050,7 +1117,7 @@ function AddAgentDialog({
   const isEditMode = !!editAgent;
   const [name, setName] = useState(editAgent?.name || '');
   const [headImage, setHeadImage] = useState('');
-  const [selectedModel, setSelectedModel] = useState(editAgent?.overrideModelRef || editAgent?.modelRef || '');
+  const [selectedModel, setSelectedModel] = useState(() => normalizeOneApiModelId(editAgent?.overrideModelRef || editAgent?.modelRef || ''));
   const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(null);
   const [runtimePreset, setRuntimePreset] = useState<string>(editAgent?.runtime?.nativeCli?.provider || 'embedded');
   const [saving, setSaving] = useState(false);
@@ -1063,7 +1130,7 @@ function AddAgentDialog({
   const envCheckPassed = runtimePreset === 'embedded' ||
     (envSteps.length > 0 && envSteps.every(s => s.status === 'success'));
   
-  const { models, fetchModels, createDigitalEmployee, fetchDigitalEmployees } = useModelsStore();
+  const { models, fetchModels, createDigitalEmployee, fetchDigitalEmployees, getTokenKey } = useModelsStore();
   const { fetchAgents } = useAgentsStore();
   const { templates, fetchTemplates, loading: templatesLoading } = useAgentTemplatesStore();
   
@@ -1105,6 +1172,9 @@ function AddAgentDialog({
       { id: 'node', label: 'Node.js', status: 'pending' },
       { id: 'npm', label: 'npm', status: 'pending' },
       { id: 'cli', label: command, status: 'pending' },
+      ...(runtimePreset === 'claude'
+        ? [{ id: 'env', label: 'Claude Code 环境变量', status: 'pending' as const }]
+        : []),
     ];
     setEnvSteps([...steps]);
     setEnvCheckRunning(true);
@@ -1176,11 +1246,45 @@ function AddAgentDialog({
         }
       }
       setEnvSteps([...current]);
+
+      if (runtimePreset === 'claude') {
+        current = updateEnvStep(current, 'env', { status: 'checking' });
+        setEnvSteps([...current]);
+        const tokenKey = (await getTokenKey())?.trim() || '';
+        if (stale()) return;
+        const modelId = normalizeOneApiModelId(selectedModel);
+        if (!tokenKey) {
+          current = updateEnvStep(current, 'env', { status: 'error', error: '未获取到 OneAPI Token，请重新登录' });
+          setEnvSteps([...current]);
+          setEnvCheckRunning(false);
+          return;
+        }
+        if (!modelId) {
+          current = updateEnvStep(current, 'env', { status: 'error', error: '请选择 Claude Code 使用的模型' });
+          setEnvSteps([...current]);
+          setEnvCheckRunning(false);
+          return;
+        }
+        const tokenVerification = await verifyOneApiToken(tokenKey);
+        if (stale()) return;
+        if (!tokenVerification.ok) {
+          current = updateEnvStep(current, 'env', { status: 'error', error: tokenVerification.error });
+          setEnvSteps([...current]);
+          setEnvCheckRunning(false);
+          return;
+        }
+        current = updateEnvStep(current, 'env', {
+          status: 'success',
+          version: modelId,
+        });
+        setEnvSteps([...current]);
+      }
+
       setEnvCheckRunning(false);
     };
 
     void run();
-  }, [runtimePreset]);
+  }, [getTokenKey, runtimePreset, selectedModel]);
 
   const handleSubmit = async () => {
     if (!name.trim()) return;
@@ -1190,23 +1294,30 @@ function AddAgentDialog({
     }
     setSaving(true);
     try {
+      if (runtimePreset === 'claude') {
+        const tokenKey = (await getTokenKey())?.trim() || '';
+        if (!tokenKey) {
+          toast.error('未获取到 OneAPI Token，请重新登录后再使用 Claude Code');
+          setSaving(false);
+          return;
+        }
+        const tokenVerification = await verifyOneApiToken(tokenKey);
+        if (!tokenVerification.ok) {
+          toast.error(tokenVerification.error || 'OneAPI Token 验证失败');
+          setSaving(false);
+          return;
+        }
+      }
+
       if (isEditMode && editAgent) {
         // 编辑模式：更新已有数字员工
-        const { updateAgent } = useAgentsStore.getState();
+        const { updateAgent, updateAgentModel } = useAgentsStore.getState();
         await updateAgent(editAgent.id, name.trim());
+        await updateAgentModel(editAgent.id, buildOneApiModelRef(selectedModel));
 
         // 更新 runtime 配置
         if (runtimePreset !== 'embedded') {
-          const { command, args, resumeArgs } = getRuntimeConfig(runtimePreset);
-          const runtime = {
-            type: 'native-cli' as const,
-            nativeCli: {
-              provider: runtimePreset,
-              command,
-              ...(args?.length ? { args } : {}),
-              ...(resumeArgs ? { resumeArgs } : {}),
-            },
-          };
+          const runtime = await buildNativeCliRuntimeConfig(runtimePreset, selectedModel);
           await hostApiFetch(`/api/agents/${encodeURIComponent(editAgent.id)}/runtime`, {
             method: 'PUT',
             body: JSON.stringify({ runtime }),
@@ -1320,15 +1431,7 @@ function AddAgentDialog({
         // 写入 runtime 配置（如果选择了 native-cli）
         if (runtimePreset !== 'embedded') {
           try {
-            const { command, resumeArgs } = getRuntimeConfig(runtimePreset);
-            const runtime = {
-              type: 'native-cli' as const,
-              nativeCli: {
-                provider: runtimePreset,
-                command,
-                ...(resumeArgs ? { resumeArgs } : {}),
-              },
-            };
+            const runtime = await buildNativeCliRuntimeConfig(runtimePreset, selectedModel);
             await hostApiFetch(`/api/agents/${encodeURIComponent(employee.openclawAgentId)}/runtime`, {
               method: 'PUT',
               body: JSON.stringify({ runtime }),
@@ -1389,6 +1492,22 @@ function AddAgentDialog({
             />
           </div>
           
+          {/* Runtime 选择 */}
+          <div className="space-y-2.5">
+            <Label className={labelClasses}>运行方式</Label>
+            <select
+              value={runtimePreset}
+              onChange={(e) => setRuntimePreset(e.target.value)}
+              className={`${selectClasses} cursor-pointer`}
+            >
+              <option value="embedded">小龙虾（内置默认）</option>
+              <option value="claude">Claude Code</option>
+              <option value="codex">Codex</option>
+              <option value="kiro">Kiro-Cli</option>
+              <option value="opencode">OpenCode</option>
+            </select>
+          </div>
+
           {/* 模型选择 */}
           <div className="space-y-2.5">
             <Label htmlFor="model-select" className={labelClasses}>模型</Label>
@@ -1408,8 +1527,13 @@ function AddAgentDialog({
                 ))
               )}
             </select>
+            {runtimePreset === 'claude' && (
+              <p className="text-[12px] text-foreground/60">
+                Claude Code 将通过 OneAPI 使用该模型
+              </p>
+            )}
           </div>
-          
+
           {/* 模板选择 */}
           <div className="space-y-2.5">
             <Label htmlFor="template-select" className={labelClasses}>岗位模板（可选）</Label>
@@ -1427,22 +1551,6 @@ function AddAgentDialog({
               ))}
             </select>
             <p className="text-[12px] text-foreground/60">选择模板后将自动配置对应的技能</p>
-          </div>
-
-          {/* Runtime 选择 */}
-          <div className="space-y-2.5">
-            <Label className={labelClasses}>运行方式</Label>
-            <select
-              value={runtimePreset}
-              onChange={(e) => setRuntimePreset(e.target.value)}
-              className={`${selectClasses} cursor-pointer`}
-            >
-              <option value="embedded">小龙虾（内置默认）</option>
-              <option value="claude">Claude Code</option>
-              <option value="codex">Codex</option>
-              <option value="kiro">Kiro-Cli</option>
-              <option value="opencode">OpenCode</option>
-            </select>
           </div>
 
           {/* Env check steps */}
@@ -1485,7 +1593,11 @@ function AddAgentDialog({
                     {step.status === 'error' && <AlertCircle className="h-3.5 w-3.5 text-red-500 shrink-0" />}
                     {step.status === 'pending' && <span className="w-3.5 shrink-0" />}
                     <span className="text-foreground/80 font-medium">{step.label}</span>
-                    {step.version && <span className="text-muted-foreground font-mono text-[11px]">v{step.version}</span>}
+                    {step.version && (
+                      <span className="text-muted-foreground font-mono text-[11px]">
+                        {step.id === 'env' ? step.version : `v${step.version}`}
+                      </span>
+                    )}
                     {step.status === 'checking' && <span className="text-muted-foreground">检测中...</span>}
                     {step.status === 'installing' && <span className="text-blue-500">正在安装...</span>}
                     {step.status === 'error' && <span className="text-red-500 text-[12px] flex-1 truncate">{step.error}</span>}

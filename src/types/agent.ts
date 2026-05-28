@@ -3,6 +3,7 @@ export interface AgentRuntimeNativeCli {
   command: string;
   args?: string[];
   resumeArgs?: string[];
+  env?: Record<string, string>;
 }
 
 export interface AgentRuntime {

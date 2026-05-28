@@ -990,11 +990,17 @@ export function NativeCliTerminal({
       fitAddon.fit();
       return;
     }
-    const configuredWidth = Math.min(Math.max(0, area.clientWidth - 48), 960);
+    const areaWidth = area.getBoundingClientRect().width || area.clientWidth;
+    const configuredWidth = Math.min(Math.max(0, areaWidth - 48), 960);
     const cols = Math.max(TERMINAL_MIN_COLS, Math.floor(configuredWidth / cellWidth));
     const rows = Math.max(1, proposed.rows);
-    area.parentElement?.style.setProperty('--terminal-screen-width', `${Math.ceil(cols * cellWidth)}px`);
-    if (term.cols !== cols || term.rows !== rows) term.resize(cols, rows);
+    const screenWidth = `${Math.ceil(cols * cellWidth)}px`;
+    area.closest<HTMLElement>('.native-cli-terminal')?.style.setProperty('--terminal-screen-width', screenWidth);
+    if (term.cols !== cols || term.rows !== rows) {
+      term.resize(cols, rows);
+    } else {
+      term.refresh(0, Math.max(0, rows - 1));
+    }
   }, []);
 
   const scheduleTerminalResize = useCallback(() => {
@@ -1007,6 +1013,10 @@ export function NativeCliTerminal({
       fitTerminalToContent();
       scheduleTerminalUserEchoStyle();
       updateInputShellStateFromTerminalScroll();
+      requestAnimationFrame(() => {
+        if (disposedRef.current) return;
+        fitTerminalToContent();
+      });
     });
   }, [fitTerminalToContent, scheduleTerminalUserEchoStyle, updateInputShellStateFromTerminalScroll]);
 
@@ -1324,15 +1334,26 @@ export function NativeCliTerminal({
     resizeObserverRef.current = new ResizeObserver(() => {
       mountRef_cb.current.scheduleTerminalResize();
     });
-    if (areaRef.current) resizeObserverRef.current.observe(areaRef.current);
-    if (mountRef.current) resizeObserverRef.current.observe(mountRef.current);
-    if (mount.parentElement) resizeObserverRef.current.observe(mount.parentElement);
+    const observedResizeTargets = new Set<Element>();
+    const observeResizeTarget = (target: Element | null | undefined) => {
+      if (!target || observedResizeTargets.has(target)) return;
+      observedResizeTargets.add(target);
+      resizeObserverRef.current?.observe(target);
+    };
+    observeResizeTarget(areaRef.current);
+    observeResizeTarget(mountRef.current);
+    let parent: HTMLElement | null = mount.parentElement;
+    for (let depth = 0; parent && depth < 6; depth += 1) {
+      observeResizeTarget(parent);
+      parent = parent.parentElement;
+    }
 
     const handleWindowResize = () => {
       mountRef_cb.current.scheduleTerminalResize();
     };
     window.addEventListener('resize', handleWindowResize);
     window.visualViewport?.addEventListener('resize', handleWindowResize);
+    window.addEventListener('orientationchange', handleWindowResize);
 
     mountRef_cb.current.scheduleTerminalResize();
 
@@ -1352,6 +1373,7 @@ export function NativeCliTerminal({
       resizeObserverRef.current?.disconnect();
       window.removeEventListener('resize', handleWindowResize);
       window.visualViewport?.removeEventListener('resize', handleWindowResize);
+      window.removeEventListener('orientationchange', handleWindowResize);
       const ws = wsRef.current;
       wsRef.current = null;
       ws?.close();

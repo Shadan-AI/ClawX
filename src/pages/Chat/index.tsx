@@ -40,6 +40,10 @@ function getAgentIdFromSessionKey(sessionKey: string) {
   return agentId?.trim().toLowerCase() || 'main';
 }
 
+function normalizeAgentId(agentId: string | undefined | null) {
+  return agentId?.trim().toLowerCase() || 'main';
+}
+
 export function Chat() {
   const { t } = useTranslation('chat');
   const location = useLocation();
@@ -119,10 +123,13 @@ export function Chat() {
   const sendMessage = useChatStore((s) => s.sendMessage);
   const abortRun = useChatStore((s) => s.abortRun);
   const clearError = useChatStore((s) => s.clearError);
-  const resolvedCurrentAgentId = isNativeCliSessionKey(currentSessionKey)
-    ? getAgentIdFromSessionKey(currentSessionKey)
-    : currentAgentId;
-  const currentAgent = (agents ?? []).find((a) => a.id === resolvedCurrentAgentId);
+  const ensureNativeCliSessionForAgent = useChatStore((s) => s.ensureNativeCliSessionForAgent);
+  const sessionAgentId = getAgentIdFromSessionKey(currentSessionKey);
+  const normalizedCurrentAgentId = normalizeAgentId(currentAgentId);
+  const resolvedCurrentAgentId = currentSessionKey.startsWith('agent:')
+    ? sessionAgentId
+    : normalizedCurrentAgentId;
+  const currentAgent = (agents ?? []).find((a) => normalizeAgentId(a.id) === resolvedCurrentAgentId);
   const isNativeCli = currentAgent?.runtime?.type === 'native-cli' || isNativeCliSessionKey(currentSessionKey);
   const nativeCliProvider = currentAgent?.runtime?.nativeCli?.provider?.trim().toLowerCase() || undefined;
   const currentSession = sessions.find((session) => session.key === currentSessionKey);
@@ -169,6 +176,12 @@ export function Chat() {
   }, [currentSessionKey, nativeCliProvider]);
 
   const cleanupEmptySession = useChatStore((s) => s.cleanupEmptySession);
+
+  useEffect(() => {
+    if (!currentAgent || currentAgent.runtime?.type !== 'native-cli') return;
+    if (isNativeCliSessionKey(currentSessionKey)) return;
+    ensureNativeCliSessionForAgent(currentAgent.id);
+  }, [currentAgent, currentSessionKey, ensureNativeCliSessionForAgent]);
 
   const [streamingTimestamp, setStreamingTimestamp] = useState<number>(0);
   const minLoading = useMinLoading(loading && messages.length > 0);
