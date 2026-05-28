@@ -538,8 +538,8 @@ describe('agent config lifecycle', () => {
               type: 'native-cli',
               nativeCli: {
                 command: 'claude',
-                args: ['--dangerously-skip-permissions'],
-                resumeArgs: ['--dangerously-skip-permissions', '--resume', '{sessionId}'],
+                args: ['--dangerously-skip-permissions', '--model', 'deepseek-v4-pro'],
+                resumeArgs: ['--dangerously-skip-permissions', '--model=deepseek-v4-pro', '--resume', '{sessionId}'],
                 env: {
                   ANTHROPIC_AUTH_TOKEN: 'legacy-oneapi-key',
                   ANTHROPIC_BASE_URL: 'https://one-api.shadanai.com',

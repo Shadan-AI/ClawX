@@ -157,23 +157,33 @@ function prependMissingArgs(args: string[] | undefined, requiredArgs: string[]):
   return next;
 }
 
-function hasClaudeModelArg(args: string[]): boolean {
-  return args.some((arg) => arg === '--model' || arg.startsWith('--model='));
+function stripClaudeManagedArgs(args: string[]): string[] {
+  const next: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === '--bare' || arg === '--dangerously-skip-permissions' || arg.startsWith('--model=')) continue;
+    if (arg === '--model') {
+      index += 1;
+      continue;
+    }
+    next.push(arg);
+  }
+  return next;
 }
 
-function insertClaudeModelArg(args: string[], modelId: string | undefined): string[] {
+function setClaudeModelArg(args: string[], modelId: string | undefined): string[] {
   const normalizedModelId = modelId?.trim();
-  if (!normalizedModelId || hasClaudeModelArg(args)) return args;
-  return ['--bare', '--dangerously-skip-permissions', '--model', normalizedModelId, ...args.filter((arg) => arg !== '--bare' && arg !== '--dangerously-skip-permissions')];
+  if (!normalizedModelId) return args;
+  return ['--bare', '--dangerously-skip-permissions', '--model', normalizedModelId, ...stripClaudeManagedArgs(args)];
 }
 
 function normalizeClaudeArgs(args: string[] | undefined, modelId: string | undefined): string[] {
   const next = prependMissingArgs(args, ['--bare', '--dangerously-skip-permissions']);
-  return insertClaudeModelArg(next, modelId);
+  return setClaudeModelArg(next, modelId);
 }
 
 function normalizeClaudeResumeArgs(resumeArgs: string[] | undefined, modelId: string | undefined): string[] {
-  const next = insertClaudeModelArg(
+  const next = setClaudeModelArg(
     prependMissingArgs(resumeArgs, ['--bare', '--dangerously-skip-permissions']),
     modelId,
   );
