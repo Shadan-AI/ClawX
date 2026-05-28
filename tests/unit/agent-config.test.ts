@@ -512,12 +512,15 @@ describe('agent config lifecycle', () => {
     const nativeCli = coder?.runtime?.nativeCli;
     const env = nativeCli?.env;
 
-    expect(nativeCli?.args).toEqual(['--bare', '--dangerously-skip-permissions', '--model', 'deepseek-v4-flash']);
-    expect(nativeCli?.resumeArgs).toEqual(['--bare', '--dangerously-skip-permissions', '--model', 'deepseek-v4-flash', '--resume', '{sessionId}']);
+    expect(nativeCli?.args).toEqual(['--bare', '--dangerously-skip-permissions', '--model', 'claude-sonnet-4-6']);
+    expect(nativeCli?.resumeArgs).toEqual(['--bare', '--dangerously-skip-permissions', '--model', 'claude-sonnet-4-6', '--resume', '{sessionId}']);
     expect(env).toMatchObject({
-      ANTHROPIC_BASE_URL: 'https://one-api.shadanai.com/v1',
+      ANTHROPIC_BASE_URL: 'http://127.0.0.1:13211/native-claude/deepseek-v4-flash/v1',
       ANTHROPIC_API_KEY: 'oneapi-key',
-      ANTHROPIC_MODEL: 'deepseek-v4-flash',
+      ANTHROPIC_MODEL: 'claude-sonnet-4-6',
+      ANTHROPIC_DEFAULT_SONNET_MODEL: 'claude-sonnet-4-6',
+      ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: 'deepseek-v4-flash',
+      CLAWX_NATIVE_CLAUDE_UPSTREAM_MODEL: 'deepseek-v4-flash',
       CLAUDE_CONFIG_DIR: join(testHome, '.openclaw', 'agents', 'coder', 'claude-code'),
     });
     expect(env).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN');
@@ -559,12 +562,15 @@ describe('agent config lifecycle', () => {
     const nativeCli = legacy?.runtime?.nativeCli;
 
     expect(nativeCli?.provider).toBe('claude');
-    expect(nativeCli?.args).toEqual(['--bare', '--dangerously-skip-permissions', '--model', 'deepseek-v4-pro']);
-    expect(nativeCli?.resumeArgs).toEqual(['--bare', '--dangerously-skip-permissions', '--model', 'deepseek-v4-pro', '--resume', '{sessionId}']);
+    expect(nativeCli?.args).toEqual(['--bare', '--dangerously-skip-permissions', '--model', 'claude-sonnet-4-6']);
+    expect(nativeCli?.resumeArgs).toEqual(['--bare', '--dangerously-skip-permissions', '--model', 'claude-sonnet-4-6', '--resume', '{sessionId}']);
     expect(nativeCli?.env).toMatchObject({
       ANTHROPIC_API_KEY: 'legacy-oneapi-key',
-      ANTHROPIC_BASE_URL: 'https://one-api.shadanai.com/v1',
-      ANTHROPIC_MODEL: 'deepseek-v4-pro',
+      ANTHROPIC_BASE_URL: 'http://127.0.0.1:13211/native-claude/deepseek-v4-pro/v1',
+      ANTHROPIC_MODEL: 'claude-sonnet-4-6',
+      ANTHROPIC_DEFAULT_SONNET_MODEL: 'claude-sonnet-4-6',
+      ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: 'deepseek-v4-pro',
+      CLAWX_NATIVE_CLAUDE_UPSTREAM_MODEL: 'deepseek-v4-pro',
       CLAUDE_CONFIG_DIR: join(testHome, '.openclaw', 'agents', 'legacy', 'claude-code'),
     });
     expect(nativeCli?.env).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN');

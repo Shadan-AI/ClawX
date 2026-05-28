@@ -1025,6 +1025,8 @@ const RUNTIME_CLI_PACKAGES: Record<string, string> = {
 
 const ONEAPI_NATIVE_BASE_URL = 'https://one-api.shadanai.com/v1';
 const ONEAPI_MODEL_PROVIDER_PREFIX = 'shadan/';
+const NATIVE_CLAUDE_PROXY_PORT = 13211;
+const NATIVE_CLAUDE_SONNET_ALIAS = 'claude-sonnet-4-6';
 
 function normalizeOneApiModelId(modelRef: string | null | undefined): string {
   const trimmed = (modelRef || '').trim();
@@ -1042,22 +1044,24 @@ function buildClaudeNativeCliEnv(modelId: string, tokenKey: string): Record<stri
   const normalizedModelId = normalizeOneApiModelId(modelId);
   const normalizedTokenKey = tokenKey.trim();
   return {
-    ANTHROPIC_BASE_URL: ONEAPI_NATIVE_BASE_URL,
+    ANTHROPIC_BASE_URL: `http://127.0.0.1:${NATIVE_CLAUDE_PROXY_PORT}/native-claude/${encodeURIComponent(normalizedModelId)}/v1`,
     ANTHROPIC_API_KEY: normalizedTokenKey,
-    ANTHROPIC_MODEL: normalizedModelId,
-    ANTHROPIC_SMALL_FAST_MODEL: normalizedModelId,
-    ANTHROPIC_DEFAULT_SONNET_MODEL: normalizedModelId,
-    ANTHROPIC_DEFAULT_OPUS_MODEL: normalizedModelId,
-    ANTHROPIC_DEFAULT_HAIKU_MODEL: normalizedModelId,
-    ANTHROPIC_CUSTOM_MODEL_OPTION: normalizedModelId,
+    ANTHROPIC_MODEL: NATIVE_CLAUDE_SONNET_ALIAS,
+    ANTHROPIC_DEFAULT_SONNET_MODEL: NATIVE_CLAUDE_SONNET_ALIAS,
+    ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: normalizedModelId,
+    ANTHROPIC_DEFAULT_OPUS_MODEL: 'claude-opus-4-7',
+    ANTHROPIC_DEFAULT_OPUS_MODEL_NAME: normalizedModelId,
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: 'claude-haiku-4-5',
+    ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME: normalizedModelId,
+    CLAWX_NATIVE_CLAUDE_UPSTREAM_MODEL: normalizedModelId,
     CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: '1',
   };
 }
 
 function formatNativeCliArgs(args: string[] | undefined, modelId: string): string[] | undefined {
   if (!args) return undefined;
-  const normalizedModelId = normalizeOneApiModelId(modelId);
-  return args.map((arg) => arg === '{modelId}' ? normalizedModelId : arg);
+  const cliModelId = args.includes('{modelId}') ? NATIVE_CLAUDE_SONNET_ALIAS : normalizeOneApiModelId(modelId);
+  return args.map((arg) => arg === '{modelId}' ? cliModelId : arg);
 }
 
 async function verifyOneApiToken(tokenKey: string): Promise<{ ok: boolean; error?: string }> {

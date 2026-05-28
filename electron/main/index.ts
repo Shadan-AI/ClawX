@@ -39,6 +39,7 @@ import { getSetting } from '../utils/store';
 import { ensureBuiltinSkillsInstalled, ensurePreinstalledSkillsInstalled } from '../utils/skill-config';
 import { ensureAllBundledPluginsInstalled } from '../utils/plugin-install';
 import { startHostApiServer } from '../api/server';
+import { startClaudeNativeProxy } from '../native-cli/claude-proxy';
 import { HostEventBus } from '../api/event-bus';
 import { deviceOAuthManager } from '../utils/device-oauth';
 import { browserOAuthManager } from '../utils/browser-oauth';
@@ -184,6 +185,7 @@ let gatewayManager!: GatewayManager;
 let clawHubService!: ClawHubService;
 let hostEventBus!: HostEventBus;
 let hostApiServer: Server | null = null;
+let claudeNativeProxyServer: Server | null = null;
 const mainWindowFocusState = createMainWindowFocusState();
 const quitLifecycleState = createQuitLifecycleState();
 
@@ -437,6 +439,7 @@ async function initialize(): Promise<void> {
     eventBus: hostEventBus,
     mainWindow: window,
   });
+  claudeNativeProxyServer = startClaudeNativeProxy();
 
   // Register update handlers
   registerUpdateHandlers(appUpdater, window);
@@ -771,6 +774,7 @@ if (gotTheLock) {
 
     hostEventBus.closeAll();
     hostApiServer?.close();
+    claudeNativeProxyServer?.close();
 
     const stopPromise = gatewayManager.stop().catch((err) => {
       logger.warn('gatewayManager.stop() error during quit:', err);

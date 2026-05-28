@@ -15,6 +15,9 @@ export const PORTS = {
 
   /** Local host API server port */
   CLAWX_HOST_API: 13210,
+
+  /** Local Claude Code native CLI model-mapping proxy port */
+  CLAWX_NATIVE_CLAUDE_PROXY: 13211,
   
   /** OpenClaw Gateway port */
   OPENCLAW_GATEWAY: 18789,

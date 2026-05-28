@@ -5,6 +5,7 @@ import { deleteAgentChannelAccounts, listConfiguredChannels, readOpenClawConfig,
 import type { OpenClawConfig } from './channel-config';
 import { withConfigLock } from './config-mutex';
 import { expandPath, getOpenClawConfigDir } from './paths';
+import { getPort } from './config';
 import * as logger from './logger';
 import { toUiChannelType } from './channel-alias';
 import { getBoxImConfig } from './box-im-sync';
@@ -15,6 +16,10 @@ const DEFAULT_ACCOUNT_ID = 'default';
 const DEFAULT_WORKSPACE_PATH = '~/.openclaw/workspace';
 const SHADAN_ONEAPI_NATIVE_BASE_URL = 'https://one-api.shadanai.com/v1';
 const CLAUDE_CONFIG_DIR_ENV = 'CLAUDE_CONFIG_DIR';
+const CLAUDE_NATIVE_PROXY_PORT = getPort('CLAWX_NATIVE_CLAUDE_PROXY');
+const CLAUDE_NATIVE_HAIKU_ALIAS = 'claude-haiku-4-5';
+const CLAUDE_NATIVE_SONNET_ALIAS = 'claude-sonnet-4-6';
+const CLAUDE_NATIVE_OPUS_ALIAS = 'claude-opus-4-7';
 const AGENT_BOOTSTRAP_FILES = [
   'AGENTS.md',
   'SOUL.md',
@@ -44,6 +49,32 @@ function getClaudeConfigDir(agentId: string | undefined): string | undefined {
   return join(getOpenClawConfigDir(), 'agents', normalizedAgentId, 'claude-code');
 }
 
+function getClaudeProxyBaseUrl(upstreamModel: string): string {
+  return `http://127.0.0.1:${CLAUDE_NATIVE_PROXY_PORT}/native-claude/${encodeURIComponent(upstreamModel)}/v1`;
+}
+
+function extractClaudeProxyModel(baseUrl: string | undefined): string | undefined {
+  const match = baseUrl?.match(/\/native-claude\/([^/]+)\/v1\/?$/);
+  if (!match) return undefined;
+  try {
+    return decodeURIComponent(match[1]).trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeClaudeUpstreamModel(env: Record<string, string>): string | undefined {
+  return (
+    env.CLAWX_NATIVE_CLAUDE_UPSTREAM_MODEL
+    || extractClaudeProxyModel(env.ANTHROPIC_BASE_URL)
+    || env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME
+    || env.ANTHROPIC_MODEL
+    || env.ANTHROPIC_DEFAULT_SONNET_MODEL
+    || env.ANTHROPIC_DEFAULT_OPUS_MODEL
+    || env.ANTHROPIC_DEFAULT_HAIKU_MODEL
+  )?.trim() || undefined;
+}
+
 function normalizeNativeCliEnv(
   provider: string,
   env: Record<string, string> | undefined,
@@ -61,6 +92,21 @@ function normalizeNativeCliEnv(
   const authToken = next.ANTHROPIC_AUTH_TOKEN?.trim();
   if (!apiKey && authToken) next.ANTHROPIC_API_KEY = authToken;
   delete next.ANTHROPIC_AUTH_TOKEN;
+
+  const upstreamModel = normalizeClaudeUpstreamModel(next);
+  if (upstreamModel) {
+    next.ANTHROPIC_BASE_URL = getClaudeProxyBaseUrl(upstreamModel);
+    next.ANTHROPIC_MODEL = CLAUDE_NATIVE_SONNET_ALIAS;
+    next.ANTHROPIC_DEFAULT_HAIKU_MODEL = CLAUDE_NATIVE_HAIKU_ALIAS;
+    next.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME = upstreamModel;
+    next.ANTHROPIC_DEFAULT_SONNET_MODEL = CLAUDE_NATIVE_SONNET_ALIAS;
+    next.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME = upstreamModel;
+    next.ANTHROPIC_DEFAULT_OPUS_MODEL = CLAUDE_NATIVE_OPUS_ALIAS;
+    next.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME = upstreamModel;
+    next.CLAWX_NATIVE_CLAUDE_UPSTREAM_MODEL = upstreamModel;
+    delete next.ANTHROPIC_SMALL_FAST_MODEL;
+    delete next.ANTHROPIC_CUSTOM_MODEL_OPTION;
+  }
 
   const claudeConfigDir = getClaudeConfigDir(options?.agentId);
   if (claudeConfigDir) {
