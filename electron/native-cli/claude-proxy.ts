@@ -9,6 +9,7 @@ const CLAUDE_ALIAS_MODELS = [
   { id: 'claude-sonnet-4-6', display_name: 'ClawX Sonnet' },
   { id: 'claude-opus-4-7', display_name: 'ClawX Opus' },
 ];
+const modelOverrides = new Map<string, string>();
 
 async function readRequestBody(req: IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = [];
@@ -35,13 +36,17 @@ function stripOneMMarker(model: string): string {
 }
 
 function extractUpstreamModel(pathname: string): string | null {
-  const match = pathname.match(/^\/native-claude\/([^/]+)\/v1(?:\/|$)/);
+  const match = pathname.match(/^\/native-claude\/([^/]+)(?:\/|$)/);
   if (!match) return null;
   try {
     return decodeURIComponent(match[1]).trim() || null;
   } catch {
     return null;
   }
+}
+
+function resolveUpstreamModel(routeModel: string): string {
+  return modelOverrides.get(routeModel) || routeModel;
 }
 
 function upstreamPath(pathname: string): string | null {
@@ -125,18 +130,38 @@ export function startClaudeNativeProxy(port = getPort('CLAWX_NATIVE_CLAUDE_PROXY
       const url = new URL(req.url || '/', `http://127.0.0.1:${port}`);
       const upstreamModel = extractUpstreamModel(url.pathname);
       const path = upstreamPath(url.pathname);
-      if (!upstreamModel || !path) {
+      if (!upstreamModel) {
         sendText(res, 404, 'Not Found');
         return;
       }
 
+      if ((req.method === 'POST' || req.method === 'PUT') && url.pathname === `/native-claude/${encodeURIComponent(upstreamModel)}/__model`) {
+        const rawBody = await readRequestBody(req);
+        const body = rawBody.length > 0 ? JSON.parse(rawBody.toString('utf8')) as Record<string, unknown> : {};
+        const model = typeof body.model === 'string' ? stripOneMMarker(body.model) : '';
+        if (!model) {
+          sendJson(res, 400, { success: false, error: 'Missing model' });
+          return;
+        }
+        modelOverrides.set(upstreamModel, model);
+        sendJson(res, 200, { success: true, routeModel: upstreamModel, upstreamModel: model });
+        return;
+      }
+
+      if (!path) {
+        sendText(res, 404, 'Not Found');
+        return;
+      }
+
+      const resolvedUpstreamModel = resolveUpstreamModel(upstreamModel);
+
       if (req.method === 'GET' && path === '/models') {
-        handleModels(res, upstreamModel);
+        handleModels(res, resolvedUpstreamModel);
         return;
       }
 
       if (req.method === 'POST' && (path === '/messages' || path === '/messages/count_tokens')) {
-        await forwardToOneApi(req, res, path, upstreamModel);
+        await forwardToOneApi(req, res, path, resolvedUpstreamModel);
         return;
       }
 

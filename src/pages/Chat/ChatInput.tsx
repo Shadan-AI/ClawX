@@ -44,6 +44,7 @@ export interface FileAttachment {
 
 interface ChatInputProps {
   onSend: (text: string, attachments?: FileAttachment[], targetAgentId?: string | null) => void;
+  onModelChange?: (modelId: string) => void | Promise<void>;
   onStop?: () => void;
   disabled?: boolean;
   sending?: boolean;
@@ -188,7 +189,7 @@ interface MurmurBubble {
   duration: number;
 }
 
-export function ChatInput({ onSend, onStop, disabled = false, sending = false, isExpanded = true, onFocusChange, quickUseSkill, onSkillUsed, disabledPlaceholder }: ChatInputProps) {
+export function ChatInput({ onSend, onModelChange, onStop, disabled = false, sending = false, isExpanded = true, onFocusChange, quickUseSkill, onSkillUsed, disabledPlaceholder }: ChatInputProps) {
   const { t } = useTranslation('chat');
   const navigate = useNavigate();
   const [input, setInput] = useState('');
@@ -1416,8 +1417,9 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                                   aria-selected={isSelected}
                                   onClick={() => { 
                                     console.log('[ChatInput] Switching to model:', model.id, model.name);
-                                    setCurrentModel(model.id); 
-                                    setModelMenuOpen(false); 
+                                    void Promise.resolve(onModelChange ? onModelChange(model.id) : setCurrentModel(model.id))
+                                      .then(() => setModelMenuOpen(false))
+                                      .catch((error) => console.error('[ChatInput] Failed to switch model:', error));
                                   }}
                                   className={cn(
                                     'w-full px-3 py-2 text-left text-[12px] flex items-center justify-between gap-2',

@@ -6,7 +6,9 @@ import {
 } from 'lucide-react';
 import { invokeIpc } from '@/lib/api-client';
 import { hostApiFetch } from '@/lib/host-api';
+import { useAgentsStore } from '@/stores/agents';
 import { useChatStore } from '@/stores/chat';
+import { useModelsStore } from '@/stores/models';
 import {
   initialNativeCliTerminalState,
   nativeCliTerminalCanSend,
@@ -112,6 +114,10 @@ const TERMINAL_OSC_PATTERN = new RegExp(`${TERMINAL_ESCAPE}\\][^${TERMINAL_BELL}
 const TERMINAL_CSI_PATTERN = new RegExp(`${TERMINAL_ESCAPE}\\[[0-?]*[ -/]*[@-~]`, 'g');
 const TERMINAL_CHARSET_PATTERN = new RegExp(`${TERMINAL_ESCAPE}[()][A-Za-z0-9]`, 'g');
 const NATIVE_CLI_SESSION_KEY_PATTERN = /^agent:[^:]+:cli:/i;
+const CLAUDE_NATIVE_PROXY_PORT = 13211;
+const CLAUDE_NATIVE_SONNET_ALIAS = 'claude-sonnet-4-6';
+const CLAUDE_NATIVE_OPUS_ALIAS = 'claude-opus-4-7';
+const CLAUDE_NATIVE_HAIKU_ALIAS = 'claude-haiku-4-5';
 
 function storageKey(sessionKey: string) {
   return `openclaw-terminal-state:native-cli:${sessionKey}`;
@@ -155,6 +161,34 @@ function isTerminalNearBottom(term: Terminal | null) {
 
 function normalizeProvider(provider?: string) {
   return provider?.trim().toLowerCase() || undefined;
+}
+
+function normalizeOneApiModelId(modelRef: string | null | undefined): string {
+  const trimmed = (modelRef || '').trim();
+  return trimmed.startsWith('shadan/') ? trimmed.slice('shadan/'.length) : trimmed;
+}
+
+function getClaudeProxyBaseUrl(upstreamModel: string): string {
+  return `http://127.0.0.1:${CLAUDE_NATIVE_PROXY_PORT}/native-claude/${encodeURIComponent(upstreamModel)}`;
+}
+
+function extractClaudeProxyRouteModel(baseUrl: string | undefined): string | undefined {
+  const match = baseUrl?.match(/\/native-claude\/([^/]+)(?:\/v1)?\/?$/);
+  if (!match) return undefined;
+  try {
+    return decodeURIComponent(match[1]).trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function updateClaudeProxyModel(routeModel: string, upstreamModel: string): Promise<void> {
+  const response = await fetch(`http://127.0.0.1:${CLAUDE_NATIVE_PROXY_PORT}/native-claude/${encodeURIComponent(routeModel)}/__model`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: upstreamModel }),
+  });
+  if (!response.ok) throw new Error(`Claude proxy model switch failed: ${response.status}`);
 }
 
 function loadPersistedTerminalState(sessionKey: string): PersistedTerminalState {
@@ -615,6 +649,24 @@ export function NativeCliTerminal({
   const inputShellStateRef = useRef<InputShellState>(inputShellState);
 
   const normalizedProvider = useMemo(() => normalizeProvider(cliSessionProvider), [cliSessionProvider]);
+  const agent = useAgentsStore((state) => state.agents.find((entry) => entry.id === agentId));
+  const refreshAgents = useAgentsStore((state) => state.fetchAgents);
+  const activeClaudeProxyRouteModelRef = useRef<string>('');
+
+  const claudeRuntimeEnv = agent?.runtime?.type === 'native-cli' && agent.runtime.nativeCli?.provider === 'claude'
+    ? agent.runtime.nativeCli.env
+    : undefined;
+  const effectiveProvider = normalizedProvider || normalizeProvider(agent?.runtime?.nativeCli?.provider) || 'claude';
+  const configuredClaudeProxyRouteModel = useMemo(
+    () => extractClaudeProxyRouteModel(claudeRuntimeEnv?.ANTHROPIC_BASE_URL),
+    [claudeRuntimeEnv?.ANTHROPIC_BASE_URL],
+  );
+
+  useEffect(() => {
+    if (!activeClaudeProxyRouteModelRef.current && configuredClaudeProxyRouteModel) {
+      activeClaudeProxyRouteModelRef.current = configuredClaudeProxyRouteModel;
+    }
+  }, [configuredClaudeProxyRouteModel]);
 
   useEffect(() => {
     inputShellStateRef.current = inputShellState;
@@ -1261,6 +1313,47 @@ export function NativeCliTerminal({
     sendText(trimmed);
   }, [sendShellCompose, sendText]);
 
+  const handleModelChange = useCallback(async (modelId: string) => {
+    const upstreamModel = normalizeOneApiModelId(modelId);
+    if (!upstreamModel) return;
+
+    await useModelsStore.getState().setCurrentModel(upstreamModel);
+
+    if (effectiveProvider !== 'claude' || !agent?.runtime?.nativeCli) return;
+
+    const routeModel = activeClaudeProxyRouteModelRef.current || configuredClaudeProxyRouteModel || upstreamModel;
+    activeClaudeProxyRouteModelRef.current = routeModel;
+    await updateClaudeProxyModel(routeModel, upstreamModel);
+
+    const nativeCli = agent.runtime.nativeCli;
+    await hostApiFetch(`/api/agents/${encodeURIComponent(agentId)}/runtime`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        runtime: {
+          ...agent.runtime,
+          nativeCli: {
+            ...nativeCli,
+            env: {
+              ...(nativeCli.env ?? {}),
+              ANTHROPIC_BASE_URL: getClaudeProxyBaseUrl(upstreamModel),
+              ANTHROPIC_MODEL: CLAUDE_NATIVE_SONNET_ALIAS,
+              ANTHROPIC_DEFAULT_SONNET_MODEL: CLAUDE_NATIVE_SONNET_ALIAS,
+              ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: upstreamModel,
+              ANTHROPIC_DEFAULT_OPUS_MODEL: CLAUDE_NATIVE_OPUS_ALIAS,
+              ANTHROPIC_DEFAULT_OPUS_MODEL_NAME: upstreamModel,
+              ANTHROPIC_DEFAULT_HAIKU_MODEL: CLAUDE_NATIVE_HAIKU_ALIAS,
+              ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME: upstreamModel,
+              CLAWX_NATIVE_CLAUDE_UPSTREAM_MODEL: upstreamModel,
+            },
+          },
+        },
+      }),
+    });
+    void refreshAgents().catch((error) => console.warn('[native-cli-terminal] Failed to refresh agents after model switch:', error));
+
+    sendText(`/model ${CLAUDE_NATIVE_SONNET_ALIAS}`);
+  }, [agent, agentId, configuredClaudeProxyRouteModel, effectiveProvider, refreshAgents, sendText]);
+
   // Stable ref for mount-effect callbacks so the terminal instance survives
   // callback identity changes (e.g. normalizedProvider undefined → 'claude').
   const mountRef_cb = useRef({
@@ -1457,6 +1550,7 @@ export function NativeCliTerminal({
         <div className="native-cli-terminal__composer-inner pointer-events-auto">
           <ChatInput
             onSend={handleChatInputSend}
+            onModelChange={handleModelChange}
             disabled={!nativeCliTerminalCanSend(terminalState)}
             disabledPlaceholder={desiredLoadingLabel || '正在连接会话'}
             sending={false}
