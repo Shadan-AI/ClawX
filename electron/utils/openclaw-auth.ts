@@ -237,7 +237,7 @@ async function discoverAgentIds(): Promise<string[]> {
 // ── OpenClaw Config Helpers ──────────────────────────────────────
 
 const OPENCLAW_CONFIG_PATH = join(homedir(), '.openclaw', 'openclaw.json');
-const FEISHU_PLUGIN_ID_CANDIDATES = ['openclaw-lark', 'feishu-openclaw-plugin'] as const;
+const FEISHU_PLUGIN_ID_CANDIDATES = ['feishu', 'openclaw-lark', 'feishu-openclaw-plugin'] as const;
 const VALID_COMPACTION_MODES = new Set(['default', 'safeguard']);
 const BUILTIN_CHANNEL_IDS = new Set([
   'discord',
@@ -252,6 +252,7 @@ const BUILTIN_CHANNEL_IDS = new Set([
   'googlechat',
   'mattermost',
   'qqbot',
+  'feishu',
 ]);
 const AUTH_PROFILE_PROVIDER_KEY_MAP: Record<string, string> = {
   'openai-codex': 'openai',
@@ -374,6 +375,10 @@ async function resolveInstalledFeishuPluginId(): Promise<string | null> {
     }
   }
   return null;
+}
+
+function isBundledPluginId(pluginId: string): boolean {
+  return discoverBundledPlugins().all.has(pluginId);
 }
 
 function normalizeAgentsDefaultsCompactionMode(config: Record<string, unknown>): void {
@@ -750,6 +755,7 @@ interface RuntimeProviderConfigOverride {
   apiKeyEnv?: string;
   headers?: Record<string, string>;
   authHeader?: boolean;
+  modelIds?: string[];
 }
 
 type ProviderEntryBuildOptions = {
@@ -773,6 +779,12 @@ function extractModelId(provider: string, modelRef: string): string {
   return modelRef.startsWith(`${provider}/`) ? modelRef.slice(provider.length + 1) : modelRef;
 }
 
+function normalizeRuntimeModelId(provider: string, modelRef: string | undefined): string | undefined {
+  const trimmed = modelRef?.trim();
+  if (!trimmed) return undefined;
+  return extractModelId(provider, trimmed);
+}
+
 function extractFallbackModelIds(provider: string, fallbackModels: string[]): string[] {
   return fallbackModels
     .filter((fallback) => fallback.startsWith(`${provider}/`))
@@ -794,6 +806,18 @@ function mergeProviderModels(
     }
   }
   return merged;
+}
+
+function normalizeModelIdList(provider: string, modelRefs: Array<string | undefined>): string[] {
+  const result: string[] = [];
+  const seen = new Set<string>();
+  for (const modelRef of modelRefs) {
+    const modelId = normalizeRuntimeModelId(provider, modelRef);
+    if (!modelId || seen.has(modelId)) continue;
+    seen.add(modelId);
+    result.push(modelId);
+  }
+  return result;
 }
 
 function upsertOpenClawProviderEntry(
@@ -935,7 +959,7 @@ export async function syncProviderConfigToOpenClaw(
         api: override.api,
         apiKeyEnv: override.apiKeyEnv,
         headers: override.headers,
-        modelIds: modelId ? [modelId] : [],
+        modelIds: normalizeModelIdList(provider, [modelId, ...(override.modelIds ?? [])]),
       });
     }
 
@@ -996,7 +1020,11 @@ export async function setOpenClawDefaultModelWithOverride(
         apiKeyEnv: override.apiKeyEnv,
         headers: override.headers,
         authHeader: override.authHeader,
-        modelIds: [modelId, ...fallbackModelIds],
+        modelIds: normalizeModelIdList(provider, [
+          modelId,
+          ...fallbackModelIds,
+          ...(override.modelIds ?? []),
+        ]),
       });
     }
 
@@ -1756,23 +1784,29 @@ export async function sanitizeOpenClawConfig(): Promise<void> {
       const configuredFeishuId =
         FEISHU_PLUGIN_ID_CANDIDATES.find((id) => allowArr.includes(id))
         || FEISHU_PLUGIN_ID_CANDIDATES.find((id) => Boolean(pEntries[id]));
-      const canonicalFeishuId = installedFeishuId || configuredFeishuId || FEISHU_PLUGIN_ID_CANDIDATES[0];
+      const bundledFeishuId = isBundledPluginId('feishu') ? 'feishu' : null;
+      const canonicalFeishuId = bundledFeishuId || installedFeishuId || configuredFeishuId || FEISHU_PLUGIN_ID_CANDIDATES[0];
+      const feishuIsBundled = isBundledPluginId(canonicalFeishuId);
 
       const existingFeishuEntry =
         FEISHU_PLUGIN_ID_CANDIDATES.map((id) => pEntries[id]).find(Boolean)
         || pEntries.feishu;
 
       const normalizedAllow = allowArr.filter(
-        (id) => id !== 'feishu' && !FEISHU_PLUGIN_ID_CANDIDATES.includes(id as typeof FEISHU_PLUGIN_ID_CANDIDATES[number]),
+        (id) => !FEISHU_PLUGIN_ID_CANDIDATES.includes(id as typeof FEISHU_PLUGIN_ID_CANDIDATES[number]),
       );
-      normalizedAllow.push(canonicalFeishuId);
+      if (!feishuIsBundled) {
+        normalizedAllow.push(canonicalFeishuId);
+      }
       if (JSON.stringify(normalizedAllow) !== JSON.stringify(allowArr)) {
         pluginsObj.allow = normalizedAllow;
         modified = true;
-        console.log(`[sanitize] Normalized plugins.allow for feishu -> ${canonicalFeishuId}`);
+        console.log(feishuIsBundled
+          ? '[sanitize] Removed bundled feishu from plugins.allow'
+          : `[sanitize] Normalized plugins.allow for feishu -> ${canonicalFeishuId}`);
       }
 
-      if (existingFeishuEntry || !pEntries[canonicalFeishuId]) {
+      if (!feishuIsBundled && (existingFeishuEntry || !pEntries[canonicalFeishuId])) {
         pEntries[canonicalFeishuId] = {
           ...(existingFeishuEntry || {}),
           ...(pEntries[canonicalFeishuId] || {}),
@@ -1781,7 +1815,7 @@ export async function sanitizeOpenClawConfig(): Promise<void> {
         modified = true;
       }
       for (const id of FEISHU_PLUGIN_ID_CANDIDATES) {
-        if (id !== canonicalFeishuId && pEntries[id]) {
+        if ((feishuIsBundled || id !== canonicalFeishuId) && pEntries[id]) {
           delete pEntries[id];
           modified = true;
         }

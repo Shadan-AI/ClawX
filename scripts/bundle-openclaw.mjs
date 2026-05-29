@@ -537,6 +537,56 @@ function patchBrokenModules(nodeModulesDir) {
 
   let count = 0;
 
+  const nodePtyAgentTargets = findFilesByName(nodeModulesDir, /^windowsPtyAgent\.js$/)
+    .filter((target) => target.includes('node-pty-win32'));
+  const nodePtyCleanupSearch = `            var agent = child_process_1.fork(path.join(__dirname, 'conpty_console_list_agent'), [_this._innerPid.toString()]);
+            agent.on('message', function (message) {
+                clearTimeout(timeout);
+                resolve(message.consoleProcessList);
+            });
+            var timeout = setTimeout(function () {
+                // Something went wrong, just send back the shell PID
+                agent.kill();
+                resolve([_this._innerPid]);
+            }, 5000);`;
+  const nodePtyCleanupReplace = `            var agent = child_process_1.fork(path.join(__dirname, 'conpty_console_list_agent'), [_this._innerPid.toString()], { silent: true });
+            var resolved = false;
+            var finish = function (processList) {
+                if (resolved) {
+                    return;
+                }
+                resolved = true;
+                clearTimeout(timeout);
+                resolve(processList);
+            };
+            agent.on('message', function (message) {
+                finish(message && Array.isArray(message.consoleProcessList) ? message.consoleProcessList : [_this._innerPid]);
+            });
+            agent.on('error', function () {
+                finish([_this._innerPid]);
+            });
+            agent.on('exit', function (code) {
+                if (code !== 0) {
+                    finish([_this._innerPid]);
+                }
+            });
+            var timeout = setTimeout(function () {
+                // Something went wrong, just send back the shell PID
+                agent.kill();
+                finish([_this._innerPid]);
+            }, 5000);`;
+  let nodePtyCleanupPatched = 0;
+  for (const target of nodePtyAgentTargets) {
+    const current = fs.readFileSync(target, 'utf8');
+    if (!current.includes(nodePtyCleanupSearch)) continue;
+    fs.writeFileSync(target, current.replace(nodePtyCleanupSearch, nodePtyCleanupReplace), 'utf8');
+    nodePtyCleanupPatched++;
+  }
+  if (nodePtyCleanupPatched > 0) {
+    echo`   Patched ${nodePtyCleanupPatched} node-pty Windows cleanup site(s)`;
+    count += nodePtyCleanupPatched;
+  }
+
   // eventemitter3 v5: ensure the "import" condition is present so that
   // p-queue's ESM named import `{ EventEmitter }` resolves correctly in
   // Electron's Node runtime. Some build steps may have stripped this field.
@@ -843,6 +893,72 @@ function findFilesByName(rootDir, matcher) {
   return matches;
 }
 
+function patchBundledBoxImModelValidation(outputDir) {
+  const targets = findFilesByName(path.join(outputDir, 'dist'), /^owner-bootstrap-.*\.js$/);
+  const patches = [
+    {
+      label: 'box-im OneAPI model ref resolver',
+      search: `/**
+* Validate and fix model configurations on startup.
+* Ensures all configured models exist in OneAPI.
+* If a model doesn't exist, replaces it with the first available model.
+*/`,
+      replace: `function resolveOneApiModelId(modelRef) {
+\tif (typeof modelRef === "string") {
+\t\tconst trimmed = modelRef.trim();
+\t\tif (!trimmed) return void 0;
+\t\tif (trimmed.includes("/") && !trimmed.startsWith("shadan/")) return void 0;
+\t\treturn trimmed.replace(/^shadan\\//, "").trim() || void 0;
+\t}
+\tif (modelRef && typeof modelRef === "object") return resolveOneApiModelId(modelRef.primary);
+\treturn void 0;
+}
+/**
+* Validate and fix OneAPI-backed model configurations on startup.
+* Provider-qualified custom models are not validated against OneAPI.
+* If a OneAPI model doesn't exist, replaces it with the first available model.
+*/`,
+    },
+    {
+      label: 'box-im default model validation',
+      search: `\t\t\tconst modelId = typeof defaultModel === "string" ? defaultModel.replace(/^shadan\\//, "") : defaultModel.primary?.replace(/^shadan\\//, "");`,
+      replace: `\t\t\tconst modelId = resolveOneApiModelId(defaultModel);`,
+    },
+    {
+      label: 'box-im agent model validation',
+      search: `\t\t\t\tconst modelId = typeof agent.model === "string" ? agent.model.replace(/^shadan\\//, "") : agent.model.primary?.replace(/^shadan\\//, "");`,
+      replace: `\t\t\t\tconst modelId = resolveOneApiModelId(agent.model);`,
+    },
+    {
+      label: 'box-im account model validation',
+      search: `\t\t\tconst modelId = account.model?.replace(/^shadan\\//, "");`,
+      replace: `\t\t\tconst modelId = resolveOneApiModelId(account.model);`,
+    },
+  ];
+
+  let count = 0;
+  for (const patch of patches) {
+    let matchedAny = false;
+    for (const target of targets) {
+      const current = fs.readFileSync(target, 'utf8');
+      if (!current.includes(patch.search)) continue;
+      matchedAny = true;
+      const next = current.replaceAll(patch.search, patch.replace);
+      if (next !== current) {
+        fs.writeFileSync(target, next, 'utf8');
+        count++;
+      }
+    }
+    if (!matchedAny) {
+      echo`   WARNING: Skipped patch for ${patch.label}: expected source snippet not found`;
+    }
+  }
+
+  if (count > 0) {
+    echo`   Patched ${count} bundled Box IM model validation site(s)`;
+  }
+}
+
 function patchBundledRuntime(outputDir) {
   const replacePatches = [
     {
@@ -952,6 +1068,8 @@ function patchBundledRuntime(outputDir) {
       echo`   ⚠️  Skipped patch for ${patch.label}: expected source snippet not found`;
     }
   }
+
+  patchBundledBoxImModelValidation(outputDir);
 
   if (ptyCount > 0) {
     echo`   🩹 Patched ${ptyCount} bundled PTY site(s)`;

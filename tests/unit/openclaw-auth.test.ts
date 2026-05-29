@@ -483,6 +483,34 @@ describe('syncProviderConfigToOpenClaw', () => {
     expect(load).toEqual(['/tmp/custom-plugin.js']);
     expect(moonshot.baseUrl).toBe('https://api.moonshot.cn/v1');
   });
+
+  it('merges additional runtime model ids when syncing provider config', async () => {
+    await writeOpenClawJson({
+      models: {
+        providers: {
+          'custom-deepsee': {
+            baseUrl: 'https://api.deepseek.com/anthropic',
+            api: 'anthropic-messages',
+            models: [{ id: 'deepseek-v4-pro', name: 'deepseek-v4-pro' }],
+          },
+        },
+      },
+    });
+
+    const { syncProviderConfigToOpenClaw } = await import('@electron/utils/openclaw-auth');
+
+    await syncProviderConfigToOpenClaw('custom-deepsee', 'deepseek-v4-pro', {
+      baseUrl: 'https://api.deepseek.com/anthropic',
+      api: 'anthropic-messages',
+      modelIds: ['deepseek-v4-flash'],
+    });
+
+    const result = await readOpenClawJson();
+    const providers = ((result.models as Record<string, unknown>).providers as Record<string, Record<string, unknown>>);
+    const models = providers['custom-deepsee'].models as Array<{ id: string; name: string }>;
+
+    expect(models.map((model) => model.id)).toEqual(['deepseek-v4-pro', 'deepseek-v4-flash']);
+  });
 });
 
 describe('auth-backed provider discovery', () => {

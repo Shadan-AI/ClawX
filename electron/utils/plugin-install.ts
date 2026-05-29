@@ -15,6 +15,7 @@ import { readdir, stat, copyFile, mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { logger } from './logger';
+import { getOpenClawResolvedDir } from './paths';
 
 function normalizeFsPathForWindows(filePath: string): string {
   if (process.platform !== 'win32') return filePath;
@@ -495,6 +496,10 @@ export function buildCandidateSources(pluginDirName: string): string[] {
 
 // ── Per-channel plugin helpers ───────────────────────────────────────────────
 
+function isBundledOpenClawExtension(pluginId: string): boolean {
+  return existsSync(fsPath(join(getOpenClawResolvedDir(), 'dist', 'extensions', pluginId, 'openclaw.plugin.json')));
+}
+
 export function ensureDingTalkPluginInstalled(): { installed: boolean; warning?: string } {
   return ensurePluginInstalled('dingtalk', buildCandidateSources('dingtalk'), 'DingTalk');
 }
@@ -504,6 +509,9 @@ export function ensureWeComPluginInstalled(): { installed: boolean; warning?: st
 }
 
 export function ensureFeishuPluginInstalled(): { installed: boolean; warning?: string } {
+  if (isBundledOpenClawExtension('feishu')) {
+    return { installed: true };
+  }
   return ensurePluginInstalled(
     'feishu-openclaw-plugin',
     buildCandidateSources('feishu-openclaw-plugin'),
@@ -518,6 +526,9 @@ export function ensureWeChatPluginInstalled(): { installed: boolean; warning?: s
 }
 
 export function ensureBoxImPluginInstalled(): { installed: boolean; warning?: string } {
+  if (isBundledOpenClawExtension('box-im')) {
+    return { installed: true };
+  }
   return ensurePluginInstalled('box-im', buildCandidateSources('box-im'), 'Box-IM');
 }
 
@@ -540,7 +551,11 @@ const ALL_BUNDLED_PLUGINS = [
  * as a fire-and-forget task — errors are logged but never thrown.
  */
 export async function ensureAllBundledPluginsInstalled(): Promise<void> {
-  for (const { fn, label } of ALL_BUNDLED_PLUGINS) {
+  const installablePlugins = app.isPackaged
+    ? ALL_BUNDLED_PLUGINS
+    : ALL_BUNDLED_PLUGINS.filter(({ fn }) => fn === ensureBoxImPluginInstalled);
+
+  for (const { fn, label } of installablePlugins) {
     try {
       const result = fn();
       if (result.warning) {

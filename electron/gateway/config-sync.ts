@@ -1,6 +1,7 @@
 import { app } from 'electron';
 import path from 'path';
 import { existsSync, readFileSync, mkdirSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { createRequire } from 'module';
 import { homedir } from 'os';
 import { join } from 'path';
 
@@ -94,6 +95,177 @@ function timeGatewayPrep<T>(label: string, fn: () => T): T {
     return fn();
   } finally {
     logger.debug(`[gateway-prep] ${label} completed in ${Date.now() - startedAt}ms`);
+  }
+}
+
+function findFilesByName(rootDir: string, matcher: RegExp, maxDepth = 8): string[] {
+  const matches: string[] = [];
+  const stack: Array<{ dir: string; depth: number }> = [{ dir: rootDir, depth: 0 }];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current) continue;
+
+    let entries: Array<{ name: string; isDirectory(): boolean; isFile(): boolean }>;
+    try {
+      entries = readdirSync(fsPath(current.dir), { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      const fullPath = join(current.dir, entry.name);
+      if (entry.isDirectory()) {
+        if (current.depth < maxDepth) {
+          stack.push({ dir: fullPath, depth: current.depth + 1 });
+        }
+        continue;
+      }
+      if (entry.isFile() && matcher.test(entry.name)) {
+        matches.push(fullPath);
+      }
+    }
+  }
+  return matches;
+}
+
+function replaceSnippetInFile(filePath: string, search: string, replace: string): boolean {
+  try {
+    const current = readFileSync(fsPath(filePath), 'utf-8');
+    if (!current.includes(search)) return false;
+    const next = current.replaceAll(search, replace);
+    if (next === current) return false;
+    writeFileSync(fsPath(filePath), next, 'utf-8');
+    return true;
+  } catch (error) {
+    logger.warn(`[gateway-prep] Failed to patch runtime file ${filePath}:`, error);
+    return false;
+  }
+}
+
+function patchOpenClawBoxImModelValidation(openclawDir: string): number {
+  const ownerBootstrapTargets = findFilesByName(join(openclawDir, 'dist'), /^owner-bootstrap-.*\.js$/, 2);
+  const patches = [
+    {
+      label: 'resolver',
+      search: `/**
+* Validate and fix model configurations on startup.
+* Ensures all configured models exist in OneAPI.
+* If a model doesn't exist, replaces it with the first available model.
+*/`,
+      replace: `function resolveOneApiModelId(modelRef) {
+\tif (typeof modelRef === "string") {
+\t\tconst trimmed = modelRef.trim();
+\t\tif (!trimmed) return void 0;
+\t\tif (trimmed.includes("/") && !trimmed.startsWith("shadan/")) return void 0;
+\t\treturn trimmed.replace(/^shadan\\//, "").trim() || void 0;
+\t}
+\tif (modelRef && typeof modelRef === "object") return resolveOneApiModelId(modelRef.primary);
+\treturn void 0;
+}
+/**
+* Validate and fix OneAPI-backed model configurations on startup.
+* Provider-qualified custom models are not validated against OneAPI.
+* If a OneAPI model doesn't exist, replaces it with the first available model.
+*/`,
+    },
+    {
+      label: 'default',
+      search: `\t\t\tconst modelId = typeof defaultModel === "string" ? defaultModel.replace(/^shadan\\//, "") : defaultModel.primary?.replace(/^shadan\\//, "");`,
+      replace: `\t\t\tconst modelId = resolveOneApiModelId(defaultModel);`,
+    },
+    {
+      label: 'agent',
+      search: `\t\t\t\tconst modelId = typeof agent.model === "string" ? agent.model.replace(/^shadan\\//, "") : agent.model.primary?.replace(/^shadan\\//, "");`,
+      replace: `\t\t\t\tconst modelId = resolveOneApiModelId(agent.model);`,
+    },
+    {
+      label: 'account',
+      search: `\t\t\tconst modelId = account.model?.replace(/^shadan\\//, "");`,
+      replace: `\t\t\tconst modelId = resolveOneApiModelId(account.model);`,
+    },
+  ];
+
+  let patched = 0;
+  for (const patch of patches) {
+    let patchedThisSnippet = 0;
+    for (const target of ownerBootstrapTargets) {
+      if (replaceSnippetInFile(target, patch.search, patch.replace)) {
+        patchedThisSnippet++;
+      }
+    }
+    patched += patchedThisSnippet;
+  }
+  return patched;
+}
+
+function getNodePtyWindowsPackageRoots(openclawDir: string): string[] {
+  try {
+    const openclawRequire = createRequire(join(openclawDir, 'package.json'));
+    return ['@lydell/node-pty-win32-x64', '@lydell/node-pty-win32-arm64']
+      .map((pkgName) => {
+        try {
+          return path.dirname(path.dirname(openclawRequire.resolve(pkgName)));
+        } catch {
+          return null;
+        }
+      })
+      .filter((dir): dir is string => Boolean(dir));
+  } catch {
+    return [];
+  }
+}
+
+function patchNodePtyWindowsCleanup(openclawDir: string): number {
+  const packageRoots = getNodePtyWindowsPackageRoots(openclawDir);
+  const targets = packageRoots
+    .map((packageRoot) => join(packageRoot, 'lib', 'windowsPtyAgent.js'))
+    .filter((target) => existsSync(fsPath(target)));
+
+  const search = `            var agent = child_process_1.fork(path.join(__dirname, 'conpty_console_list_agent'), [_this._innerPid.toString()]);
+            agent.on('message', function (message) {
+                clearTimeout(timeout);
+                resolve(message.consoleProcessList);
+            });
+            var timeout = setTimeout(function () {
+                // Something went wrong, just send back the shell PID
+                agent.kill();
+                resolve([_this._innerPid]);
+            }, 5000);`;
+  const replace = `            var agent = child_process_1.fork(path.join(__dirname, 'conpty_console_list_agent'), [_this._innerPid.toString()], { silent: true });
+            var resolved = false;
+            var finish = function (processList) {
+                if (resolved) {
+                    return;
+                }
+                resolved = true;
+                clearTimeout(timeout);
+                resolve(processList);
+            };
+            agent.on('message', function (message) {
+                finish(message && Array.isArray(message.consoleProcessList) ? message.consoleProcessList : [_this._innerPid]);
+            });
+            agent.on('error', function () {
+                finish([_this._innerPid]);
+            });
+            agent.on('exit', function (code) {
+                if (code !== 0) {
+                    finish([_this._innerPid]);
+                }
+            });
+            var timeout = setTimeout(function () {
+                // Something went wrong, just send back the shell PID
+                agent.kill();
+                finish([_this._innerPid]);
+            }, 5000);`;
+
+  return targets.reduce((count, target) => count + (replaceSnippetInFile(target, search, replace) ? 1 : 0), 0);
+}
+
+function repairOpenClawRuntimeBeforeLaunch(openclawDir: string): void {
+  const boxImPatchCount = patchOpenClawBoxImModelValidation(openclawDir);
+  const nodePtyPatchCount = process.platform === 'win32' ? patchNodePtyWindowsCleanup(openclawDir) : 0;
+  if (boxImPatchCount > 0 || nodePtyPatchCount > 0) {
+    logger.info(`[gateway-prep] Patched OpenClaw runtime before launch (boxIm=${boxImPatchCount}, nodePty=${nodePtyPatchCount})`);
   }
 }
 
@@ -720,6 +892,7 @@ export async function prepareGatewayLaunchContext(port: number): Promise<Gateway
 
   const appSettings = await timeGatewayPrepAsync('load settings', () => getAllSettings());
   await timeGatewayPrepAsync('sync config before launch', () => syncGatewayConfigBeforeLaunch(appSettings));
+  timeGatewayPrep('repair OpenClaw runtime before launch', () => repairOpenClawRuntimeBeforeLaunch(openclawDir));
 
   if (!existsSync(entryScript)) {
     throw new Error(`OpenClaw entry script not found at: ${entryScript}`);

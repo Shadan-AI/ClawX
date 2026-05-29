@@ -284,6 +284,40 @@ describe('provider-runtime-sync refresh strategy', () => {
     expect(gateway.debouncedReload).toHaveBeenCalledTimes(1);
   });
 
+  it('preserves existing agent model ids when syncing custom anthropic provider config', async () => {
+    const provider = createProvider({
+      id: 'deepseek-prod',
+      type: 'custom',
+      name: 'DeepSeek',
+      model: 'deepseek-v4-pro',
+      baseUrl: 'https://api.deepseek.com/anthropic',
+      apiProtocol: 'anthropic-messages',
+    });
+
+    mocks.listAgentsSnapshot.mockResolvedValue({
+      agents: [
+        {
+          id: 'bot',
+          modelRef: 'custom-deepseek/deepseek-v4-flash',
+        },
+      ],
+    });
+
+    const gateway = createGateway('running');
+    await syncSavedProviderToRuntime(provider, undefined, gateway as GatewayManager);
+
+    expect(mocks.syncProviderConfigToOpenClaw).toHaveBeenCalledWith(
+      'custom-deepseek',
+      'deepseek-v4-pro',
+      expect.objectContaining({
+        baseUrl: 'https://api.deepseek.com/anthropic',
+        api: 'anthropic-messages',
+        modelIds: ['deepseek-v4-flash'],
+      }),
+    );
+    expect(mocks.updateAgentModelProvider).not.toHaveBeenCalled();
+  });
+
   it('syncs Ollama as default provider with correct baseUrl and api protocol', async () => {
     const ollamaProvider = createProvider({
       id: 'ollamafd',

@@ -576,4 +576,58 @@ describe('agent config lifecycle', () => {
     expect(nativeCli?.env).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN');
     await expect(access(join(testHome, '.openclaw', 'agents', 'legacy', 'claude-code'))).resolves.toBeUndefined();
   });
+
+  it('repairs Windows Claude native cli command from npm shim to executable', async () => {
+    const originalPlatform = process.platform;
+    const originalPath = process.env.PATH;
+    const npmBinDir = join(testHome, 'npm-bin');
+    const claudeExe = join(npmBinDir, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
+
+    await mkdir(join(npmBinDir, 'node_modules', '@anthropic-ai', 'claude-code', 'bin'), { recursive: true });
+    await writeFile(claudeExe, '', 'utf8');
+    await writeFile(
+      join(npmBinDir, 'claude.cmd'),
+      '@ECHO off\r\n"%~dp0\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe" %*\r\n',
+      'utf8',
+    );
+    await writeOpenClawJson({
+      agents: {
+        list: [
+          {
+            id: 'win-coder',
+            name: 'Windows Coder',
+            runtime: {
+              type: 'native-cli',
+              nativeCli: {
+                provider: 'claude',
+                command: 'claude',
+                env: {
+                  ANTHROPIC_API_KEY: 'oneapi-key',
+                  ANTHROPIC_MODEL: 'deepseek-v4-flash',
+                },
+              },
+            },
+          },
+        ],
+      },
+    });
+
+    try {
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      process.env.PATH = npmBinDir;
+      vi.resetModules();
+
+      const { ensureNativeCliRuntimeResumeArgs } = await import('@electron/utils/agent-config');
+      await expect(ensureNativeCliRuntimeResumeArgs()).resolves.toBe(true);
+    } finally {
+      Object.defineProperty(process, 'platform', { value: originalPlatform });
+      process.env.PATH = originalPath;
+    }
+
+    const config = await readOpenClawJson();
+    const agent = ((config.agents as { list: Array<{ id: string; runtime?: { nativeCli?: { command?: string } } }> }).list)
+      .find((item) => item.id === 'win-coder');
+
+    expect(agent?.runtime?.nativeCli?.command).toBe(claudeExe);
+  });
 });

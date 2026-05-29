@@ -25,7 +25,7 @@ const CONFIG_FILE = join(OPENCLAW_DIR, 'openclaw.json');
 const WECOM_PLUGIN_ID = 'wecom';
 // Note: QQBot is a built-in channel since OpenClaw 3.31 — no plugin ID needed.
 const WECHAT_PLUGIN_ID = OPENCLAW_WECHAT_CHANNEL_TYPE;
-const FEISHU_PLUGIN_ID_CANDIDATES = ['openclaw-lark', 'feishu-openclaw-plugin'] as const;
+const FEISHU_PLUGIN_ID_CANDIDATES = ['feishu', 'openclaw-lark', 'feishu-openclaw-plugin'] as const;
 const DEFAULT_ACCOUNT_ID = 'default';
 const CHANNEL_TOP_LEVEL_KEYS_TO_KEEP = new Set(['accounts', 'defaultAccount', 'enabled']);
 const WECHAT_STATE_DIR = join(OPENCLAW_DIR, WECHAT_PLUGIN_ID);
@@ -50,6 +50,7 @@ const BUILTIN_CHANNEL_IDS = new Set([
     'googlechat',
     'mattermost',
     'qqbot',
+    'feishu',
 ]);
 
 // Unique credential key per channel type – used for duplicate bot detection.
@@ -82,6 +83,17 @@ function normalizeCredentialValue(value: string): string {
 }
 
 async function resolveFeishuPluginId(): Promise<string> {
+    const bundledManifestPath = join(getOpenClawResolvedDir(), 'dist', 'extensions', 'feishu', 'openclaw.plugin.json');
+    try {
+        const raw = await readFile(bundledManifestPath, 'utf-8');
+        const parsed = JSON.parse(raw) as { id?: unknown };
+        if (typeof parsed.id === 'string' && parsed.id.trim()) {
+            return parsed.id.trim();
+        }
+    } catch {
+        // Fall back to external extension discovery below.
+    }
+
     const extensionRoot = join(homedir(), '.openclaw', 'extensions');
     for (const dirName of FEISHU_PLUGIN_ID_CANDIDATES) {
         const manifestPath = join(extensionRoot, dirName, 'openclaw.plugin.json');
@@ -414,6 +426,14 @@ async function ensurePluginAllowlist(currentConfig: OpenClawConfig, channelType:
 
     if (channelType === 'feishu') {
         const feishuPluginId = await resolveFeishuPluginId();
+        if (isBuiltinChannelId(feishuPluginId)) {
+            removePluginRegistration(currentConfig, 'feishu');
+            for (const candidateId of FEISHU_PLUGIN_ID_CANDIDATES) {
+                removePluginRegistration(currentConfig, candidateId);
+            }
+            return;
+        }
+
         if (!currentConfig.plugins) {
             currentConfig.plugins = {
                 allow: [feishuPluginId],

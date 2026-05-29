@@ -1,6 +1,6 @@
 import { access, copyFile, mkdir, readdir, rm } from 'fs/promises';
-import { constants } from 'fs';
-import { join, normalize } from 'path';
+import { constants, existsSync, readFileSync } from 'fs';
+import { delimiter, dirname, extname, isAbsolute, join, normalize, sep } from 'path';
 import { deleteAgentChannelAccounts, listConfiguredChannels, readOpenClawConfig, writeOpenClawConfig } from './channel-config';
 import type { OpenClawConfig } from './channel-config';
 import { withConfigLock } from './config-mutex';
@@ -127,6 +127,98 @@ function normalizeNativeCliProvider(provider: unknown, command: unknown): string
   return 'custom';
 }
 
+function stripOuterQuotes(value: string): string {
+  const trimmed = value.trim();
+  const match = trimmed.match(/^["'](.+)["']$/);
+  return match ? match[1] : trimmed;
+}
+
+function fileExistsSyncSafe(path: string): boolean {
+  try {
+    return existsSync(path);
+  } catch {
+    return false;
+  }
+}
+
+function expandCmdShimPath(value: string, cmdPath: string): string {
+  const shimDir = dirname(cmdPath);
+  const dp0 = shimDir.endsWith(sep) ? shimDir : `${shimDir}${sep}`;
+  return value
+    .replace(/%~dp0/gi, dp0)
+    .replace(/%dp0%/gi, dp0);
+}
+
+function readCmdShimExeTarget(cmdPath: string): string | undefined {
+  try {
+    const content = readFileSync(cmdPath, 'utf-8');
+    const candidates = [
+      ...Array.from(content.matchAll(/"([^"]+\.exe)"/gi), (match) => match[1]),
+      ...Array.from(content.matchAll(/([^\s"]+\.exe)\b/gi), (match) => match[1]),
+    ];
+
+    for (const candidate of candidates) {
+      const expanded = stripOuterQuotes(expandCmdShimPath(candidate, cmdPath));
+      const resolved = isAbsolute(expanded) ? expanded : join(dirname(cmdPath), expanded);
+      if (fileExistsSyncSafe(resolved)) {
+        return normalize(resolved);
+      }
+    }
+  } catch {
+    // Keep the original command if the shim cannot be inspected.
+  }
+  return undefined;
+}
+
+function windowsCommandCandidates(command: string): string[] {
+  const trimmed = stripOuterQuotes(command);
+  if (!trimmed) return [];
+
+  const extension = extname(trimmed).toLowerCase();
+  const suffixes = extension ? [''] : ['.exe', '.cmd', '.bat', '.ps1', ''];
+  const hasPathSeparator = /[\\/]/.test(trimmed);
+  const directories = hasPathSeparator
+    ? ['']
+    : (process.env.PATH || process.env.Path || '')
+      .split(delimiter)
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+
+  const candidates: string[] = [];
+  for (const directory of directories) {
+    for (const suffix of suffixes) {
+      candidates.push(directory ? join(directory, `${trimmed}${suffix}`) : `${trimmed}${suffix}`);
+    }
+  }
+  return candidates;
+}
+
+function resolveWindowsClaudeCommand(command: string): string {
+  if (process.platform !== 'win32') return command;
+
+  for (const candidate of windowsCommandCandidates(command)) {
+    if (!fileExistsSyncSafe(candidate)) continue;
+
+    const extension = extname(candidate).toLowerCase();
+    if (extension === '.exe') {
+      return normalize(candidate);
+    }
+    if (extension === '.cmd' || extension === '.bat') {
+      const target = readCmdShimExeTarget(candidate);
+      if (target) return target;
+    }
+  }
+
+  return command;
+}
+
+function normalizeNativeCliCommand(provider: string, command: string): string {
+  if (provider === 'claude') {
+    return resolveWindowsClaudeCommand(command);
+  }
+  return command;
+}
+
 function defaultNativeCliResumeArgs(provider: string, args: string[] | undefined): string[] | undefined {
   const existingArgs = args ?? [];
   if (provider === 'claude') {
@@ -203,6 +295,7 @@ function normalizeAgentRuntime(runtime: Record<string, unknown>, options?: { age
   if (!command) return runtime;
 
   const provider = normalizeNativeCliProvider(nativeCliRecord.provider, command);
+  const normalizedCommand = normalizeNativeCliCommand(provider, command);
   const env = normalizeNativeCliEnv(provider, asStringRecord(nativeCliRecord.env), options);
   const modelId = provider === 'claude' ? env?.ANTHROPIC_MODEL : undefined;
   const rawArgs = asStringArray(nativeCliRecord.args);
@@ -217,7 +310,7 @@ function normalizeAgentRuntime(runtime: Record<string, unknown>, options?: { age
     nativeCli: {
       ...nativeCliRecord,
       provider,
-      command,
+      command: normalizedCommand,
       ...(args ? { args } : {}),
       ...(resumeArgs ? { resumeArgs } : {}),
       ...(env ? { env } : {}),

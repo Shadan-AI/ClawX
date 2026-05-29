@@ -8,8 +8,10 @@
 import { readOpenClawConfig, writeOpenClawConfig } from './channel-config';
 import { logger } from './logger';
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { getOpenClawResolvedDir } from './paths';
 
 /**
  * Update IDENTITY.md for a bot with its nickName.
@@ -169,6 +171,17 @@ const DEFAULT_API_URL = 'https://im.shadanai.com/api';
 const DEFAULT_ONEAPI_BASE_URL = 'https://one-api.shadanai.com';
 const SAFE_FALLBACK_MODEL_ID = 'glm-5';
 
+function isBundledOpenClawExtension(pluginId: string): boolean {
+  try {
+    const manifestPath = join(getOpenClawResolvedDir(), 'dist', 'extensions', pluginId, 'openclaw.plugin.json');
+    if (!existsSync(manifestPath)) return false;
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) as { id?: unknown };
+    return typeof manifest.id === 'string' && manifest.id.trim() === pluginId;
+  } catch {
+    return false;
+  }
+}
+
 // ── Types ────────────────────────────────────────────────────────
 
 export interface BotInfo {
@@ -224,6 +237,226 @@ function resolveSupportedModelId(rawModel: string | undefined, availableModelIds
     : [...availableModelIds][0];
   logger.warn(`[box-im] Bot model "${modelId}" is not available in OneAPI; using "${fallback}" instead`);
   return fallback;
+}
+
+function normalizeModelId(rawModel: string | undefined): string | undefined {
+  const modelId = rawModel?.trim();
+  if (!modelId) return undefined;
+  const slashIndex = modelId.indexOf('/');
+  return slashIndex > 0 ? modelId.slice(slashIndex + 1).trim() || undefined : modelId;
+}
+
+function getModelTokens(modelId: string): string[] {
+  return modelId.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+}
+
+function sharedTokenPrefixLength(a: string, b: string): number {
+  const left = getModelTokens(a);
+  const right = getModelTokens(b);
+  let count = 0;
+  while (count < left.length && count < right.length && left[count] === right[count]) {
+    count += 1;
+  }
+  return count;
+}
+
+function resolveLikelyProviderForModel(
+  modelId: string,
+  configuredProviderModels: Map<string, Set<string>>,
+): string | undefined {
+  let bestProvider: string | undefined;
+  let bestScore = 0;
+  let tied = false;
+
+  for (const [providerId, modelIds] of configuredProviderModels) {
+    if (providerId === 'shadan') continue;
+    for (const configuredModelId of modelIds) {
+      const score = sharedTokenPrefixLength(modelId, configuredModelId);
+      if (score < 2) continue;
+      if (score > bestScore) {
+        bestProvider = providerId;
+        bestScore = score;
+        tied = false;
+      } else if (score === bestScore && providerId !== bestProvider) {
+        tied = true;
+      }
+    }
+  }
+
+  return bestProvider && !tied ? bestProvider : undefined;
+}
+
+function getConfiguredProviderModelIds(cfg: unknown): Map<string, Set<string>> {
+  const result = new Map<string, Set<string>>();
+  const models = (cfg as { models?: unknown } | undefined)?.models;
+  const providers = models && typeof models === 'object' && !Array.isArray(models)
+    ? (models as { providers?: unknown }).providers
+    : undefined;
+  if (!providers || typeof providers !== 'object' || Array.isArray(providers)) {
+    return result;
+  }
+
+  for (const [providerId, providerConfig] of Object.entries(providers)) {
+    if (!providerConfig || typeof providerConfig !== 'object' || Array.isArray(providerConfig)) continue;
+    const rawModels = (providerConfig as { models?: unknown }).models;
+    if (!Array.isArray(rawModels)) continue;
+    const modelIds = rawModels
+      .map((model) => {
+        if (typeof model === 'string') return model.trim();
+        if (model && typeof model === 'object' && typeof (model as { id?: unknown }).id === 'string') {
+          return ((model as { id: string }).id).trim();
+        }
+        return '';
+      })
+      .filter(Boolean);
+    if (modelIds.length > 0) {
+      result.set(providerId, new Set(modelIds));
+    }
+  }
+
+  return result;
+}
+
+function resolveConfiguredProviderModelRef(
+  rawModel: string | undefined,
+  configuredProviderModels: Map<string, Set<string>>,
+): string | undefined {
+  const trimmed = rawModel?.trim();
+  if (!trimmed) return undefined;
+  const modelId = normalizeModelId(trimmed);
+  if (!modelId) return undefined;
+  if (trimmed.includes('/') && !trimmed.startsWith('shadan/')) return trimmed;
+
+  for (const [providerId, modelIds] of configuredProviderModels) {
+    if (providerId === 'shadan') continue;
+    if (modelIds.has(modelId)) {
+      return `${providerId}/${modelId}`;
+    }
+  }
+
+  const likelyProviderId = resolveLikelyProviderForModel(modelId, configuredProviderModels);
+  if (likelyProviderId) {
+    return `${likelyProviderId}/${modelId}`;
+  }
+
+  if (trimmed.startsWith('shadan/') && configuredProviderModels.get('shadan')?.has(modelId)) {
+    return `shadan/${modelId}`;
+  }
+
+  return undefined;
+}
+
+function resolveBoxImModelRef(
+  rawModel: string | undefined,
+  availableModelIds: Set<string> | null,
+  configuredProviderModels: Map<string, Set<string>>,
+): string {
+  const configuredRef = resolveConfiguredProviderModelRef(rawModel, configuredProviderModels);
+  if (configuredRef) return configuredRef;
+
+  const supportedModelId = resolveSupportedModelId(rawModel, availableModelIds);
+  return supportedModelId ? `shadan/${supportedModelId}` : '';
+}
+
+function splitModelRef(modelRef: string): { providerId: string; modelId: string } | undefined {
+  const slashIndex = modelRef.indexOf('/');
+  if (slashIndex <= 0 || slashIndex >= modelRef.length - 1) return undefined;
+  return {
+    providerId: modelRef.slice(0, slashIndex),
+    modelId: modelRef.slice(slashIndex + 1),
+  };
+}
+
+function addProviderModelToConfig(
+  cfg: Record<string, unknown>,
+  providerId: string,
+  modelId: string,
+  configuredProviderModels: Map<string, Set<string>>,
+): boolean {
+  if (!providerId || providerId === 'shadan' || !modelId) return false;
+  const models = cfg.models && typeof cfg.models === 'object' && !Array.isArray(cfg.models)
+    ? cfg.models as Record<string, unknown>
+    : undefined;
+  const providers = models?.providers && typeof models.providers === 'object' && !Array.isArray(models.providers)
+    ? models.providers as Record<string, unknown>
+    : undefined;
+  const provider = providers?.[providerId] && typeof providers[providerId] === 'object' && !Array.isArray(providers[providerId])
+    ? providers[providerId] as Record<string, unknown>
+    : undefined;
+  if (!provider) return false;
+
+  const rawModels = Array.isArray(provider.models) ? provider.models as unknown[] : [];
+  const existing = new Set(rawModels.map((item) => {
+    if (typeof item === 'string') return item.trim();
+    if (item && typeof item === 'object' && typeof (item as { id?: unknown }).id === 'string') {
+      return ((item as { id: string }).id).trim();
+    }
+    return '';
+  }).filter(Boolean));
+  if (existing.has(modelId)) return false;
+
+  provider.models = [...rawModels, { id: modelId, name: modelId }];
+  let indexed = configuredProviderModels.get(providerId);
+  if (!indexed) {
+    indexed = new Set<string>();
+    configuredProviderModels.set(providerId, indexed);
+  }
+  indexed.add(modelId);
+  logger.info(`[box-im] Added inferred model "${modelId}" to provider "${providerId}"`);
+  return true;
+}
+
+function addConfiguredModelsForAccounts(
+  cfg: Record<string, unknown>,
+  accounts: Record<string, BoxImAccount>,
+  configuredProviderModels: Map<string, Set<string>>,
+): boolean {
+  let modified = false;
+  for (const account of Object.values(accounts)) {
+    if (typeof account.model !== 'string') continue;
+    const parts = splitModelRef(account.model);
+    if (!parts) continue;
+    modified = addProviderModelToConfig(cfg, parts.providerId, parts.modelId, configuredProviderModels) || modified;
+  }
+  return modified;
+}
+
+function repairBoxImAccountModelRefsInConfig(
+  cfg: Record<string, unknown>,
+  configuredProviderModels: Map<string, Set<string>>,
+): boolean {
+  const channels = cfg.channels;
+  if (!channels || typeof channels !== 'object' || Array.isArray(channels)) return false;
+  const boxIm = (channels as Record<string, unknown>)[CHANNEL_ID];
+  if (!boxIm || typeof boxIm !== 'object' || Array.isArray(boxIm)) return false;
+  const accounts = (boxIm as { accounts?: unknown }).accounts;
+  if (!accounts || typeof accounts !== 'object' || Array.isArray(accounts)) return false;
+
+  const agents = cfg.agents && typeof cfg.agents === 'object' && !Array.isArray(cfg.agents)
+    ? cfg.agents as { list?: unknown }
+    : undefined;
+  const agentList = Array.isArray(agents?.list) ? agents.list as Array<Record<string, unknown>> : [];
+  let modified = false;
+
+  for (const [agentId, account] of Object.entries(accounts as Record<string, unknown>)) {
+    if (!account || typeof account !== 'object' || Array.isArray(account)) continue;
+    const record = account as { model?: unknown };
+    const currentModel = typeof record.model === 'string' ? record.model.trim() : '';
+    if (!currentModel) continue;
+
+    const repaired = resolveConfiguredProviderModelRef(currentModel, configuredProviderModels);
+    if (!repaired || repaired === currentModel) continue;
+
+    record.model = repaired;
+    const agent = agentList.find((item) => item.id === agentId);
+    if (agent) {
+      agent.model = { primary: repaired };
+    }
+    modified = true;
+    logger.info(`[box-im] Repaired stored model for ${agentId}: ${currentModel} -> ${repaired}`);
+  }
+
+  return modified;
 }
 
 export interface ProfileFileInfo {
@@ -620,12 +853,12 @@ function buildAccountsFromBots(
   bots: BotInfo[],
   existing: Record<string, BoxImAccount>,
   availableModelIds: Set<string> | null = null,
+  configuredProviderModels: Map<string, Set<string>> = new Map(),
 ): Record<string, BoxImAccount> {
   const accounts: Record<string, BoxImAccount> = {};
   for (const bot of bots) {
     const agentId = bot.openclawAgentId || bot.userName || `bot-${bot.id}`;
-    const supportedModelId = resolveSupportedModelId(bot.model, availableModelIds);
-    const modelValue = supportedModelId ? `shadan/${supportedModelId}` : '';
+    const modelValue = resolveBoxImModelRef(bot.model, availableModelIds, configuredProviderModels);
     
     logger.debug(`[box-im-sync] Building account for ${agentId}: bot.model="${bot.model}", final model="${modelValue}"`);
     
@@ -722,15 +955,19 @@ function reconcileBindings(
 }
 
 export async function saveBoxImAccounts(accounts: Record<string, BoxImAccount>): Promise<void> {
-  const cfg = await readOpenClawConfig();
+  const cfg = await readOpenClawConfig() as Record<string, unknown> & OpenClawConfig;
+  const configuredProviderModels = getConfiguredProviderModelIds(cfg);
+  const providerModelsModified = addConfiguredModelsForAccounts(cfg, accounts, configuredProviderModels);
 
   const boxIm = (cfg.channels?.[CHANNEL_ID] ?? {}) as Record<string, unknown>;
   if (!cfg.channels) cfg.channels = {};
   cfg.channels[CHANNEL_ID] = { ...boxIm, accounts, enabled: true };
 
   if (!cfg.plugins) cfg.plugins = {};
-  const allow = Array.isArray(cfg.plugins.allow) ? cfg.plugins.allow as string[] : [];
-  if (!allow.includes(CHANNEL_ID)) cfg.plugins.allow = [...allow, CHANNEL_ID];
+  if (!isBundledOpenClawExtension(CHANNEL_ID)) {
+    const allow = Array.isArray(cfg.plugins.allow) ? cfg.plugins.allow as string[] : [];
+    if (!allow.includes(CHANNEL_ID)) cfg.plugins.allow = [...allow, CHANNEL_ID];
+  }
   if (!cfg.plugins.entries) cfg.plugins.entries = {};
   cfg.plugins.entries[CHANNEL_ID] = { enabled: true };
 
@@ -763,6 +1000,9 @@ export async function saveBoxImAccounts(accounts: Record<string, BoxImAccount>):
   }
 
   await writeOpenClawConfig(cfg);
+  if (providerModelsModified) {
+    logger.info('[box-im] Updated provider model registry for synced bot models');
+  }
   logger.info(`[box-im] Saved ${Object.keys(accounts).length} accounts, ${newList.length} agents`);
 }
 
@@ -778,9 +1018,11 @@ async function migrateAgentModels(): Promise<void> {
     const { tokenKey, apiUrl } = await getBoxImConfig();
     if (!tokenKey) return;
 
-    const cfg = await readOpenClawConfig();
+    const cfg = await readOpenClawConfig() as Record<string, unknown>;
     const agentsList = ((cfg as any).agents?.list ?? []) as AgentEntry[];
     const defaultModel = ((cfg as any).agents?.defaults?.model?.primary) as string | undefined;
+    const configuredProviderModels = getConfiguredProviderModelIds(cfg);
+    const repairedExistingModels = repairBoxImAccountModelRefsInConfig(cfg, configuredProviderModels);
     
     // 检查是否有 agent 缺少 model 配置
     const needsMigration = agentsList.some(agent => {
@@ -789,6 +1031,10 @@ async function migrateAgentModels(): Promise<void> {
     });
 
     if (!needsMigration) {
+      if (repairedExistingModels) {
+        await writeOpenClawConfig(cfg);
+        logger.info('[box-im] Repaired existing agent model configuration');
+      }
       logger.info('[box-im] All agents have model configured, skipping migration');
       return;
     }
@@ -809,7 +1055,7 @@ async function migrateAgentModels(): Promise<void> {
       const bot = botMap.get(agent.id);
       if (bot && bot.model && bot.model.length > 0) {
         // 数据库中有 model,使用数据库的值
-        const modelValue = `shadan/${bot.model}`;
+        const modelValue = resolveBoxImModelRef(bot.model, null, configuredProviderModels);
         agent.model = { primary: modelValue };
         updated = true;
         logger.info(`[box-im] Migrated model for ${agent.id}: ${modelValue} (from database)`);
@@ -823,7 +1069,7 @@ async function migrateAgentModels(): Promise<void> {
       }
     }
 
-    if (updated) {
+    if (updated || repairedExistingModels) {
       (cfg as any).agents = { ...((cfg as any).agents ?? {}), list: agentsList };
       await writeOpenClawConfig(cfg);
       logger.info('[box-im] Agent model migration completed');
@@ -891,7 +1137,9 @@ async function syncBotsInternal(): Promise<BoxImSyncResult> {
     const availableModelIds = await fetchAvailableOneApiModelIds(tokenKey);
     logger.info(`[box-im] Fetched ${bots.length} bots from API`);
     
-    const newAccounts = buildAccountsFromBots(bots, accounts, availableModelIds);
+    const cfg = await readOpenClawConfig() as Record<string, unknown>;
+    const configuredProviderModels = getConfiguredProviderModelIds(cfg);
+    const newAccounts = buildAccountsFromBots(bots, accounts, availableModelIds, configuredProviderModels);
     logger.debug(`[box-im] Built ${Object.keys(newAccounts).length} accounts: ${Object.keys(newAccounts).join(', ')}`);
 
     for (const [agentId, acct] of Object.entries(newAccounts)) {
