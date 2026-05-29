@@ -1,10 +1,10 @@
-import { access, copyFile, mkdir, readdir, rm } from 'fs/promises';
+import { access, copyFile, cp, mkdir, readdir, rm, writeFile } from 'fs/promises';
 import { constants, existsSync, readFileSync } from 'fs';
 import { delimiter, dirname, extname, isAbsolute, join, normalize, sep } from 'path';
 import { deleteAgentChannelAccounts, listConfiguredChannels, readOpenClawConfig, writeOpenClawConfig } from './channel-config';
 import type { OpenClawConfig } from './channel-config';
 import { withConfigLock } from './config-mutex';
-import { expandPath, getOpenClawConfigDir } from './paths';
+import { expandPath, getOpenClawConfigDir, getOpenClawDir } from './paths';
 import { getPort } from './config';
 import * as logger from './logger';
 import { toUiChannelType } from './channel-alias';
@@ -20,6 +20,7 @@ const CLAUDE_NATIVE_PROXY_PORT = getPort('CLAWX_NATIVE_CLAUDE_PROXY');
 const CLAUDE_NATIVE_HAIKU_ALIAS = 'claude-haiku-4-5';
 const CLAUDE_NATIVE_SONNET_ALIAS = 'claude-sonnet-4-6';
 const CLAUDE_NATIVE_OPUS_ALIAS = 'claude-opus-4-7';
+const CLAUDE_AGENT_SKILLS_PLUGIN_DIRNAME = 'clawx-agent-skills';
 const AGENT_BOOTSTRAP_FILES = [
   'AGENTS.md',
   'SOUL.md',
@@ -47,6 +48,11 @@ function getClaudeConfigDir(agentId: string | undefined): string | undefined {
   const normalizedAgentId = agentId?.trim();
   if (!normalizedAgentId) return undefined;
   return join(getOpenClawConfigDir(), 'agents', normalizedAgentId, 'claude-code');
+}
+
+function getClaudeAgentSkillsPluginDir(agentId: string | undefined): string | undefined {
+  const claudeConfigDir = getClaudeConfigDir(agentId);
+  return claudeConfigDir ? join(claudeConfigDir, 'plugins', CLAUDE_AGENT_SKILLS_PLUGIN_DIRNAME) : undefined;
 }
 
 function getClaudeProxyBaseUrl(upstreamModel: string): string {
@@ -125,6 +131,108 @@ function normalizeNativeCliProvider(provider: unknown, command: unknown): string
   if (commandName.includes('codex')) return 'codex';
   if (commandName.includes('claude')) return 'claude';
   return 'custom';
+}
+
+function normalizeSkillIds(skills: string[]): string[] {
+  return [...new Set(
+    skills
+      .map((skill) => skill.trim())
+      .filter((skill) => skill.length > 0 && !skill.includes('/') && !skill.includes('\\')),
+  )];
+}
+
+function getSkillSourceCandidates(skillId: string): string[] {
+  return [
+    join(getOpenClawConfigDir(), 'skills', skillId),
+    join(getOpenClawDir(), 'skills', skillId),
+  ];
+}
+
+function hasInstalledSelectedSkillSync(skills: string[]): boolean {
+  return normalizeSkillIds(skills).some((skillId) => (
+    getSkillSourceCandidates(skillId).some((dir) => fileExistsSyncSafe(join(dir, 'SKILL.md')))
+  ));
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path, constants.F_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function syncClaudeAgentSkillsPlugin(agentId: string, skills: string[]): Promise<void> {
+  const pluginDir = getClaudeAgentSkillsPluginDir(agentId);
+  if (!pluginDir) return;
+
+  const selectedSkills = normalizeSkillIds(skills);
+  if (selectedSkills.length === 0) {
+    await rm(pluginDir, { recursive: true, force: true });
+    return;
+  }
+
+  const sourceSkillDirs: Array<{ id: string; sourceDir: string }> = [];
+  for (const skillId of selectedSkills) {
+    const sourceDir = getSkillSourceCandidates(skillId)
+      .find((candidate) => existsSync(join(candidate, 'SKILL.md')));
+    if (sourceDir) {
+      sourceSkillDirs.push({ id: skillId, sourceDir });
+    } else {
+      logger.warn('Selected agent skill is not installed; skipping Claude sync', { agentId, skillId });
+    }
+  }
+
+  if (sourceSkillDirs.length === 0) {
+    await rm(pluginDir, { recursive: true, force: true });
+    return;
+  }
+
+  await rm(pluginDir, { recursive: true, force: true });
+  await mkdir(join(pluginDir, '.claude-plugin'), { recursive: true });
+  await mkdir(join(pluginDir, 'skills'), { recursive: true });
+  await writeFile(
+    join(pluginDir, '.claude-plugin', 'plugin.json'),
+    `${JSON.stringify({
+      name: CLAUDE_AGENT_SKILLS_PLUGIN_DIRNAME,
+      description: 'ClawX generated plugin that exposes the selected agent skill package to Claude Code.',
+      author: { name: 'ClawX' },
+    }, null, 2)}\n`,
+    'utf8',
+  );
+
+  for (const { id, sourceDir } of sourceSkillDirs) {
+    await cp(sourceDir, join(pluginDir, 'skills', id), { recursive: true, force: true });
+  }
+
+  logger.info('Synced Claude agent skills plugin', {
+    agentId,
+    skillCount: sourceSkillDirs.length,
+    skippedSkillCount: selectedSkills.length - sourceSkillDirs.length,
+  });
+}
+
+function stripClaudeAgentSkillsPluginArgs(args: string[], pluginDir: string | undefined): string[] {
+  if (!pluginDir) return args;
+  const normalizedPluginDir = normalize(pluginDir);
+  const next: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === '--plugin-dir') {
+      const value = args[index + 1];
+      if (value && normalize(value) === normalizedPluginDir) {
+        index += 1;
+        continue;
+      }
+    }
+    if (arg.startsWith('--plugin-dir=')) {
+      const value = arg.slice('--plugin-dir='.length);
+      if (normalize(value) === normalizedPluginDir) continue;
+    }
+    next.push(arg);
+  }
+  return next;
 }
 
 function stripOuterQuotes(value: string): string {
@@ -219,7 +327,7 @@ function normalizeNativeCliCommand(provider: string, command: string): string {
   return command;
 }
 
-function defaultNativeCliResumeArgs(provider: string, args: string[] | undefined): string[] | undefined {
+function defaultNativeCliResumeArgs(provider: string, args: string[] | undefined, pluginDir?: string): string[] | undefined {
   const existingArgs = args ?? [];
   if (provider === 'claude') {
     const extraArgs: string[] = [];
@@ -232,7 +340,7 @@ function defaultNativeCliResumeArgs(provider: string, args: string[] | undefined
       }
       extraArgs.push(arg);
     }
-    return normalizeClaudeResumeArgs(['--resume', '{sessionId}', ...extraArgs], undefined);
+    return normalizeClaudeResumeArgs(['--resume', '{sessionId}', ...extraArgs], undefined, pluginDir, pluginDir);
   }
   if (provider === 'codex') return ['--full-auto', 'resume', '{sessionId}', ...existingArgs];
   return undefined;
@@ -263,21 +371,45 @@ function stripClaudeManagedArgs(args: string[]): string[] {
   return next;
 }
 
-function setClaudeModelArg(args: string[], modelId: string | undefined): string[] {
+function setClaudeModelArg(
+  args: string[],
+  modelId: string | undefined,
+  pluginDir?: string,
+  managedPluginDir?: string,
+): string[] {
   const normalizedModelId = modelId?.trim();
-  if (!normalizedModelId) return args;
-  return ['--bare', '--dangerously-skip-permissions', '--model', normalizedModelId, ...stripClaudeManagedArgs(args)];
+  const nextArgs = managedPluginDir
+    ? stripClaudeAgentSkillsPluginArgs(stripClaudeManagedArgs(args), managedPluginDir)
+    : stripClaudeManagedArgs(args);
+  const pluginArgs = pluginDir ? ['--plugin-dir', pluginDir] : [];
+  if (!normalizedModelId) {
+    const baseArgs = managedPluginDir ? stripClaudeAgentSkillsPluginArgs(args, managedPluginDir) : args;
+    return [...baseArgs, ...pluginArgs];
+  }
+  return ['--bare', '--dangerously-skip-permissions', '--model', normalizedModelId, ...pluginArgs, ...nextArgs];
 }
 
-function normalizeClaudeArgs(args: string[] | undefined, modelId: string | undefined): string[] {
+function normalizeClaudeArgs(
+  args: string[] | undefined,
+  modelId: string | undefined,
+  pluginDir?: string,
+  managedPluginDir?: string,
+): string[] {
   const next = prependMissingArgs(args, ['--bare', '--dangerously-skip-permissions']);
-  return setClaudeModelArg(next, modelId);
+  return setClaudeModelArg(next, modelId, pluginDir, managedPluginDir);
 }
 
-function normalizeClaudeResumeArgs(resumeArgs: string[] | undefined, modelId: string | undefined): string[] {
+function normalizeClaudeResumeArgs(
+  resumeArgs: string[] | undefined,
+  modelId: string | undefined,
+  pluginDir?: string,
+  managedPluginDir?: string,
+): string[] {
   const next = setClaudeModelArg(
     prependMissingArgs(resumeArgs, ['--bare', '--dangerously-skip-permissions']),
     modelId,
+    pluginDir,
+    managedPluginDir,
   );
   if (!next.includes('--resume') && !next.includes('-r')) {
     next.push('--resume', '{sessionId}');
@@ -285,7 +417,10 @@ function normalizeClaudeResumeArgs(resumeArgs: string[] | undefined, modelId: st
   return next;
 }
 
-function normalizeAgentRuntime(runtime: Record<string, unknown>, options?: { agentId?: string }): Record<string, unknown> {
+function normalizeAgentRuntime(
+  runtime: Record<string, unknown>,
+  options?: { agentId?: string; skills?: string[] },
+): Record<string, unknown> {
   if (runtime.type !== 'native-cli') return runtime;
   const nativeCli = runtime.nativeCli;
   if (!nativeCli || typeof nativeCli !== 'object' || Array.isArray(nativeCli)) return runtime;
@@ -298,12 +433,16 @@ function normalizeAgentRuntime(runtime: Record<string, unknown>, options?: { age
   const normalizedCommand = normalizeNativeCliCommand(provider, command);
   const env = normalizeNativeCliEnv(provider, asStringRecord(nativeCliRecord.env), options);
   const modelId = provider === 'claude' ? env?.ANTHROPIC_MODEL : undefined;
+  const pluginDir = provider === 'claude' && hasInstalledSelectedSkillSync(options?.skills ?? [])
+    ? getClaudeAgentSkillsPluginDir(options?.agentId)
+    : undefined;
+  const managedPluginDir = provider === 'claude' ? getClaudeAgentSkillsPluginDir(options?.agentId) : undefined;
   const rawArgs = asStringArray(nativeCliRecord.args);
-  const args = provider === 'claude' ? normalizeClaudeArgs(rawArgs, modelId) : rawArgs;
+  const args = provider === 'claude' ? normalizeClaudeArgs(rawArgs, modelId, pluginDir, managedPluginDir) : rawArgs;
   const rawResumeArgs = asStringArray(nativeCliRecord.resumeArgs);
   const resumeArgs = provider === 'claude'
-    ? normalizeClaudeResumeArgs(rawResumeArgs ?? defaultNativeCliResumeArgs(provider, args), modelId)
-    : rawResumeArgs ?? defaultNativeCliResumeArgs(provider, args);
+    ? normalizeClaudeResumeArgs(rawResumeArgs ?? defaultNativeCliResumeArgs(provider, args, pluginDir), modelId, pluginDir, managedPluginDir)
+    : rawResumeArgs ?? defaultNativeCliResumeArgs(provider, args, pluginDir);
 
   return {
     ...runtime,
@@ -1287,7 +1426,14 @@ export async function updateAgentSkills(agentId: string, skills: string[]): Prom
       throw new Error(`Agent "${agentId}" not found`);
     }
 
-    const nextEntry: AgentListEntry = { ...entries[index], skills };
+    let nextEntry: AgentListEntry = { ...entries[index], skills };
+    const runtime = nextEntry.runtime;
+    if (runtime && typeof runtime === 'object' && !Array.isArray(runtime)) {
+      nextEntry = {
+        ...nextEntry,
+        runtime: normalizeAgentRuntime(runtime as Record<string, unknown>, { agentId, skills }),
+      };
+    }
     entries[index] = nextEntry;
     config.agents = {
       ...agentsConfig,
@@ -1295,6 +1441,13 @@ export async function updateAgentSkills(agentId: string, skills: string[]): Prom
     };
 
     await writeOpenClawConfig(config);
+    const normalizedRuntime = nextEntry.runtime;
+    if (normalizedRuntime && typeof normalizedRuntime === 'object' && !Array.isArray(normalizedRuntime)) {
+      const claudeConfigDir = getClaudeConfigDirForRuntime(agentId, normalizedRuntime as Record<string, unknown>);
+      if (claudeConfigDir) {
+        await syncClaudeAgentSkillsPlugin(agentId, skills);
+      }
+    }
     logger.info('Updated agent skills', { agentId, skillCount: skills.length });
     return buildSnapshotFromConfig(config);
   });
@@ -1309,7 +1462,7 @@ export async function updateAgentRuntime(agentId: string, runtime: Record<string
       throw new Error(`Agent "${agentId}" not found`);
     }
 
-    const normalizedRuntime = normalizeAgentRuntime(runtime, { agentId });
+    const normalizedRuntime = normalizeAgentRuntime(runtime, { agentId, skills: asStringArray(entries[index].skills) ?? [] });
     const claudeConfigDir = getClaudeConfigDirForRuntime(agentId, normalizedRuntime);
     if (claudeConfigDir) {
       await ensureDir(claudeConfigDir);
@@ -1322,6 +1475,9 @@ export async function updateAgentRuntime(agentId: string, runtime: Record<string
     };
 
     await writeOpenClawConfig(config);
+    if (claudeConfigDir) {
+      await syncClaudeAgentSkillsPlugin(agentId, asStringArray(nextEntry.skills) ?? []);
+    }
     const runtimeType = typeof normalizedRuntime.type === 'string' ? normalizedRuntime.type : undefined;
     logger.info('Updated agent runtime', { agentId, runtimeType });
     return buildSnapshotFromConfig(config);
@@ -1336,7 +1492,10 @@ export async function ensureNativeCliRuntimeResumeArgs(): Promise<boolean> {
     const nextEntries = entries.map((entry) => {
       const runtime = entry.runtime;
       if (!runtime || typeof runtime !== 'object' || Array.isArray(runtime)) return entry;
-      const normalizedRuntime = normalizeAgentRuntime(runtime as Record<string, unknown>, { agentId: entry.id });
+      const normalizedRuntime = normalizeAgentRuntime(
+        runtime as Record<string, unknown>,
+        { agentId: entry.id, skills: asStringArray(entry.skills) ?? [] },
+      );
       if (normalizedRuntime === runtime) return entry;
       const before = JSON.stringify(runtime);
       const after = JSON.stringify(normalizedRuntime);
@@ -1351,6 +1510,7 @@ export async function ensureNativeCliRuntimeResumeArgs(): Promise<boolean> {
       const claudeConfigDir = getClaudeConfigDirForRuntime(entry.id, runtime as Record<string, unknown>);
       if (claudeConfigDir) {
         await ensureDir(claudeConfigDir);
+        await syncClaudeAgentSkillsPlugin(entry.id, asStringArray(entry.skills) ?? []);
       }
     }
     if (!changed) return false;

@@ -577,6 +577,171 @@ describe('agent config lifecycle', () => {
     await expect(access(join(testHome, '.openclaw', 'agents', 'legacy', 'claude-code'))).resolves.toBeUndefined();
   });
 
+  it('syncs selected OpenClaw skills into a Claude native cli plugin', async () => {
+    const skillDir = join(testHome, '.openclaw', 'skills', 'apple-notes');
+    await mkdir(skillDir, { recursive: true });
+    await writeFile(join(skillDir, 'SKILL.md'), '---\nname: apple-notes\n---\nUse Apple Notes.\n', 'utf8');
+    await writeOpenClawJson({
+      agents: {
+        list: [
+          {
+            id: 'claude-agent',
+            name: 'Claude Agent',
+            runtime: {
+              type: 'native-cli',
+              nativeCli: {
+                provider: 'claude',
+                command: 'claude',
+                args: [
+                  '--bare',
+                  '--plugin-dir',
+                  join(testHome, '.openclaw', 'agents', 'claude-agent', 'claude-code', 'plugins', 'clawx-agent-skills'),
+                ],
+                env: {
+                  ANTHROPIC_API_KEY: 'test-key',
+                  ANTHROPIC_MODEL: 'deepseek-v4-flash',
+                },
+              },
+            },
+          },
+        ],
+      },
+    });
+
+    const { updateAgentSkills } = await import('@electron/utils/agent-config');
+
+    await updateAgentSkills('claude-agent', ['apple-notes', 'missing-skill']);
+
+    const config = await readOpenClawJson();
+    const agent = ((config.agents as { list: Array<{ id: string; runtime?: { nativeCli?: { args?: string[]; resumeArgs?: string[] } } }> }).list)
+      .find((item) => item.id === 'claude-agent');
+    const pluginDir = join(testHome, '.openclaw', 'agents', 'claude-agent', 'claude-code', 'plugins', 'clawx-agent-skills');
+    expect(agent?.runtime?.nativeCli?.args).toContain('--plugin-dir');
+    expect(agent?.runtime?.nativeCli?.args).toContain(pluginDir);
+    expect(agent?.runtime?.nativeCli?.resumeArgs).toContain('--plugin-dir');
+    expect(agent?.runtime?.nativeCli?.resumeArgs).toContain(pluginDir);
+    await expect(readFile(join(pluginDir, '.claude-plugin', 'plugin.json'), 'utf8')).resolves.toContain('clawx-agent-skills');
+    await expect(readFile(join(pluginDir, 'skills', 'apple-notes', 'SKILL.md'), 'utf8')).resolves.toContain('Use Apple Notes.');
+    await expect(access(join(pluginDir, 'skills', 'missing-skill', 'SKILL.md'))).rejects.toBeTruthy();
+  });
+
+  it('refreshes Claude native cli plugin when selected skills change', async () => {
+    for (const skillId of ['apple-notes', 'bear-notes']) {
+      const skillDir = join(testHome, '.openclaw', 'skills', skillId);
+      await mkdir(skillDir, { recursive: true });
+      await writeFile(join(skillDir, 'SKILL.md'), `---\nname: ${skillId}\n---\n${skillId}\n`, 'utf8');
+    }
+    await writeOpenClawJson({
+      agents: {
+        list: [
+          {
+            id: 'claude-agent',
+            name: 'Claude Agent',
+            skills: ['apple-notes'],
+            runtime: {
+              type: 'native-cli',
+              nativeCli: {
+                provider: 'claude',
+                command: 'claude',
+                args: [
+                  '--bare',
+                  '--plugin-dir',
+                  join(testHome, '.openclaw', 'agents', 'claude-agent', 'claude-code', 'plugins', 'clawx-agent-skills'),
+                ],
+                env: {
+                  ANTHROPIC_API_KEY: 'test-key',
+                  ANTHROPIC_MODEL: 'deepseek-v4-flash',
+                },
+              },
+            },
+          },
+        ],
+      },
+    });
+
+    const { updateAgentSkills } = await import('@electron/utils/agent-config');
+
+    await updateAgentSkills('claude-agent', ['bear-notes']);
+
+    const config = await readOpenClawJson();
+    const agent = ((config.agents as { list: Array<{ id: string; runtime?: { nativeCli?: { args?: string[] } } }> }).list)
+      .find((item) => item.id === 'claude-agent');
+    const pluginDir = join(testHome, '.openclaw', 'agents', 'claude-agent', 'claude-code', 'plugins', 'clawx-agent-skills');
+    expect(agent?.runtime?.nativeCli?.args?.filter((arg) => arg === '--plugin-dir')).toHaveLength(1);
+    await expect(access(join(pluginDir, 'skills', 'apple-notes', 'SKILL.md'))).rejects.toBeTruthy();
+    await expect(readFile(join(pluginDir, 'skills', 'bear-notes', 'SKILL.md'), 'utf8')).resolves.toContain('bear-notes');
+  });
+
+  it('syncs selected bundled OpenClaw skills when they are not user-installed', async () => {
+    const bundledSkillDir = join(testHome, '.openclaw-package', 'skills', 'apple-notes');
+    await mkdir(bundledSkillDir, { recursive: true });
+    await writeFile(join(bundledSkillDir, 'SKILL.md'), '---\nname: apple-notes\n---\nBundled Apple Notes.\n', 'utf8');
+    process.env.CLAWX_OPENCLAW_DIR = join(testHome, '.openclaw-package');
+    await writeOpenClawJson({
+      agents: {
+        list: [
+          {
+            id: 'claude-agent',
+            name: 'Claude Agent',
+            skills: ['apple-notes'],
+            runtime: {
+              type: 'native-cli',
+              nativeCli: {
+                provider: 'claude',
+                command: 'claude',
+                env: {
+                  ANTHROPIC_API_KEY: 'test-key',
+                  ANTHROPIC_MODEL: 'deepseek-v4-flash',
+                },
+              },
+            },
+          },
+        ],
+      },
+    });
+
+    const { ensureNativeCliRuntimeResumeArgs } = await import('@electron/utils/agent-config');
+
+    await expect(ensureNativeCliRuntimeResumeArgs()).resolves.toBe(true);
+
+    const pluginDir = join(testHome, '.openclaw', 'agents', 'claude-agent', 'claude-code', 'plugins', 'clawx-agent-skills');
+    await expect(readFile(join(pluginDir, 'skills', 'apple-notes', 'SKILL.md'), 'utf8')).resolves.toContain('Bundled Apple Notes.');
+  });
+
+  it('does not attach a Claude skills plugin when selected skills are not installed', async () => {
+    await writeOpenClawJson({
+      agents: {
+        list: [
+          {
+            id: 'claude-agent',
+            name: 'Claude Agent',
+            runtime: {
+              type: 'native-cli',
+              nativeCli: {
+                provider: 'claude',
+                command: 'claude',
+                env: {
+                  ANTHROPIC_API_KEY: 'test-key',
+                  ANTHROPIC_MODEL: 'deepseek-v4-flash',
+                },
+              },
+            },
+          },
+        ],
+      },
+    });
+
+    const { updateAgentSkills } = await import('@electron/utils/agent-config');
+
+    await updateAgentSkills('claude-agent', ['missing-skill']);
+
+    const config = await readOpenClawJson();
+    const agent = ((config.agents as { list: Array<{ id: string; runtime?: { nativeCli?: { args?: string[] } } }> }).list)
+      .find((item) => item.id === 'claude-agent');
+    expect(agent?.runtime?.nativeCli?.args).not.toContain('--plugin-dir');
+    await expect(access(join(testHome, '.openclaw', 'agents', 'claude-agent', 'claude-code', 'plugins', 'clawx-agent-skills'))).rejects.toBeTruthy();
+  });
+
   it('repairs Windows Claude native cli command from npm shim to executable', async () => {
     const originalPlatform = process.platform;
     const originalPath = process.env.PATH;

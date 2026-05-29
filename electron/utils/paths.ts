@@ -114,6 +114,11 @@ export function getPreloadPath(): string {
  * - Development: use local openme/openme directory
  */
 export function getOpenClawDir(): string {
+  const overrideDir = process.env.CLAWX_OPENCLAW_DIR?.trim();
+  if (overrideDir) {
+    return overrideDir;
+  }
+
   if (getElectronApp().isPackaged) {
     return join(process.resourcesPath, 'openclaw');
   }
