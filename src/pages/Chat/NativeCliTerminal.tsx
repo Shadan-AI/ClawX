@@ -850,13 +850,13 @@ function claudeLiveSnapshotToMessage(snapshot: NativeClaudeLiveSnapshot): RawMes
   };
 }
 
-function claudeTerminalStatusToMessage(turnId: string, status: string): RawMessage {
+function claudeTerminalLoadingMessage(turnId: string): RawMessage {
   return {
     id: `live-${turnId}`,
     role: 'assistant',
-    content: status === CLAUDE_TERMINAL_LOADING_SENTINEL ? '' : [{ type: 'text', text: status }],
+    content: '',
     timestamp: Date.now(),
-    details: status === CLAUDE_TERMINAL_LOADING_SENTINEL ? { terminalLoading: true } : undefined,
+    details: { terminalLoading: true },
   };
 }
 
@@ -1758,20 +1758,19 @@ export function NativeCliTerminal({
       const currentLiveText = currentLiveMessage ? extractText(currentLiveMessage).trim() : '';
       const currentLiveThinking = currentLiveMessage ? extractThinking(currentLiveMessage)?.trim() ?? '' : '';
       if (!currentLiveText && !currentLiveThinking) {
-        const displayStatus = status || CLAUDE_TERMINAL_LOADING_SENTINEL;
-        const signature = `${activeTurnId}:${displayStatus}`;
+        const signature = `${activeTurnId}:${CLAUDE_TERMINAL_LOADING_SENTINEL}`;
         if (signature !== terminalStatusSignatureRef.current) {
           terminalStatusSignatureRef.current = signature;
           console.debug('[native-cli-terminal] terminal status applied', {
             agentId,
             sessionKey,
             turnId: activeTurnId,
-            status: messageDiagnostic(displayStatus),
+            status: messageDiagnostic(status),
             preview: status.slice(0, 160),
             loading: !status,
             raw: dataDiagnostic(visibleRaw),
           });
-          const statusMessage = claudeTerminalStatusToMessage(activeTurnId, displayStatus);
+          const statusMessage = claudeTerminalLoadingMessage(activeTurnId);
           liveAssistantMessageRef.current = statusMessage;
           setLiveAssistantMessage(statusMessage);
         }
