@@ -16,6 +16,7 @@ import type { AgentTemplate } from '@/types/agent';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import { buildSkillTrialNavigationState } from '@/lib/skill-trial';
+import { emitNativeCliAgentSkillsChanged } from '@/lib/native-cli-events';
 
 /**
  * Skills Configuration View
@@ -776,18 +777,24 @@ Additional context about the user's needs and expectations.
       
       toast.success(successMsg, { id: savingToast, duration: 4000 });
       
-      // 重启 Gateway 以应用技能配置
-      toast.loading('🔄 正在重启 Gateway 以应用配置...', { id: 'restart-gateway' });
-      try {
-        const { useGatewayStore } = await import('@/stores/gateway');
-        await useGatewayStore.getState().restart();
-        toast.success('✅ Gateway 已重启,技能配置已生效', { id: 'restart-gateway', duration: 3000 });
-      } catch (restartErr) {
-        console.error('[SkillsConfigurationView] Failed to restart Gateway:', restartErr);
-        toast.warning('⚠️ 技能已保存,但 Gateway 重启失败。请手动重启以应用配置', { id: 'restart-gateway', duration: 5000 });
+      const isNativeCliAgent = selectedEmployee?.runtime?.type === 'native-cli';
+      if (isNativeCliAgent) {
+        emitNativeCliAgentSkillsChanged({
+          agentId: selectedEmployeeId,
+          skillCount,
+          changedAt: Date.now(),
+        });
+        toast.info('Claude 技能配置已保存；正在刷新 Claude 会话以加载最新技能。', { duration: 3000 });
       }
-      
-      onRefresh();
+
+      if (isNativeCliAgent) {
+        console.info('[SkillsConfigurationView] Skipping full agent refresh after native-cli skill save', {
+          agentId: selectedEmployeeId,
+          skillCount,
+        });
+      } else {
+        onRefresh();
+      }
     } catch (err) {
       const errorMsg = String(err);
       let friendlyMsg = '保存失败';

@@ -35,6 +35,18 @@ function stripOneMMarker(model: string): string {
   return model.trim().replace(/\s*\[1m\]\s*$/i, '');
 }
 
+function bodyDiagnostic(rawBody: Buffer) {
+  let hash = 2166136261;
+  for (const byte of rawBody) {
+    hash ^= byte;
+    hash = Math.imul(hash, 16777619);
+  }
+  return {
+    bytes: rawBody.length,
+    hash: (hash >>> 0).toString(16).padStart(8, '0'),
+  };
+}
+
 function extractUpstreamModel(pathname: string): string | null {
   const match = pathname.match(/^\/native-claude\/([^/]+)(?:\/|$)/);
   if (!match) return null;
@@ -89,14 +101,30 @@ async function forwardToOneApi(
   path: string,
   upstreamModel: string,
 ): Promise<void> {
+  const startedAt = Date.now();
   const rawBody = await readRequestBody(req);
   const body = path === '/messages' || path === '/messages/count_tokens'
     ? rewriteMessagesBody(rawBody, upstreamModel)
     : rawBody;
+  const requestDiagnostic = bodyDiagnostic(body);
+  logger.info('[native-claude-proxy] forwarding request', {
+    method: req.method,
+    path,
+    upstreamModel,
+    body: requestDiagnostic,
+  });
   const response = await fetch(`${ONEAPI_BASE_URL}${path}`, {
     method: req.method,
     headers: buildForwardHeaders(req),
     body: req.method === 'GET' || req.method === 'HEAD' ? undefined : body,
+  });
+  logger.info('[native-claude-proxy] upstream response', {
+    method: req.method,
+    path,
+    upstreamModel,
+    status: response.status,
+    elapsedMs: Date.now() - startedAt,
+    body: requestDiagnostic,
   });
 
   res.statusCode = response.status;

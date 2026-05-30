@@ -43,7 +43,7 @@ export interface FileAttachment {
 }
 
 interface ChatInputProps {
-  onSend: (text: string, attachments?: FileAttachment[], targetAgentId?: string | null) => void;
+  onSend: (text: string, attachments?: FileAttachment[], targetAgentId?: string | null) => void | boolean | Promise<void | boolean>;
   onModelChange?: (modelId: string) => void | Promise<void>;
   onStop?: () => void;
   disabled?: boolean;
@@ -60,6 +60,18 @@ function modelIdFromRef(modelValue: string | null | undefined): string | null {
   const trimmed = (modelValue || '').trim();
   if (!trimmed) return null;
   return trimmed.startsWith('shadan/') ? trimmed.slice('shadan/'.length) : trimmed;
+}
+
+function messageDiagnostic(text: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return {
+    length: text.length,
+    hash: (hash >>> 0).toString(16).padStart(8, '0'),
+  };
 }
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -749,23 +761,66 @@ export function ChatInput({ onSend, onModelChange, onStop, disabled = false, sen
     }
     
     const attachmentsToSend = readyAttachments.length > 0 ? readyAttachments : undefined;
-    console.log(`[handleSend] text="${textToSend.substring(0, 50)}", attachments=${attachments.length}, ready=${readyAttachments.length}, sending=${!!attachmentsToSend}`);
+    const diagnostic = messageDiagnostic(textToSend);
+    console.info('[chat-input] send requested', {
+      message: diagnostic,
+      attachments: attachments.length,
+      readyAttachments: readyAttachments.length,
+      hasAttachmentsToSend: Boolean(attachmentsToSend),
+      disabled,
+      sending,
+      targetAgentId,
+      activeSkillSlug: activeSkill?.slug ?? null,
+    });
     if (attachmentsToSend) {
       console.log('[handleSend] Attachment details:', attachmentsToSend.map(a => ({
         id: a.id, fileName: a.fileName, mimeType: a.mimeType, fileSize: a.fileSize,
         stagedPath: a.stagedPath, status: a.status, hasPreview: !!a.preview,
       })));
     }
+    const sendResult = onSend(textToSend, attachmentsToSend, targetAgentId);
+    if (sendResult === false) {
+      console.warn('[chat-input] send rejected before clear', {
+        message: diagnostic,
+        targetAgentId,
+        activeSkillSlug: activeSkill?.slug ?? null,
+      });
+      return;
+    }
+
+    if (sendResult && typeof (sendResult as Promise<void | boolean>).then === 'function') {
+      void (sendResult as Promise<void | boolean>)
+        .then((result) => {
+          if (result === false) {
+            console.warn('[chat-input] async send reported rejection after optimistic clear', {
+              message: diagnostic,
+              targetAgentId,
+              activeSkillSlug: activeSkill?.slug ?? null,
+            });
+          }
+        })
+        .catch((error) => {
+          console.warn('[chat-input] async send failed after optimistic clear', {
+            message: diagnostic,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+    }
+
     setInput('');
     setAttachments([]);
     setActiveSkill(null); // 发送后清除技能选择
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
-    onSend(textToSend, attachmentsToSend, targetAgentId);
     setTargetAgentId(null);
     setPickerOpen(false);
-  }, [input, attachments, canSend, onSend, targetAgentId, activeSkill]);
+    console.info('[chat-input] send accepted and input cleared', {
+      message: diagnostic,
+      targetAgentId,
+      activeSkillSlug: activeSkill?.slug ?? null,
+    });
+  }, [input, attachments, canSend, onSend, targetAgentId, activeSkill, disabled, sending]);
 
   const handleStop = useCallback(() => {
     if (!canStop) return;

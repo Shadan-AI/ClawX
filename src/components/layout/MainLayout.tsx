@@ -2,16 +2,25 @@
  * Main Layout Component
  * TitleBar at top, then sidebar + resize handle + content below.
  */
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useLocation, useOutlet } from 'react-router-dom';
 import { Sidebar } from './Sidebar';
 import { TitleBar } from './TitleBar';
+import { Chat } from '@/pages/Chat';
 import { useSettingsStore } from '@/stores/settings';
 import { cn } from '@/lib/utils';
 
 export function MainLayout() {
   const location = useLocation();
   const outlet = useOutlet();
+  const isChatRoute = location.pathname === '/';
+  const [hasMountedChat, setHasMountedChat] = useState(isChatRoute);
+
+  useEffect(() => {
+    if (isChatRoute) {
+      setHasMountedChat(true);
+    }
+  }, [isChatRoute]);
 
   return (
     <div data-testid="main-layout" className="flex h-screen flex-col overflow-hidden bg-background">
@@ -20,12 +29,24 @@ export function MainLayout() {
         <Sidebar />
         <ResizeHandle />
         <main data-testid="main-content" className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
-          <div
-            key={location.pathname}
-            className={location.pathname === '/' ? 'h-full min-h-0 overflow-hidden' : 'h-full min-h-0 overflow-auto p-6'}
-          >
-            {outlet}
-          </div>
+          {hasMountedChat ? (
+            <div
+              className={cn(
+                'absolute inset-0 h-full min-h-0 overflow-hidden',
+                isChatRoute ? 'block' : 'hidden',
+              )}
+            >
+              <Chat />
+            </div>
+          ) : null}
+          {!isChatRoute ? (
+            <div
+              key={location.pathname}
+              className="h-full min-h-0 overflow-auto p-6"
+            >
+              {outlet}
+            </div>
+          ) : null}
         </main>
       </div>
     </div>

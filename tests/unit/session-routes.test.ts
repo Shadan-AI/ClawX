@@ -180,4 +180,68 @@ describe('handleSessionRoutes', () => {
       }),
     );
   });
+
+  it('resolves the latest Claude transcript for native-cli skill reloads', async () => {
+    const claudeConfigDir = join(testOpenClawConfigDir, 'agents', 'coder', 'claude-code');
+    const workspace = join(testOpenClawConfigDir, 'workspace-coder');
+    const projectDirName = workspace.replace(/[^A-Za-z0-9_-]/g, '-');
+    const projectDir = join(claudeConfigDir, 'projects', projectDirName);
+    mkdirSync(projectDir, { recursive: true });
+    const olderTranscript = join(projectDir, 'older-session.jsonl');
+    const latestTranscript = join(projectDir, 'latest-session.jsonl');
+    writeFileSync(olderTranscript, JSON.stringify({ type: 'summary', sessionId: 'older-session' }), 'utf8');
+    writeFileSync(latestTranscript, [
+      JSON.stringify({ type: 'summary', sessionId: 'latest-session' }),
+      JSON.stringify({ type: 'message', sessionId: 'latest-session', message: { role: 'assistant', content: 'ready' } }),
+    ].join('\n'), 'utf8');
+    const now = new Date();
+    const earlier = new Date(now.getTime() - 10_000);
+    await import('node:fs/promises').then((fsP) => Promise.all([
+      fsP.utimes(olderTranscript, earlier, earlier),
+      fsP.utimes(latestTranscript, now, now),
+    ]));
+    parseJsonBodyMock.mockResolvedValueOnce({
+      sessionKey: 'agent:coder:cli:runtime-session',
+      provider: 'claude',
+      latest: true,
+    });
+    readOpenClawConfigMock.mockResolvedValueOnce({
+      agents: {
+        list: [
+          {
+            id: 'coder',
+            workspace,
+            runtime: {
+              type: 'native-cli',
+              nativeCli: {
+                provider: 'claude',
+                command: 'claude',
+                env: { CLAUDE_CONFIG_DIR: claudeConfigDir },
+              },
+            },
+          },
+        ],
+      },
+    });
+
+    const { handleSessionRoutes } = await import('@electron/api/routes/sessions');
+
+    await handleSessionRoutes(
+      { method: 'POST' } as IncomingMessage,
+      {} as ServerResponse,
+      new URL('http://127.0.0.1:13210/api/runtime/sessions/native-cli/resolve'),
+      {} as never,
+    );
+
+    expect(sendJsonMock).toHaveBeenCalledWith(
+      expect.anything(),
+      200,
+      expect.objectContaining({
+        success: true,
+        resolved: true,
+        sessionId: 'latest-session',
+        sessionFile: latestTranscript,
+      }),
+    );
+  });
 });

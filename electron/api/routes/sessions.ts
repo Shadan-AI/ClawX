@@ -319,6 +319,19 @@ function extractSessionIdFromJsonlTail(raw: string, fallbackSessionId: string, u
   return null;
 }
 
+function extractLatestSessionIdFromJsonlTail(raw: string, fallbackSessionId: string): string | null {
+  const lines = raw.split(/\r?\n/).filter(Boolean).reverse();
+  for (const line of lines) {
+    try {
+      const entry = JSON.parse(line) as Record<string, unknown>;
+      return coerceNonEmptyString(entry.sessionId) ?? fallbackSessionId;
+    } catch {
+      // Ignore malformed/incomplete tail lines while the CLI is still writing.
+    }
+  }
+  return fallbackSessionId || null;
+}
+
 async function listJsonlFiles(dir: string, recursive = false, depth = 0): Promise<Array<{ path: string; sessionId: string; mtimeMs: number }>> {
   const fsP = await import('node:fs/promises');
   let entries: Dirent[];
@@ -349,6 +362,7 @@ async function listJsonlFiles(dir: string, recursive = false, depth = 0): Promis
 async function resolveNativeCliRuntimeContext(agentId: string): Promise<{
   provider: string;
   cwd: string;
+  claudeConfigDir?: string;
 } | null> {
   const config = await readOpenClawConfig() as Record<string, unknown>;
   const agents = config.agents && typeof config.agents === 'object' ? config.agents as Record<string, unknown> : {};
@@ -365,14 +379,31 @@ async function resolveNativeCliRuntimeContext(agentId: string): Promise<{
   const cwd = coerceNonEmptyString(nativeCli.cwd)
     ?? coerceNonEmptyString(entry.workspace)
     ?? join(getOpenClawConfigDir(), `workspace-${agentId}`);
-  return { provider, cwd: expandPath(cwd) };
+  const env = nativeCli.env && typeof nativeCli.env === 'object' && !Array.isArray(nativeCli.env)
+    ? nativeCli.env as Record<string, unknown>
+    : {};
+  const claudeConfigDir = coerceNonEmptyString(env.CLAUDE_CONFIG_DIR)
+    ?? join(getOpenClawConfigDir(), 'agents', agentId, 'claude-code');
+  return { provider, cwd: expandPath(cwd), claudeConfigDir: expandPath(claudeConfigDir) };
+}
+
+function claudeSessionDirs(context: { cwd: string; claudeConfigDir?: string }): string[] {
+  const dirs = new Set<string>();
+  for (const dirName of claudeProjectDirNames(context.cwd)) {
+    dirs.add(join(homedir(), '.claude', 'projects', dirName));
+    if (context.claudeConfigDir) {
+      dirs.add(join(context.claudeConfigDir, 'projects', dirName));
+    }
+  }
+  return [...dirs];
 }
 
 async function resolveNativeCliSessionFromFiles(params: {
   agentId: string;
   provider?: string;
-  userText: string;
+  userText?: string;
   startedAt?: number;
+  latest?: boolean;
 }): Promise<NativeCliResolveResult | null> {
   const context = await resolveNativeCliRuntimeContext(params.agentId);
   if (!context) return null;
@@ -381,22 +412,24 @@ async function resolveNativeCliSessionFromFiles(params: {
     : context.provider;
   const startedAt = Number.isFinite(params.startedAt) && params.startedAt ? Number(params.startedAt) : Date.now() - 60_000;
   const minMtime = startedAt - 120_000;
+  const userText = params.userText?.trim() || '';
+  const useLatest = params.latest || !userText;
 
   const files = provider === 'codex'
     ? (await Promise.all(codexSessionDirsForStartedAt(startedAt).map((dir) => listJsonlFiles(dir)))).flat()
-    : (await Promise.all(
-      claudeProjectDirNames(context.cwd).map((dirName) => listJsonlFiles(join(homedir(), '.claude', 'projects', dirName))),
-    )).flat();
+    : (await Promise.all(claudeSessionDirs(context).map((dir) => listJsonlFiles(dir)))).flat();
 
   const recentFiles = files
-    .filter((file) => file.mtimeMs >= minMtime)
+    .filter((file) => useLatest || file.mtimeMs >= minMtime)
     .sort((a, b) => b.mtimeMs - a.mtimeMs)
     .slice(0, 80);
 
   for (const file of recentFiles) {
     try {
       const tail = await readTextTail(file.path);
-      const sessionId = extractSessionIdFromJsonlTail(tail, file.sessionId, params.userText);
+      const sessionId = useLatest
+        ? extractLatestSessionIdFromJsonlTail(tail, file.sessionId)
+        : extractSessionIdFromJsonlTail(tail, file.sessionId, userText);
       if (sessionId) return { sessionId, sessionFile: file.path };
     } catch {
       // Keep scanning other recent files.
@@ -944,12 +977,13 @@ export async function handleSessionRoutes(
         provider?: string;
         userText?: string;
         startedAt?: number;
+        latest?: boolean;
       }>(req);
       const sessionKey = body.sessionKey?.trim() || '';
       const agentId = parseAgentIdFromSessionKey(sessionKey);
       const userText = body.userText?.trim() || '';
-      if (!agentId || !userText) {
-        sendJson(res, 400, { success: false, error: 'sessionKey and userText are required' });
+      if (!agentId || (!userText && !body.latest)) {
+        sendJson(res, 400, { success: false, error: 'sessionKey and userText are required unless latest is true' });
         return true;
       }
       const resolved = await resolveNativeCliSessionFromFiles({
@@ -957,6 +991,7 @@ export async function handleSessionRoutes(
         provider: body.provider,
         userText,
         startedAt: body.startedAt,
+        latest: body.latest,
       });
       if (!resolved?.sessionId) {
         sendJson(res, 200, { success: true, runtimeType: 'native-cli', sessionKey, resolved: false });

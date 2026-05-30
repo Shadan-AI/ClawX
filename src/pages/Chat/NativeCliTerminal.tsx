@@ -15,6 +15,7 @@ import {
   nativeCliTerminalLoadingLabel,
   nativeCliTerminalReducer,
 } from '@/lib/native-cli-terminal-state';
+import { addNativeCliAgentSkillsChangedListener } from '@/lib/native-cli-events';
 import { ChatInput } from './ChatInput';
 import '@xterm/xterm/css/xterm.css';
 
@@ -118,6 +119,45 @@ const CLAUDE_NATIVE_PROXY_PORT = 13211;
 const CLAUDE_NATIVE_SONNET_ALIAS = 'claude-sonnet-4-6';
 const CLAUDE_NATIVE_OPUS_ALIAS = 'claude-opus-4-7';
 const CLAUDE_NATIVE_HAIKU_ALIAS = 'claude-haiku-4-5';
+
+function messageDiagnostic(text: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return {
+    length: text.length,
+    hash: (hash >>> 0).toString(16).padStart(8, '0'),
+  };
+}
+
+function dataDiagnostic(data: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < data.length; index += 1) {
+    hash ^= data.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return {
+    length: data.length,
+    hash: (hash >>> 0).toString(16).padStart(8, '0'),
+  };
+}
+
+function wsReadyStateName(state: number | undefined) {
+  switch (state) {
+    case WebSocket.CONNECTING:
+      return 'CONNECTING';
+    case WebSocket.OPEN:
+      return 'OPEN';
+    case WebSocket.CLOSING:
+      return 'CLOSING';
+    case WebSocket.CLOSED:
+      return 'CLOSED';
+    default:
+      return 'MISSING';
+  }
+}
 
 function storageKey(sessionKey: string) {
   return `openclaw-terminal-state:native-cli:${sessionKey}`;
@@ -265,8 +305,9 @@ function wait(ms: number) {
 async function resolveNativeCliSessionIdToHost(params: {
   sessionKey: string;
   provider?: string;
-  userText: string;
-  startedAt: number;
+  userText?: string;
+  startedAt?: number;
+  latest?: boolean;
 }): Promise<string> {
   try {
     const response = await hostApiFetch<HostNativeCliResolveResponse>(RUNTIME_NATIVE_CLI_RESOLVE_PATH, {
@@ -274,8 +315,9 @@ async function resolveNativeCliSessionIdToHost(params: {
       body: JSON.stringify({
         sessionKey: params.sessionKey,
         provider: normalizeProvider(params.provider),
-        userText: params.userText,
-        startedAt: params.startedAt,
+        ...(params.userText ? { userText: params.userText } : {}),
+        ...(params.startedAt ? { startedAt: params.startedAt } : {}),
+        ...(params.latest ? { latest: true } : {}),
       }),
     });
     return response.success && response.resolved && response.sessionId ? response.sessionId.trim() : '';
@@ -324,7 +366,7 @@ function createTerminalInstance() {
     scrollback: 5000,
     convertEol: false,
     allowProposedApi: true,
-    disableStdin: false,
+    disableStdin: true,
   });
 }
 
@@ -626,11 +668,17 @@ export function NativeCliTerminal({
   const recentOutputRef = useRef('');
   const userHasInteractedRef = useRef(false);
   const shellPassthroughRef = useRef(false);
+  const connectInFlightRef = useRef(false);
   const cliSessionIdRef = useRef('');
   const activeSessionResolveRef = useRef('');
+  const skillReloadInFlightRef = useRef(false);
+  const forceFreshConnectRef = useRef(false);
+  const gatewayWsProtocolOverrideRef = useRef<'ws' | 'wss' | null>(null);
+  const suppressNextDisconnectBannerRef = useRef(false);
   const initialOutputRafRef = useRef<number>(0);
   const initialOutputPendingPaintRef = useRef(false);
   const loadingExitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const suppressNativeCliChromeRef = useRef(false);
   const cliSessionIdPropRef = useRef(cliSessionId);
   const sessionTitleRef = useRef(sessionTitle);
   const sessionUpdatedAtRef = useRef(sessionUpdatedAt);
@@ -723,8 +771,6 @@ export function NativeCliTerminal({
   }, []);
 
   const resetVisibleTerminalForResume = useCallback(() => {
-    termRef.current?.clear();
-    bufferRef.current = '';
     markerBufferRef.current = '';
     recentOutputRef.current = '';
     terminalTurnsRef.current = [];
@@ -882,6 +928,7 @@ export function NativeCliTerminal({
 
   const handleTerminalStreamMarker = useCallback((marker: TerminalStreamMarker) => {
     if (marker.kind === 'turn_start') {
+      suppressNativeCliChromeRef.current = false;
       upsertTerminalTurn(marker);
       return;
     }
@@ -926,13 +973,14 @@ export function NativeCliTerminal({
   }, []);
 
   const updateShellPassthroughState = useCallback((chunk: string) => {
+    if (effectiveProvider === 'claude') return;
     recentOutputRef.current = `${recentOutputRef.current}${chunk}`.slice(-TERMINAL_SHELL_PASSTHROUGH_BUFFER_CHARS);
     if (TERMINAL_SHELL_PASSTHROUGH_SIGNATURES.some((signature) => recentOutputRef.current.includes(signature))) {
       shellPassthroughRef.current = true;
     } else if (shellPassthroughRef.current && /\n[^\n]*[$%#] $/.test(recentOutputRef.current.slice(-240))) {
       shellPassthroughRef.current = false;
     }
-  }, []);
+  }, [effectiveProvider]);
 
   const settleInitialOutputAfterPaint = useCallback(() => {
     if (initialOutputRafRef.current) {
@@ -990,6 +1038,21 @@ export function NativeCliTerminal({
   const handleTerminalData = useCallback((raw: string) => {
     const visibleRaw = stripTerminalStreamMarkers(raw);
     updateShellPassthroughState(visibleRaw);
+    if (hasPrintableTerminalContent(visibleRaw)) {
+      console.debug('[native-cli-terminal] terminal output', {
+        agentId,
+        sessionKey,
+        raw: dataDiagnostic(raw),
+        visible: dataDiagnostic(visibleRaw),
+        shellPassthrough: shellPassthroughRef.current,
+        activeTurn: activeTerminalTurnIdRef.current,
+        suppressedChrome: suppressNativeCliChromeRef.current,
+      });
+    }
+    if (suppressNativeCliChromeRef.current && !activeTerminalTurnIdRef.current && !shellPassthroughRef.current) {
+      if (hasPrintableTerminalContent(visibleRaw)) settleReadyWithoutInitialOutput();
+      return;
+    }
     bufferRef.current = `${bufferRef.current}${raw}`.slice(-100_000);
     persistState();
     const term = termRef.current;
@@ -999,14 +1062,28 @@ export function NativeCliTerminal({
       });
     }
     scheduleTerminalUserEchoStyle();
-  }, [persistState, requestInitialOutputSettle, scheduleTerminalUserEchoStyle, stripTerminalStreamMarkers, updateShellPassthroughState]);
+  }, [agentId, persistState, requestInitialOutputSettle, scheduleTerminalUserEchoStyle, sessionKey, settleReadyWithoutInitialOutput, stripTerminalStreamMarkers, updateShellPassthroughState]);
 
   const sendTerminalData = useCallback((data: string) => {
     const ws = wsRef.current;
-    if (ws?.readyState !== WebSocket.OPEN) return false;
+    if (ws?.readyState !== WebSocket.OPEN) {
+      console.warn('[native-cli-terminal] pty data blocked: websocket not open', {
+        agentId,
+        sessionKey,
+        wsState: wsReadyStateName(ws?.readyState),
+        length: data.length,
+      });
+      return false;
+    }
+    console.debug('[native-cli-terminal] sending pty data', {
+      agentId,
+      sessionKey,
+      length: data.length,
+      control: data === '\r' ? 'enter' : data === '\u0003' ? 'ctrl-c' : null,
+    });
     ws.send(JSON.stringify({ type: 'data', data }));
     return true;
-  }, []);
+  }, [agentId, sessionKey]);
 
   const startCliSessionIdFallbackResolver = useCallback((userText: string, startedAt: number) => {
     if (cliSessionIdRef.current) return;
@@ -1051,15 +1128,38 @@ export function NativeCliTerminal({
     const areaWidth = area.getBoundingClientRect().width || area.clientWidth;
     const configuredWidth = Math.min(Math.max(0, areaWidth - 48), 960);
     const cols = Math.max(TERMINAL_MIN_COLS, Math.floor(configuredWidth / cellWidth));
-    const rows = Math.max(1, proposed.rows);
+    const proposedRows = Number(proposed.rows);
+    const rows = Number.isFinite(proposedRows)
+      ? Math.max(1, Math.floor(proposedRows))
+      : Math.max(1, term.rows || 24);
+    if (!Number.isInteger(cols) || !Number.isInteger(rows)) {
+      console.warn('[native-cli-terminal] skipped terminal resize with non-integer dimensions', {
+        agentId,
+        sessionKey,
+        cols,
+        rows,
+        proposed,
+      });
+      return;
+    }
     const screenWidth = `${Math.ceil(cols * cellWidth)}px`;
     area.closest<HTMLElement>('.native-cli-terminal')?.style.setProperty('--terminal-screen-width', screenWidth);
     if (term.cols !== cols || term.rows !== rows) {
-      term.resize(cols, rows);
+      try {
+        term.resize(cols, rows);
+      } catch (error) {
+        console.warn('[native-cli-terminal] terminal resize failed', {
+          agentId,
+          sessionKey,
+          cols,
+          rows,
+          error,
+        });
+      }
     } else {
       term.refresh(0, Math.max(0, rows - 1));
     }
-  }, []);
+  }, [agentId, sessionKey]);
 
   const scheduleTerminalResize = useCallback(() => {
     if (resizeRafRef.current) {
@@ -1078,14 +1178,136 @@ export function NativeCliTerminal({
     });
   }, [fitTerminalToContent, scheduleTerminalUserEchoStyle, updateInputShellStateFromTerminalScroll]);
 
+  const requestReconnectSoon = useCallback((reason: string, options?: { skipResumeResolve?: boolean }) => {
+    const ws = wsRef.current;
+    if (ws?.readyState === WebSocket.OPEN || ws?.readyState === WebSocket.CONNECTING) return;
+    if (connectInFlightRef.current || reconnectTimerRef.current) return;
+    if (options?.skipResumeResolve) {
+      skipResumeResolveRef.current = true;
+      activeSessionResolveRef.current = '';
+    }
+    console.info('[native-cli-terminal] reconnect requested', {
+      agentId,
+      sessionKey,
+      reason,
+      wsState: wsReadyStateName(ws?.readyState),
+      skipResumeResolve: Boolean(options?.skipResumeResolve),
+    });
+    reconnectTimerRef.current = setTimeout(() => {
+      reconnectTimerRef.current = null;
+      void mountRef_cb.current.connect();
+    }, 50);
+  }, [agentId, sessionKey]);
+
+  const restartTerminalForSkillReload = useCallback((skillCount: number) => {
+    if (effectiveProvider !== 'claude') return;
+    const knownCliSessionId = cliSessionIdRef.current || resolveStoredCliSessionId(sessionKey, cliSessionIdPropRef.current);
+    console.info('[native-cli-terminal] skill reload requested', {
+      agentId,
+      sessionKey,
+      skillCount,
+      hasCliSessionId: Boolean(knownCliSessionId),
+      wsState: wsReadyStateName(wsRef.current?.readyState),
+    });
+    if (knownCliSessionId) {
+      cliSessionIdRef.current = knownCliSessionId;
+      skipResumeResolveRef.current = false;
+      shellPassthroughRef.current = false;
+      recentOutputRef.current = '';
+      persistNativeCliSessionId(sessionKey, knownCliSessionId, normalizedProvider);
+      persistState();
+    } else if (!skillReloadInFlightRef.current) {
+      skillReloadInFlightRef.current = true;
+      console.info('[native-cli-terminal] resolving latest native-cli session before skill reload', {
+        agentId,
+        sessionKey,
+      });
+      void (async () => {
+        const resolvedSessionId = await resolveNativeCliSessionIdToHost({
+          sessionKey,
+          provider: normalizedProvider,
+          latest: true,
+        });
+        if (disposedRef.current) return;
+        skillReloadInFlightRef.current = false;
+        if (resolvedSessionId) {
+          bindNativeCliSessionId(resolvedSessionId);
+          console.info('[native-cli-terminal] latest native-cli session resolved for skill reload', {
+            agentId,
+            sessionKey,
+            hasCliSessionId: true,
+          });
+        } else {
+          forceFreshConnectRef.current = true;
+          console.warn('[native-cli-terminal] latest native-cli session not found for skill reload; starting fresh', {
+            agentId,
+            sessionKey,
+          });
+        }
+        restartTerminalForSkillReload(skillCount);
+      })();
+      return;
+    } else {
+      return;
+    }
+    activeSessionResolveRef.current = '';
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    reconnectDelayRef.current = 50;
+    connectInFlightRef.current = false;
+    dispatchTerminalState({
+      type: 'connect_requested',
+      phase: knownCliSessionId ? 'resuming' : 'preparing',
+    });
+
+    const ws = wsRef.current;
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+      suppressNextDisconnectBannerRef.current = true;
+      ws.close();
+      return;
+    }
+    wsRef.current = null;
+    void mountRef_cb.current.connect();
+  }, [agentId, bindNativeCliSessionId, effectiveProvider, normalizedProvider, persistState, sessionKey]);
+
   const connect = useCallback(async () => {
-    if (disposedRef.current) return;
-    if (!termRef.current) return;
-    if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) return;
+    if (disposedRef.current) {
+      console.warn('[native-cli-terminal] connect skipped: disposed', { agentId, sessionKey });
+      return;
+    }
+    if (!termRef.current) {
+      console.warn('[native-cli-terminal] connect skipped: terminal missing', { agentId, sessionKey });
+      return;
+    }
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      console.debug('[native-cli-terminal] connect skipped: websocket already open', { agentId, sessionKey });
+      return;
+    }
+    if (wsRef.current?.readyState === WebSocket.CONNECTING) {
+      console.debug('[native-cli-terminal] connect skipped: websocket already connecting', { agentId, sessionKey });
+      return;
+    }
+    if (wsRef.current?.readyState === WebSocket.CLOSING) {
+      if (!reconnectTimerRef.current) {
+        reconnectTimerRef.current = setTimeout(() => {
+          reconnectTimerRef.current = null;
+          void mountRef_cb.current.connect();
+        }, 250);
+      }
+      return;
+    }
+    if (connectInFlightRef.current) {
+      console.debug('[native-cli-terminal] connect skipped: connect already in flight', { agentId, sessionKey });
+      return;
+    }
+    connectInFlightRef.current = true;
 
     const storedCliSessionId = cliSessionIdRef.current || resolveStoredCliSessionId(sessionKey, cliSessionIdPropRef.current);
     const hasHistoricalTitle = Boolean(sessionTitleRef.current?.trim() && sessionTitleRef.current.trim() !== sessionKey);
-    const shouldWaitForResumeSessionId = !storedCliSessionId
+    const shouldWaitForResumeSessionId = !forceFreshConnectRef.current
+      && !storedCliSessionId
       && hasHistoricalTitle
       && isNativeCliSessionKey(sessionKey)
       && !skipResumeResolveRef.current;
@@ -1099,8 +1321,23 @@ export function NativeCliTerminal({
       const userText = sessionTitleRef.current?.trim() || '';
       const startedAt = sessionUpdatedAtRef.current ?? Date.now() - 60_000;
       const resolveKey = `resume:${sessionKey}:${userText}:${startedAt}`;
-      if (activeSessionResolveRef.current === resolveKey) return;
+      if (activeSessionResolveRef.current === resolveKey) {
+        console.info('[native-cli-terminal] connect waiting for existing session resolve', {
+          agentId,
+          sessionKey,
+          resolveKeyHash: messageDiagnostic(resolveKey),
+        });
+        connectInFlightRef.current = false;
+        return;
+      }
       activeSessionResolveRef.current = resolveKey;
+      connectInFlightRef.current = false;
+      console.info('[native-cli-terminal] resolving native-cli session before reconnect', {
+        agentId,
+        sessionKey,
+        message: messageDiagnostic(userText),
+        startedAt,
+      });
       void (async () => {
         for (let attempt = 0; attempt < 20; attempt += 1) {
           await wait(attempt < 3 ? 500 : 1500);
@@ -1130,6 +1367,10 @@ export function NativeCliTerminal({
         if (disposedRef.current || activeSessionResolveRef.current !== resolveKey || cliSessionIdRef.current) return;
         skipResumeResolveRef.current = true;
         activeSessionResolveRef.current = '';
+        console.info('[native-cli-terminal] native-cli session resolve exhausted; starting fresh websocket', {
+          agentId,
+          sessionKey,
+        });
         dispatchTerminalState({ type: 'connect_requested', phase: 'starting' });
         void connect();
       })();
@@ -1143,6 +1384,7 @@ export function NativeCliTerminal({
       // Gateway IPC not available yet — schedule reconnect.
       if (disposedRef.current) return;
       dispatchTerminalState({ type: 'gateway_unavailable' });
+      connectInFlightRef.current = false;
       initialOutputPendingPaintRef.current = false;
       if (!reconnectTimerRef.current) {
         reconnectTimerRef.current = setTimeout(() => {
@@ -1153,10 +1395,34 @@ export function NativeCliTerminal({
       }
       return;
     }
-    if (disposedRef.current) return;
+    if (disposedRef.current) {
+      connectInFlightRef.current = false;
+      return;
+    }
+    if (statusResult?.state !== 'running') {
+      dispatchTerminalState({ type: 'gateway_unavailable' });
+      connectInFlightRef.current = false;
+      initialOutputPendingPaintRef.current = false;
+      if (!reconnectTimerRef.current) {
+        reconnectTimerRef.current = setTimeout(() => {
+          reconnectTimerRef.current = null;
+          void mountRef_cb.current.connect();
+        }, reconnectDelayRef.current);
+        reconnectDelayRef.current = Math.min(reconnectDelayRef.current * 2, 30_000);
+      }
+      console.info('[native-cli-terminal] connect deferred: gateway not running', {
+        agentId,
+        sessionKey,
+        gatewayState: statusResult?.state,
+        tls: statusResult?.tls,
+      });
+      return;
+    }
     const port = typeof statusResult?.port === 'number' && statusResult.port > 0 ? statusResult.port : 18789;
-    const wsProtocol = statusResult?.tls === true ? 'wss' : 'ws';
+    const statusWsProtocol = statusResult?.tls === true ? 'wss' : 'ws';
+    const wsProtocol = gatewayWsProtocolOverrideRef.current ?? statusWsProtocol;
     const knownCliSessionId = storedCliSessionId;
+    forceFreshConnectRef.current = false;
     cliSessionIdRef.current = knownCliSessionId;
     if (knownCliSessionId) {
       dispatchTerminalState({ type: 'connect_requested', phase: 'resuming' });
@@ -1178,13 +1444,29 @@ export function NativeCliTerminal({
     const ws = new WebSocket(`${wsProtocol}://127.0.0.1:${port}/terminal?${params.toString()}`);
     wsRef.current = ws;
     let openedAt = 0;
+    suppressNativeCliChromeRef.current = effectiveProvider === 'claude';
+    console.info('[native-cli-terminal] connecting', {
+      agentId,
+      sessionKey,
+      resume: Boolean(knownCliSessionId),
+      provider: normalizedProvider,
+      protocol: wsProtocol,
+      statusTls: statusResult?.tls,
+      protocolOverride: gatewayWsProtocolOverrideRef.current,
+    });
 
     ws.onopen = () => {
       if (disposedRef.current) return;
       if (wsRef.current !== ws) return;
       openedAt = Date.now();
+      gatewayWsProtocolOverrideRef.current = null;
+      connectInFlightRef.current = false;
       reconnectDelayRef.current = 1000;
       dispatchTerminalState({ type: 'websocket_opened' });
+      console.info('[native-cli-terminal] websocket opened', {
+        agentId,
+        sessionKey,
+      });
       mountRef_cb.current.fitTerminalToContent();
       const term = termRef.current;
       if (term) ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
@@ -1196,18 +1478,44 @@ export function NativeCliTerminal({
       if (wsRef.current !== ws) return;
       try {
         const msg = JSON.parse(String(event.data)) as Record<string, unknown>;
+        if (msg.type !== 'data') {
+          console.debug('[native-cli-terminal] websocket message', {
+            agentId,
+            sessionKey,
+            type: msg.type,
+          });
+        }
         if (msg.type === 'data' && typeof msg.data === 'string') {
           mountRef_cb.current.handleTerminalData(msg.data);
         } else if (msg.type === 'assistant_turn_start') {
+          suppressNativeCliChromeRef.current = false;
           const turnId = typeof msg.turnId === 'string' ? msg.turnId : '';
           const conversationId = typeof msg.conversationId === 'string' ? msg.conversationId : '';
           const userText = typeof msg.userText === 'string' ? msg.userText : '';
+          console.info('[native-cli-terminal] assistant turn start', {
+            agentId,
+            sessionKey,
+            turnId,
+            conversationId,
+            message: messageDiagnostic(userText),
+          });
           if (turnId) mountRef_cb.current.upsertTerminalTurn({ kind: 'turn_start', conversationId, turnId, userText });
         } else if (msg.type === 'assistant_idle' && typeof msg.turnId === 'string') {
+          console.info('[native-cli-terminal] assistant idle', {
+            agentId,
+            sessionKey,
+            turnId: msg.turnId,
+          });
           mountRef_cb.current.handleTerminalStreamMarker({ kind: 'turn_idle', conversationId: String(msg.conversationId ?? ''), turnId: msg.turnId });
         } else if (msg.type === 'assistant_turn_end' && typeof msg.turnId === 'string') {
+          console.info('[native-cli-terminal] assistant turn end', {
+            agentId,
+            sessionKey,
+            turnId: msg.turnId,
+          });
           mountRef_cb.current.handleTerminalStreamMarker({ kind: 'turn_end', conversationId: String(msg.conversationId ?? ''), turnId: msg.turnId });
         } else if (msg.type === 'session_id' && typeof msg.sessionId === 'string') {
+          console.info('[native-cli-terminal] session id received', { agentId, sessionKey });
           mountRef_cb.current.bindNativeCliSessionId(msg.sessionId);
         } else if (msg.type === 'exit' && userHasInteractedRef.current) {
           termRef.current?.write(`\r\n\x1b[33m[process exited: ${String(msg.code ?? 0)}]\x1b[0m\r\n`);
@@ -1221,12 +1529,28 @@ export function NativeCliTerminal({
       if (disposedRef.current) return;
       if (wsRef.current !== ws) return;
       if (wsRef.current === ws) wsRef.current = null;
+      connectInFlightRef.current = false;
       dispatchTerminalState({ type: 'websocket_closed' });
       initialOutputPendingPaintRef.current = false;
-      if (userHasInteractedRef.current) {
+      const suppressDisconnectBanner = suppressNextDisconnectBannerRef.current;
+      suppressNextDisconnectBannerRef.current = false;
+      if (!suppressDisconnectBanner && userHasInteractedRef.current) {
         termRef.current?.write('\r\n\x1b[31m[disconnected]\x1b[0m\r\n');
       }
-      if (openedAt > 0 && Date.now() - openedAt < 400) {
+      if (!openedAt) {
+        const nextProtocol = wsProtocol === 'ws' ? 'wss' : 'ws';
+        if (gatewayWsProtocolOverrideRef.current !== nextProtocol) {
+          gatewayWsProtocolOverrideRef.current = nextProtocol;
+          reconnectDelayRef.current = 50;
+          console.warn('[native-cli-terminal] websocket closed before open; retrying alternate gateway protocol', {
+            agentId,
+            sessionKey,
+            failedProtocol: wsProtocol,
+            nextProtocol,
+            statusTls: statusResult?.tls,
+          });
+        }
+      } else if (Date.now() - openedAt < 400) {
         reconnectDelayRef.current = Math.min(Math.max(reconnectDelayRef.current * 2, 2000), 60_000);
       }
       if (!reconnectTimerRef.current) {
@@ -1236,17 +1560,23 @@ export function NativeCliTerminal({
         }, reconnectDelayRef.current);
         reconnectDelayRef.current = Math.min(reconnectDelayRef.current * 2, 30_000);
       }
+      console.info('[native-cli-terminal] websocket closed', {
+        agentId,
+        sessionKey,
+      });
     };
 
     ws.onerror = () => {
       if (disposedRef.current) return;
       if (wsRef.current !== ws) return;
+      connectInFlightRef.current = false;
       dispatchTerminalState({ type: 'websocket_error' });
       initialOutputPendingPaintRef.current = false;
     };
   }, [
     agentId,
     bindNativeCliSessionId,
+    effectiveProvider,
     normalizedProvider,
     persistState,
     resetVisibleTerminalForResume,
@@ -1267,51 +1597,123 @@ export function NativeCliTerminal({
     persistState();
   }, [persistState, upsertTerminalTurn]);
 
-  const sendShellCompose = useCallback((text: string, notifyUserText = true) => {
+  const sendShellCompose = useCallback((text: string, notifyUserText = true): boolean => {
+    const diagnostic = messageDiagnostic(text);
+    const ws = wsRef.current;
+    if (ws?.readyState !== WebSocket.OPEN) {
+      dispatchTerminalState({ type: 'websocket_closed' });
+      requestReconnectSoon('send_shell_compose_socket_not_open');
+      console.warn('[native-cli-terminal] send blocked: websocket not open', {
+        agentId,
+        sessionKey,
+        mode: 'pty_input',
+        wsState: wsReadyStateName(ws?.readyState),
+        message: diagnostic,
+      });
+      return false;
+    }
     if (notifyUserText) onUserText?.(text);
+    suppressNativeCliChromeRef.current = false;
     if (!userHasInteractedRef.current) {
       userHasInteractedRef.current = true;
-      termRef.current?.clear();
     }
-    for (const payload of shellComposeToPtyInput(text)) {
-      sendTerminalData(payload);
+    const payloads = shellComposeToPtyInput(text);
+    console.info('[native-cli-terminal] sending shell compose', {
+      agentId,
+      sessionKey,
+      message: diagnostic,
+      payloadCount: payloads.length,
+      payloadLengths: payloads.map((payload) => payload.length),
+    });
+    for (const payload of payloads) {
+      const sent = sendTerminalData(payload);
+      if (!sent) return false;
     }
     persistState();
-  }, [onUserText, persistState, sendTerminalData]);
+    return true;
+  }, [agentId, onUserText, persistState, requestReconnectSoon, sendTerminalData, sessionKey]);
 
-  const sendText = useCallback((text: string) => {
-    if (!text.trim()) return;
+  const sendText = useCallback((text: string): boolean => {
+    if (!text.trim()) return false;
     const startedAt = Date.now();
-    onUserText?.(text);
+    const ws = wsRef.current;
+    const diagnostic = messageDiagnostic(text);
+    if (ws?.readyState !== WebSocket.OPEN) {
+      dispatchTerminalState({ type: 'websocket_closed' });
+      requestReconnectSoon('send_text_socket_not_open');
+      console.warn('[native-cli-terminal] send blocked: websocket not open', {
+        agentId,
+        sessionKey,
+        mode: 'user_text',
+        wsState: wsReadyStateName(ws?.readyState),
+        message: diagnostic,
+      });
+      return false;
+    }
     const launchPassthrough = shouldLaunchShellPassthrough(text);
+    console.info('[native-cli-terminal] sendText route', {
+      agentId,
+      sessionKey,
+      message: diagnostic,
+      shellPassthrough: shellPassthroughRef.current,
+      launchPassthrough,
+      cliSessionBound: Boolean(cliSessionIdRef.current),
+      activeTurn: activeTerminalTurnIdRef.current,
+      terminalState: terminalState.status,
+    });
     if (shellPassthroughRef.current || launchPassthrough) {
-      sendShellCompose(text, false);
+      const sent = sendShellCompose(text);
+      if (!sent) return false;
       if (launchPassthrough) shellPassthroughRef.current = true;
       startCliSessionIdFallbackResolver(text, startedAt);
-      return;
+      return true;
     }
-    const ws = wsRef.current;
-    if (ws?.readyState !== WebSocket.OPEN) return;
+    onUserText?.(text);
+    suppressNativeCliChromeRef.current = false;
     if (!userHasInteractedRef.current) {
       userHasInteractedRef.current = true;
-      termRef.current?.clear();
     }
     decorateLocalTerminalTurn(text);
+    console.info('[native-cli-terminal] sending user_text', { agentId, sessionKey, message: diagnostic });
     ws.send(JSON.stringify({ type: 'user_text', text }));
     startCliSessionIdFallbackResolver(text, startedAt);
     scheduleTerminalUserEchoStyle(true);
     persistState();
-  }, [decorateLocalTerminalTurn, onUserText, persistState, scheduleTerminalUserEchoStyle, sendShellCompose, startCliSessionIdFallbackResolver]);
+    return true;
+  }, [agentId, decorateLocalTerminalTurn, onUserText, persistState, requestReconnectSoon, scheduleTerminalUserEchoStyle, sendShellCompose, sessionKey, startCliSessionIdFallbackResolver, terminalState.status]);
 
-  const handleChatInputSend = useCallback((text: string) => {
+  const handleChatInputSend = useCallback((text: string): boolean => {
     const trimmed = text.trim();
-    if (!trimmed) return;
-    if (shellPassthroughRef.current) {
-      sendShellCompose(trimmed);
-      return;
+    if (!trimmed) return false;
+    const ws = wsRef.current;
+    const diagnostic = messageDiagnostic(trimmed);
+    console.info('[native-cli-terminal] chat input handoff', {
+      agentId,
+      sessionKey,
+      message: diagnostic,
+      wsState: wsReadyStateName(ws?.readyState),
+      terminalState: terminalState.status,
+      shellPassthrough: shellPassthroughRef.current,
+      cliSessionBound: Boolean(cliSessionIdRef.current),
+      activeTurn: activeTerminalTurnIdRef.current,
+      canSend: nativeCliTerminalCanSend(terminalState),
+    });
+    if (ws?.readyState !== WebSocket.OPEN) {
+      dispatchTerminalState({ type: 'websocket_closed' });
+      requestReconnectSoon('chat_input_socket_not_open');
+      console.warn('[native-cli-terminal] send rejected: websocket not open', {
+        agentId,
+        sessionKey,
+        wsState: wsReadyStateName(ws?.readyState),
+        message: diagnostic,
+      });
+      return false;
     }
-    sendText(trimmed);
-  }, [sendShellCompose, sendText]);
+    if (effectiveProvider !== 'claude' && shellPassthroughRef.current) {
+      return sendShellCompose(trimmed);
+    }
+    return sendText(trimmed);
+  }, [agentId, effectiveProvider, requestReconnectSoon, sendShellCompose, sendText, sessionKey, terminalState]);
 
   const handleModelChange = useCallback(async (modelId: string) => {
     const upstreamModel = normalizeOneApiModelId(modelId);
@@ -1362,7 +1764,7 @@ export function NativeCliTerminal({
     maybeSettleInitialOutput, handleTerminalStreamMarker, persistState,
     handleTerminalData, upsertTerminalTurn, bindNativeCliSessionId,
     settleReadyWithoutInitialOutput, resetVisibleTerminalForResume,
-    updateInputShellStateFromTerminalScroll,
+    updateInputShellStateFromTerminalScroll, restartTerminalForSkillReload,
   });
   mountRef_cb.current = {
     connect, sendTerminalData, fitTerminalToContent, scheduleTerminalResize,
@@ -1370,7 +1772,7 @@ export function NativeCliTerminal({
     maybeSettleInitialOutput, handleTerminalStreamMarker, persistState,
     handleTerminalData, upsertTerminalTurn, bindNativeCliSessionId,
     settleReadyWithoutInitialOutput, resetVisibleTerminalForResume,
-    updateInputShellStateFromTerminalScroll,
+    updateInputShellStateFromTerminalScroll, restartTerminalForSkillReload,
   };
 
   useEffect(() => {
@@ -1382,7 +1784,7 @@ export function NativeCliTerminal({
     const initialCliSessionId = resolveStoredCliSessionId(sessionKey, cliSessionIdPropRef.current) || persisted.cliSessionId || '';
     cliSessionIdRef.current = initialCliSessionId;
     userHasInteractedRef.current = Boolean(cliSessionIdRef.current || persisted.userHasInteracted);
-    bufferRef.current = initialCliSessionId ? '' : persisted.buffer ?? '';
+    bufferRef.current = persisted.buffer ?? '';
     dispatchTerminalState({
       type: 'connect_requested',
       phase: initialCliSessionId ? 'resuming' : 'starting',
@@ -1400,7 +1802,7 @@ export function NativeCliTerminal({
       return true;
     });
     term.open(mount);
-    if (!initialCliSessionId && userHasInteractedRef.current && bufferRef.current) {
+    if (bufferRef.current) {
       term.write(bufferRef.current);
     }
     term.onData((data) => {
@@ -1466,6 +1868,7 @@ export function NativeCliTerminal({
       if (resizeRafRef.current) cancelAnimationFrame(resizeRafRef.current);
       if (initialOutputRafRef.current) cancelAnimationFrame(initialOutputRafRef.current);
       if (loadingExitTimerRef.current) clearTimeout(loadingExitTimerRef.current);
+      reconnectTimerRef.current = null;
       initialOutputPendingPaintRef.current = false;
       rowsObserverRef.current?.disconnect();
       resizeObserverRef.current?.disconnect();
@@ -1494,6 +1897,13 @@ export function NativeCliTerminal({
       ws.close();
     }
   }, [bindNativeCliSessionId, cliSessionId]);
+
+  useEffect(() => (
+    addNativeCliAgentSkillsChangedListener((detail) => {
+      if (detail.agentId !== agentId) return;
+      mountRef_cb.current.restartTerminalForSkillReload(detail.skillCount);
+    })
+  ), [agentId]);
 
   const desiredLoadingLabel = nativeCliTerminalLoadingLabel(terminalState);
 
