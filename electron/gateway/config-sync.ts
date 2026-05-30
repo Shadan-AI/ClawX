@@ -198,6 +198,168 @@ function patchOpenClawBoxImModelValidation(openclawDir: string): number {
   return patched;
 }
 
+function patchOpenClawTerminalDiagnostics(openclawDir: string): number {
+  const gatewayTargets = findFilesByName(join(openclawDir, 'dist'), /^gateway-cli-.*\.js$/, 2);
+  const helperSearch = `function userTextToPtyInput(text) {
+\treturn text.endsWith("\\r") || text.endsWith("\\n") ? text : \`\${text}\\r\`;
+}`;
+  const helperReplace = `function terminalDataDebug(data) {
+\tlet hash = 2166136261;
+\tconst text = typeof data === "string" ? data : String(data ?? "");
+\tfor (let index = 0; index < text.length; index += 1) {
+\t\thash ^= text.charCodeAt(index);
+\t\thash = Math.imul(hash, 16777619);
+\t}
+\treturn {
+\t\tlength: text.length,
+\t\thash: (hash >>> 0).toString(16).padStart(8, "0"),
+\t\tcontrol: text === "\\r" ? "enter" : text === "\\n" ? "newline" : text === "\\u0003" ? "ctrl-c" : null
+\t};
+}
+function terminalMessageDebug(msg) {
+\treturn {
+\t\ttype: msg?.type,
+\t\tdata: typeof msg?.data === "string" ? terminalDataDebug(msg.data) : void 0,
+\t\ttext: typeof msg?.text === "string" ? terminalDataDebug(msg.text) : void 0,
+\t\tcols: typeof msg?.cols === "number" ? msg.cols : void 0,
+\t\trows: typeof msg?.rows === "number" ? msg.rows : void 0
+\t};
+}
+function userTextToPtyInput(text) {
+\treturn text.endsWith("\\r") || text.endsWith("\\n") ? text : \`\${text}\\r\`;
+}`;
+  const outputSearch = `function handlePtyOutput(ws, session, raw) {
+\tsendJson$1(ws, {`;
+  const outputReplace = `function handlePtyOutput(ws, session, raw) {
+\tconsole.warn("[openclaw] terminal pty output", {
+\t\tdata: terminalDataDebug(raw),
+\t\tcurrentTurn: session.currentTurn ? { id: session.currentTurn.id, ended: session.currentTurn.ended } : null,
+\t\tconversationId: session.conversationId
+\t});
+\tsendJson$1(ws, {`;
+  const spawnSearch = `\t\tconst pty = spawn(shell, shellArgs, {
+\t\t\tname: isWindows ? "xterm" : "xterm-256color",
+\t\t\tcols: nativeCli?.config.cols ?? 80,
+\t\t\trows: nativeCli?.config.rows ?? 24,
+\t\t\tcwd: nativeCli?.cwd ?? process.env.HOME ?? process.cwd(),
+\t\t\tenv: shellEnv
+\t\t});`;
+  const spawnReplace = `\t\tconsole.warn("[openclaw] terminal pty spawn", {
+\t\t\tnativeCli: nativeCli ? {
+\t\t\t\tagentId: nativeCli.agentId,
+\t\t\t\tprovider: nativeCli.provider,
+\t\t\t\tsessionKey: nativeCli.sessionKey,
+\t\t\t\tresume: nativeCli.resume,
+\t\t\t\tcanResume,
+\t\t\t\tresumeSessionId: resumeSessionId ? terminalDataDebug(resumeSessionId) : null
+\t\t\t} : null,
+\t\t\tshell,
+\t\t\tshellArgs,
+\t\t\tcwd: nativeCli?.cwd ?? process.env.HOME ?? process.cwd(),
+\t\t\tcols: nativeCli?.config.cols ?? 80,
+\t\t\trows: nativeCli?.config.rows ?? 24
+\t\t});
+\t\tconst pty = spawn(shell, shellArgs, {
+\t\t\tname: isWindows ? "xterm" : "xterm-256color",
+\t\t\tcols: nativeCli?.config.cols ?? 80,
+\t\t\trows: nativeCli?.config.rows ?? 24,
+\t\t\tcwd: nativeCli?.cwd ?? process.env.HOME ?? process.cwd(),
+\t\t\tenv: shellEnv
+\t\t});
+\t\tconsole.warn("[openclaw] terminal pty spawned", {
+\t\t\tpid: pty.pid,
+\t\t\tprocess: typeof pty.process === "string" ? pty.process : void 0
+\t\t});`;
+  const exitSearch = `\t\tpty.onExit(({ exitCode }) => {
+\t\t\tstopPoller?.();`;
+  const exitReplace = `\t\tpty.onExit(({ exitCode }) => {
+\t\t\tconsole.warn("[openclaw] terminal pty exit", {
+\t\t\t\texitCode,
+\t\t\t\tnativeCli: nativeCli ? {
+\t\t\t\t\tagentId: nativeCli.agentId,
+\t\t\t\t\tprovider: nativeCli.provider,
+\t\t\t\t\tsessionKey: nativeCli.sessionKey,
+\t\t\t\t\tresume: nativeCli.resume
+\t\t\t\t} : null
+\t\t\t});
+\t\t\tstopPoller?.();`;
+  const writeSearch = `\t\tws.on("message", (raw) => {
+\t\t\ttry {
+\t\t\t\tconst msg = JSON.parse(rawToString(raw));
+\t\t\t\tif (msg.type === "data" && typeof msg.data === "string") pty.write(msg.data);
+\t\t\t\telse if (msg.type === "user_text" && typeof msg.text === "string") {
+\t\t\t\t\tstartTurn(ws, chatSession, msg.text);
+\t\t\t\t\tpty.write(userTextToPtyInput(msg.text));
+\t\t\t\t} else if (msg.type === "terminal_input" && typeof msg.data === "string") pty.write(msg.data);
+\t\t\t\telse if (msg.type === "resize" && typeof msg.cols === "number" && typeof msg.rows === "number") ptyControls.resize?.(Math.max(1, msg.cols), Math.max(1, msg.rows));
+\t\t\t} catch {}
+\t\t});`;
+  const writeReplace = `\t\tws.on("message", (raw) => {
+\t\t\ttry {
+\t\t\t\tconst rawText = rawToString(raw);
+\t\t\t\tconst msg = JSON.parse(rawText);
+\t\t\t\tconsole.warn("[openclaw] terminal ws message", {
+\t\t\t\t\traw: terminalDataDebug(rawText),
+\t\t\t\t\tmessage: terminalMessageDebug(msg),
+\t\t\t\t\tnativeCli: nativeCli ? {
+\t\t\t\t\t\tagentId: nativeCli.agentId,
+\t\t\t\t\t\tprovider: nativeCli.provider,
+\t\t\t\t\t\tsessionKey: nativeCli.sessionKey,
+\t\t\t\t\t\tresume: nativeCli.resume
+\t\t\t\t\t} : null
+\t\t\t\t});
+\t\t\t\tif (msg.type === "data" && typeof msg.data === "string") {
+\t\t\t\t\tconsole.warn("[openclaw] terminal pty write", { source: "data", data: terminalDataDebug(msg.data) });
+\t\t\t\t\tpty.write(msg.data);
+\t\t\t\t} else if (msg.type === "user_text" && typeof msg.text === "string") {
+\t\t\t\t\tstartTurn(ws, chatSession, msg.text);
+\t\t\t\t\tconst ptyInput = userTextToPtyInput(msg.text);
+\t\t\t\t\tconsole.warn("[openclaw] terminal pty write", { source: "user_text", data: terminalDataDebug(ptyInput) });
+\t\t\t\t\tpty.write(ptyInput);
+\t\t\t\t} else if (msg.type === "terminal_input" && typeof msg.data === "string") {
+\t\t\t\t\tconsole.warn("[openclaw] terminal pty write", { source: "terminal_input", data: terminalDataDebug(msg.data) });
+\t\t\t\t\tpty.write(msg.data);
+\t\t\t\t} else if (msg.type === "resize" && typeof msg.cols === "number" && typeof msg.rows === "number") {
+\t\t\t\t\tconsole.warn("[openclaw] terminal pty resize", { cols: msg.cols, rows: msg.rows });
+\t\t\t\t\tptyControls.resize?.(Math.max(1, msg.cols), Math.max(1, msg.rows));
+\t\t\t\t}
+\t\t\t} catch (error) {
+\t\t\t\tconsole.warn("[openclaw] terminal ws message parse failed", { error: String(error) });
+\t\t\t}
+\t\t});`;
+
+  let patched = 0;
+  const patches = [
+    { search: helperSearch, replace: helperReplace, marker: 'function terminalDataDebug(data)' },
+    { search: outputSearch, replace: outputReplace, marker: '[openclaw] terminal pty output' },
+    { search: spawnSearch, replace: spawnReplace, marker: '[openclaw] terminal pty spawn' },
+    { search: exitSearch, replace: exitReplace, marker: '[openclaw] terminal pty exit' },
+    { search: writeSearch, replace: writeReplace, marker: '[openclaw] terminal ws message' },
+  ];
+  for (const target of gatewayTargets) {
+    const diagnosticLogUpgrades: Array<[string, string]> = [
+      ['console.log("[openclaw] terminal pty output"', 'console.warn("[openclaw] terminal pty output"'],
+      ['console.log("[openclaw] terminal pty spawn"', 'console.warn("[openclaw] terminal pty spawn"'],
+      ['console.log("[openclaw] terminal pty spawned"', 'console.warn("[openclaw] terminal pty spawned"'],
+      ['console.log("[openclaw] terminal ws message"', 'console.warn("[openclaw] terminal ws message"'],
+      ['console.log("[openclaw] terminal pty write"', 'console.warn("[openclaw] terminal pty write"'],
+      ['console.log("[openclaw] terminal pty resize"', 'console.warn("[openclaw] terminal pty resize"'],
+    ];
+    for (const [search, replace] of diagnosticLogUpgrades) {
+      if (replaceSnippetInFile(target, search, replace)) patched++;
+    }
+    for (const patch of patches) {
+      try {
+        if (readFileSync(fsPath(target), 'utf-8').includes(patch.marker)) continue;
+      } catch {
+        continue;
+      }
+      if (replaceSnippetInFile(target, patch.search, patch.replace)) patched++;
+    }
+  }
+  return patched;
+}
+
 function getNodePtyWindowsPackageRoots(openclawDir: string): string[] {
   try {
     const openclawRequire = createRequire(join(openclawDir, 'package.json'));
@@ -217,8 +379,11 @@ function getNodePtyWindowsPackageRoots(openclawDir: string): string[] {
 
 function patchNodePtyWindowsCleanup(openclawDir: string): number {
   const packageRoots = getNodePtyWindowsPackageRoots(openclawDir);
-  const targets = packageRoots
+  const cleanupTargets = packageRoots
     .map((packageRoot) => join(packageRoot, 'lib', 'windowsPtyAgent.js'))
+    .filter((target) => existsSync(fsPath(target)));
+  const terminalTargets = packageRoots
+    .map((packageRoot) => join(packageRoot, 'lib', 'windowsTerminal.js'))
     .filter((target) => existsSync(fsPath(target)));
 
   const search = `            var agent = child_process_1.fork(path.join(__dirname, 'conpty_console_list_agent'), [_this._innerPid.toString()]);
@@ -258,14 +423,49 @@ function patchNodePtyWindowsCleanup(openclawDir: string): number {
                 finish([_this._innerPid]);
             }, 5000);`;
 
-  return targets.reduce((count, target) => count + (replaceSnippetInFile(target, search, replace) ? 1 : 0), 0);
+  const cleanupCount = cleanupTargets.reduce((count, target) => count + (replaceSnippetInFile(target, search, replace) ? 1 : 0), 0);
+  const readySearch = `        _this._socket.on('ready_datapipe', function () {
+            // Run deferreds and set ready state once the first data event is received.
+            _this._socket.once('data', function () {
+                // Wait until the first data event is fired then we can run deferreds.
+                if (!_this._isReady) {
+                    // Terminal is now ready and we can avoid having to defer method
+                    // calls.
+                    _this._isReady = true;
+                    // Execute all deferred methods
+                    _this._deferreds.forEach(function (fn) {
+                        // NB! In order to ensure that \`this\` has all its references
+                        // updated any variable that need to be available in \`this\` before
+                        // the deferred is run has to be declared above this forEach
+                        // statement.
+                        fn.run();
+                    });
+                    // Reset
+                    _this._deferreds = [];
+                }
+            });`;
+  const readyReplace = `        _this._socket.on('ready_datapipe', function () {
+            // The input pipe is ready as soon as the data pipe connects. Waiting for
+            // child output deadlocks silent interactive CLIs: their first input stays
+            // queued forever because they do not print anything before receiving it.
+            if (!_this._isReady) {
+                _this._isReady = true;
+                _this._deferreds.forEach(function (fn) {
+                    fn.run();
+                });
+                _this._deferreds = [];
+            }`;
+  const readyCount = terminalTargets.reduce((count, target) => count + (replaceSnippetInFile(target, readySearch, readyReplace) ? 1 : 0), 0);
+
+  return cleanupCount + readyCount;
 }
 
 function repairOpenClawRuntimeBeforeLaunch(openclawDir: string): void {
   const boxImPatchCount = patchOpenClawBoxImModelValidation(openclawDir);
+  const terminalDiagnosticPatchCount = patchOpenClawTerminalDiagnostics(openclawDir);
   const nodePtyPatchCount = process.platform === 'win32' ? patchNodePtyWindowsCleanup(openclawDir) : 0;
-  if (boxImPatchCount > 0 || nodePtyPatchCount > 0) {
-    logger.info(`[gateway-prep] Patched OpenClaw runtime before launch (boxIm=${boxImPatchCount}, nodePty=${nodePtyPatchCount})`);
+  if (boxImPatchCount > 0 || terminalDiagnosticPatchCount > 0 || nodePtyPatchCount > 0) {
+    logger.info(`[gateway-prep] Patched OpenClaw runtime before launch (boxIm=${boxImPatchCount}, terminalDiagnostics=${terminalDiagnosticPatchCount}, nodePty=${nodePtyPatchCount})`);
   }
 }
 

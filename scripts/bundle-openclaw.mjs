@@ -587,6 +587,51 @@ function patchBrokenModules(nodeModulesDir) {
     count += nodePtyCleanupPatched;
   }
 
+  const nodePtyTerminalTargets = findFilesByName(nodeModulesDir, /^windowsTerminal\.js$/)
+    .filter((target) => target.includes('node-pty-win32'));
+  const nodePtyReadySearch = `        _this._socket.on('ready_datapipe', function () {
+            // Run deferreds and set ready state once the first data event is received.
+            _this._socket.once('data', function () {
+                // Wait until the first data event is fired then we can run deferreds.
+                if (!_this._isReady) {
+                    // Terminal is now ready and we can avoid having to defer method
+                    // calls.
+                    _this._isReady = true;
+                    // Execute all deferred methods
+                    _this._deferreds.forEach(function (fn) {
+                        // NB! In order to ensure that \`this\` has all its references
+                        // updated any variable that need to be available in \`this\` before
+                        // the deferred is run has to be declared above this forEach
+                        // statement.
+                        fn.run();
+                    });
+                    // Reset
+                    _this._deferreds = [];
+                }
+            });`;
+  const nodePtyReadyReplace = `        _this._socket.on('ready_datapipe', function () {
+            // The input pipe is ready as soon as the data pipe connects. Waiting for
+            // child output deadlocks silent interactive CLIs: their first input stays
+            // queued forever because they do not print anything before receiving it.
+            if (!_this._isReady) {
+                _this._isReady = true;
+                _this._deferreds.forEach(function (fn) {
+                    fn.run();
+                });
+                _this._deferreds = [];
+            }`;
+  let nodePtyReadyPatched = 0;
+  for (const target of nodePtyTerminalTargets) {
+    const current = fs.readFileSync(target, 'utf8');
+    if (!current.includes(nodePtyReadySearch)) continue;
+    fs.writeFileSync(target, current.replace(nodePtyReadySearch, nodePtyReadyReplace), 'utf8');
+    nodePtyReadyPatched++;
+  }
+  if (nodePtyReadyPatched > 0) {
+    echo`   Patched ${nodePtyReadyPatched} node-pty Windows silent-child ready site(s)`;
+    count += nodePtyReadyPatched;
+  }
+
   // eventemitter3 v5: ensure the "import" condition is present so that
   // p-queue's ESM named import `{ EventEmitter }` resolves correctly in
   // Electron's Node runtime. Some build steps may have stripped this field.

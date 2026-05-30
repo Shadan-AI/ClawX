@@ -10,12 +10,14 @@ export interface AttachedFileMeta {
 
 /** Raw message from OpenClaw chat.history */
 export interface RawMessage {
-  role: 'user' | 'assistant' | 'system' | 'toolresult';
+  role: 'user' | 'assistant' | 'system' | 'toolresult' | 'tool_result';
   content: unknown; // string | ContentBlock[]
   timestamp?: number;
   id?: string;
   toolCallId?: string;
   toolName?: string;
+  toolInput?: unknown;
+  toolUseId?: string;
   details?: unknown;
   isError?: boolean;
   /** Local-only: file metadata for user-uploaded attachments (not sent to/from Gateway) */

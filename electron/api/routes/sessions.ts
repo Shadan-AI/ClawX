@@ -17,6 +17,10 @@ const NATIVE_CLI_RESOLVE_PATHS = new Set([
   '/api/sessions/native-cli-resolve',
   '/api/runtime/sessions/native-cli/resolve',
 ]);
+const NATIVE_CLI_TRANSCRIPT_PATHS = new Set([
+  '/api/sessions/native-cli-transcript',
+  '/api/runtime/sessions/native-cli/transcript',
+]);
 
 type LocalSessionIndexEntry = {
   key: string;
@@ -50,6 +54,172 @@ type NativeCliResolveResult = {
   sessionId: string;
   sessionFile?: string;
 };
+
+type NativeCliTranscriptResult = NativeCliResolveResult & {
+  messages: unknown[];
+};
+
+const VISIBLE_NATIVE_CLI_TRANSCRIPT_ENTRY_TYPES = new Set(['message', 'user', 'assistant', 'system', 'toolresult', 'tool_result']);
+
+type ClaudeJsonlEntry = {
+  type?: string;
+  uuid?: string;
+  message?: unknown;
+  timestamp?: unknown;
+  toolUseResult?: unknown;
+  sourceToolAssistantUUID?: string;
+};
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function extractClaudeToolUses(message: unknown): Array<{ id: string; name: string; input: unknown }> {
+  const record = asRecord(message);
+  const content = Array.isArray(record?.content) ? record.content : [];
+  return content.flatMap((block) => {
+    const item = asRecord(block);
+    if (!item) return [];
+    if (item.type !== 'tool_use' && item.type !== 'toolCall') return [];
+    const id = typeof item.id === 'string' ? item.id : '';
+    const name = typeof item.name === 'string' ? item.name : '';
+    if (!id && !name) return [];
+    return [{ id, name, input: item.input ?? item.arguments ?? {} }];
+  });
+}
+
+function extractClaudeToolResultContent(message: unknown): { toolUseId: string; content: unknown; isError?: boolean } | null {
+  const record = asRecord(message);
+  const content = Array.isArray(record?.content) ? record.content : [];
+  for (const block of content) {
+    const item = asRecord(block);
+    if (!item || item.type !== 'tool_result') continue;
+    return {
+      toolUseId: typeof item.tool_use_id === 'string' ? item.tool_use_id : '',
+      content: item.content,
+      isError: typeof item.is_error === 'boolean' ? item.is_error : undefined,
+    };
+  }
+  return null;
+}
+
+function stringifyToolResultContent(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) {
+    return value.map((item) => stringifyToolResultContent(item)).filter(Boolean).join('\n');
+  }
+  const record = asRecord(value);
+  if (record) {
+    if (typeof record.text === 'string') return record.text;
+    if (typeof record.content === 'string') return record.content;
+    if (record.content) return stringifyToolResultContent(record.content);
+  }
+  return value == null ? '' : JSON.stringify(value, null, 2);
+}
+
+function nativeCliContentBlocks(content: unknown): unknown[] {
+  if (Array.isArray(content)) return content;
+  if (typeof content === 'string') {
+    return content.trim() ? [{ type: 'text', text: content }] : [];
+  }
+  return content == null ? [] : [content];
+}
+
+function nativeCliContentBlockSignature(block: unknown): string {
+  if (block == null) return 'null';
+  if (typeof block !== 'object') return `${typeof block}:${String(block)}`;
+  try {
+    return JSON.stringify(block);
+  } catch {
+    return Object.prototype.toString.call(block);
+  }
+}
+
+function mergeNativeCliAssistantMessage(
+  previous: Record<string, unknown>,
+  next: Record<string, unknown>,
+): Record<string, unknown> {
+  const seen = new Set<string>();
+  const content: unknown[] = [];
+  for (const block of [
+    ...nativeCliContentBlocks(previous.content),
+    ...nativeCliContentBlocks(next.content),
+  ]) {
+    const signature = nativeCliContentBlockSignature(block);
+    if (seen.has(signature)) continue;
+    seen.add(signature);
+    content.push(block);
+  }
+
+  return {
+    ...previous,
+    ...next,
+    id: previous.id ?? next.id,
+    role: 'assistant',
+    timestamp: previous.timestamp ?? next.timestamp,
+    content,
+  };
+}
+
+function mergeNativeCliTranscriptFragments(messages: Record<string, unknown>[]): {
+  messages: Record<string, unknown>[];
+  mergedAssistantIds: string[];
+} {
+  const result: Record<string, unknown>[] = [];
+  const assistantIndexById = new Map<string, number>();
+  const mergedAssistantIds = new Set<string>();
+
+  for (const message of messages) {
+    const role = typeof message.role === 'string' ? message.role : '';
+    const id = typeof message.id === 'string' ? message.id : '';
+    if (role === 'assistant' && id) {
+      const existingIndex = assistantIndexById.get(id);
+      if (existingIndex !== undefined) {
+        result[existingIndex] = mergeNativeCliAssistantMessage(result[existingIndex], message);
+        mergedAssistantIds.add(id);
+        continue;
+      }
+      assistantIndexById.set(id, result.length);
+    }
+    result.push(message);
+  }
+
+  return { messages: result, mergedAssistantIds: [...mergedAssistantIds] };
+}
+
+const nativeCliTranscriptMergeLogCache = new Map<string, string>();
+
+function logNativeCliTranscriptMerge(params: {
+  agentId: string;
+  provider: string;
+  sessionId: string;
+  sessionFile: string;
+  rawCount: number;
+  mergedCount: number;
+  mergedAssistantIds: string[];
+}) {
+  if (params.mergedAssistantIds.length === 0) return;
+  const signature = [
+    params.rawCount,
+    params.mergedCount,
+    params.mergedAssistantIds.length,
+    params.mergedAssistantIds.slice(-8).join(','),
+  ].join('|');
+  const cacheKey = `${params.agentId}:${params.provider}:${params.sessionId}`;
+  if (nativeCliTranscriptMergeLogCache.get(cacheKey) === signature) return;
+  nativeCliTranscriptMergeLogCache.set(cacheKey, signature);
+  console.info('[native-cli-transcript] merged assistant fragments', {
+    agentId: params.agentId,
+    provider: params.provider,
+    sessionId: params.sessionId,
+    sessionFile: params.sessionFile,
+    rawCount: params.rawCount,
+    mergedCount: params.mergedCount,
+    mergedAssistantFragmentIds: params.mergedAssistantIds.slice(-12),
+  });
+}
 
 function stripUtf8Bom(raw: string): string {
   return raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw;
@@ -438,6 +608,80 @@ async function resolveNativeCliSessionFromFiles(params: {
 
   // No file matched the user text — return null instead of a wrong session.
   return null;
+}
+
+async function readNativeCliTranscript(params: {
+  agentId: string;
+  provider?: string;
+  sessionId?: string;
+  latest?: boolean;
+}): Promise<NativeCliTranscriptResult | null> {
+  const context = await resolveNativeCliRuntimeContext(params.agentId);
+  if (!context) return null;
+  const provider = params.provider?.trim()
+    ? normalizeNativeCliProvider(params.provider)
+    : context.provider;
+  const sessionId = params.sessionId?.trim() || '';
+  const files = provider === 'codex'
+    ? (await Promise.all(codexSessionDirsForStartedAt(Date.now()).map((dir) => listJsonlFiles(dir, true)))).flat()
+    : (await Promise.all(claudeSessionDirs(context).map((dir) => listJsonlFiles(dir, true)))).flat();
+  const candidates = files
+    .filter((file) => !sessionId || file.sessionId === sessionId)
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+  const selected = sessionId
+    ? candidates[0]
+    : params.latest
+      ? candidates[0]
+      : null;
+  if (!selected) return null;
+
+  const fsP = await import('node:fs/promises');
+  const raw = await fsP.readFile(selected.path, 'utf8');
+  const toolUses = new Map<string, { name: string; input: unknown }>();
+  const parsedMessages = raw.split(/\r?\n/).flatMap((line) => {
+    if (!line.trim()) return [];
+    try {
+      const entry = JSON.parse(line) as ClaudeJsonlEntry;
+      const type = typeof entry.type === 'string' ? entry.type.toLowerCase() : '';
+      if (!entry.message || !VISIBLE_NATIVE_CLI_TRANSCRIPT_ENTRY_TYPES.has(type)) return [];
+      const message = asRecord(entry.message);
+      if (!message) return [];
+      for (const toolUse of extractClaudeToolUses(message)) {
+        if (toolUse.id) toolUses.set(toolUse.id, { name: toolUse.name, input: toolUse.input });
+      }
+      const toolResult = type === 'user' ? extractClaudeToolResultContent(message) : null;
+      if (toolResult) {
+        const tool = toolResult.toolUseId ? toolUses.get(toolResult.toolUseId) : undefined;
+        return [{
+          id: entry.uuid,
+          role: 'toolresult',
+          content: stringifyToolResultContent(toolResult.content),
+          timestamp: message.timestamp ?? entry.timestamp,
+          toolCallId: toolResult.toolUseId,
+          toolUseId: toolResult.toolUseId,
+          toolName: tool?.name,
+          toolInput: tool?.input,
+          details: entry.toolUseResult,
+          isError: toolResult.isError,
+        }];
+      }
+      return [{ ...message, id: message.id ?? entry.uuid, timestamp: message.timestamp ?? entry.timestamp }];
+    } catch {
+      return [];
+    }
+  });
+  const { messages, mergedAssistantIds } = mergeNativeCliTranscriptFragments(parsedMessages);
+  logNativeCliTranscriptMerge({
+    agentId: params.agentId,
+    provider,
+    sessionId: selected.sessionId,
+    sessionFile: selected.path,
+    rawCount: parsedMessages.length,
+    mergedCount: messages.length,
+    mergedAssistantIds,
+  });
+
+  return { sessionId: selected.sessionId, sessionFile: selected.path, messages };
 }
 
 function getSessionKeyTail(sessionKey: string): string {
@@ -1009,6 +1253,50 @@ export async function handleSessionRoutes(
         resolved: true,
         sessionId: resolved.sessionId,
         sessionFile: resolved.sessionFile,
+      });
+    } catch (error) {
+      sendJson(res, 500, { success: false, error: String(error) });
+    }
+    return true;
+  }
+
+  if (NATIVE_CLI_TRANSCRIPT_PATHS.has(url.pathname) && req.method === 'POST') {
+    try {
+      const body = await parseJsonBody<{
+        sessionKey?: string;
+        provider?: string;
+        sessionId?: string;
+        latest?: boolean;
+      }>(req);
+      const sessionKey = body.sessionKey?.trim() || '';
+      const agentId = parseAgentIdFromSessionKey(sessionKey);
+      if (!agentId) {
+        sendJson(res, 400, { success: false, error: 'sessionKey is required' });
+        return true;
+      }
+      const transcript = await readNativeCliTranscript({
+        agentId,
+        provider: body.provider,
+        sessionId: body.sessionId,
+        latest: body.latest,
+      });
+      if (!transcript) {
+        sendJson(res, 200, { success: true, runtimeType: 'native-cli', sessionKey, resolved: false, messages: [] });
+        return true;
+      }
+      await persistNativeCliSessionIndex({
+        sessionKey,
+        provider: body.provider,
+        cliSessionId: transcript.sessionId,
+      });
+      sendJson(res, 200, {
+        success: true,
+        runtimeType: 'native-cli',
+        sessionKey,
+        resolved: true,
+        sessionId: transcript.sessionId,
+        sessionFile: transcript.sessionFile,
+        messages: transcript.messages,
       });
     } catch (error) {
       sendJson(res, 500, { success: false, error: String(error) });

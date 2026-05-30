@@ -57,6 +57,10 @@ export const ChatMessage = memo(function ChatMessage({
   const tools = extractToolUse(message);
   const visibleThinking = showThinking ? thinking : null;
   const visibleTools = suppressToolCards ? [] : tools;
+  const details = message.details && typeof message.details === 'object'
+    ? message.details as Record<string, unknown>
+    : null;
+  const terminalLoading = Boolean(details?.terminalLoading);
   const shouldHideProcessAttachments = suppressProcessAttachments
     && (hasText || !!visibleThinking || images.length > 0 || visibleTools.length > 0);
 
@@ -65,11 +69,12 @@ export const ChatMessage = memo(function ChatMessage({
     : (message._attachedFiles || []);
   const [lightboxImg, setLightboxImg] = useState<{ src: string; fileName: string; filePath?: string; base64?: string; mimeType?: string } | null>(null);
 
-  // Never render tool result messages in chat UI
-  if (isToolResult) return null;
+  if (isToolResult) {
+    return <ToolResultMessage message={message} />;
+  }
 
   const hasStreamingToolStatus = isStreaming && streamingTools.length > 0;
-  if (!hasText && !visibleThinking && images.length === 0 && visibleTools.length === 0 && attachedFiles.length === 0 && !hasStreamingToolStatus) return null;
+  if (!hasText && !visibleThinking && images.length === 0 && visibleTools.length === 0 && attachedFiles.length === 0 && !hasStreamingToolStatus && !terminalLoading) return null;
 
   return (
     <div
@@ -96,9 +101,13 @@ export const ChatMessage = memo(function ChatMessage({
           <ToolStatusBar tools={streamingTools} />
         )}
 
+        {terminalLoading && !hasText && !visibleThinking && (
+          <TerminalLoadingBubble />
+        )}
+
         {/* Thinking section */}
         {visibleThinking && (
-          <ThinkingBlock content={visibleThinking} />
+          <ThinkingBlock content={visibleThinking} defaultExpanded={isStreaming} />
         )}
 
         {/* Tool use cards */}
@@ -250,6 +259,16 @@ export const ChatMessage = memo(function ChatMessage({
   );
 });
 
+function TerminalLoadingBubble() {
+  return (
+    <div className="flex items-center gap-1.5 rounded-2xl border border-border/50 bg-muted/30 px-3 py-2">
+      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/70 [animation-delay:-0.24s]" />
+      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/70 [animation-delay:-0.12s]" />
+      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/70" />
+    </div>
+  );
+}
+
 function formatDuration(durationMs?: number): string | null {
   if (!durationMs || !Number.isFinite(durationMs)) return null;
   if (durationMs < 1000) return `${Math.round(durationMs)}ms`;
@@ -296,6 +315,85 @@ function ToolStatusBar({
           </div>
         );
       })}
+    </div>
+  );
+}
+
+function toolResultText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content.map((item) => toolResultText(item)).filter(Boolean).join('\n');
+  }
+  if (content && typeof content === 'object') {
+    const record = content as Record<string, unknown>;
+    if (typeof record.text === 'string') return record.text;
+    if (typeof record.content === 'string') return record.content;
+    if (record.content) return toolResultText(record.content);
+  }
+  return content == null ? '' : JSON.stringify(content, null, 2);
+}
+
+function toolResultSummary(message: RawMessage, output: string): string | null {
+  const details = message.details && typeof message.details === 'object'
+    ? message.details as Record<string, unknown>
+    : null;
+  const stdout = typeof details?.stdout === 'string' ? details.stdout : '';
+  const stderr = typeof details?.stderr === 'string' ? details.stderr : '';
+  if (stdout || stderr) {
+    const stdoutLines = stdout ? stdout.split(/\r?\n/).filter(Boolean).length : 0;
+    const stderrLines = stderr ? stderr.split(/\r?\n/).filter(Boolean).length : 0;
+    const parts = [];
+    if (stdoutLines) parts.push(`${stdoutLines} stdout`);
+    if (stderrLines) parts.push(`${stderrLines} stderr`);
+    return parts.join(', ') || null;
+  }
+  const lines = output.split(/\r?\n/).filter(Boolean).length;
+  return lines > 1 ? `${lines} lines` : null;
+}
+
+function ToolResultMessage({ message }: { message: RawMessage }) {
+  const output = toolResultText(message.content).trim();
+  const toolName = typeof message.toolName === 'string' && message.toolName.trim()
+    ? message.toolName.trim()
+    : 'Tool';
+  const summary = toolResultSummary(message, output);
+  const isError = Boolean(message.isError);
+  const command = message.toolInput && typeof message.toolInput === 'object'
+    ? (message.toolInput as Record<string, unknown>).command
+    : undefined;
+  const displayCommand = typeof command === 'string' && command.trim() ? command.trim() : '';
+  if (!output && !displayCommand) return null;
+
+  return (
+    <div className="flex w-full gap-3 group">
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full mt-1 bg-black/5 dark:bg-white/5 text-foreground">
+        {isError ? <AlertCircle className="h-4 w-4 text-destructive" /> : <CheckCircle2 className="h-4 w-4 text-green-500" />}
+      </div>
+      <div className="flex min-w-0 flex-1 flex-col items-start space-y-2">
+        <div
+          className={cn(
+            'w-full overflow-hidden rounded-xl border bg-black/[0.03] dark:bg-white/[0.04]',
+            isError ? 'border-destructive/30' : 'border-border/60',
+          )}
+        >
+          <div className="flex min-w-0 items-center gap-2 border-b border-border/60 px-3 py-2 text-xs">
+            <Wrench className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            <span className="shrink-0 font-mono font-medium">{toolName}</span>
+            {summary && <span className="min-w-0 truncate text-muted-foreground">{summary}</span>}
+          </div>
+          {displayCommand && (
+            <div className="border-b border-border/60 bg-background/60 px-3 py-2 font-mono text-xs text-foreground">
+              <span className="select-none text-muted-foreground">$ </span>
+              <span className="break-words">{displayCommand}</span>
+            </div>
+          )}
+          {output && (
+            <pre className="max-h-[320px] overflow-auto whitespace-pre-wrap break-words px-3 py-2.5 font-mono text-xs leading-relaxed text-foreground">
+              {output}
+            </pre>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -397,7 +495,7 @@ function MessageBubble({
       {isUser ? (
         <p className="whitespace-pre-line break-words break-all text-sm">{text}</p>
       ) : (
-        <div className="prose prose-sm dark:prose-invert max-w-none break-words break-all">
+        <div className="prose prose-sm dark:prose-invert max-w-none min-w-0 break-words">
           <ReactMarkdown
             remarkPlugins={[remarkGfm]}
             components={{
@@ -406,14 +504,14 @@ function MessageBubble({
                 const isInline = !match && !className;
                 if (isInline) {
                   return (
-                    <code className="bg-background/50 px-1.5 py-0.5 rounded text-sm font-mono break-words break-all" {...props}>
+                    <code className="bg-background/50 px-1.5 py-0.5 rounded text-sm font-mono break-words" {...props}>
                       {children}
                     </code>
                   );
                 }
                 return (
-                  <pre className="bg-background/50 rounded-lg p-4 overflow-x-auto">
-                    <code className={cn('text-sm font-mono', className)} {...props}>
+                  <pre className="max-w-full bg-background/50 rounded-lg p-4 overflow-x-auto whitespace-pre">
+                    <code className={cn('text-sm font-mono break-normal', className)} {...props}>
                       {children}
                     </code>
                   </pre>
@@ -442,8 +540,8 @@ function MessageBubble({
 
 // ── Thinking Block ──────────────────────────────────────────────
 
-function ThinkingBlock({ content }: { content: string }) {
-  const [expanded, setExpanded] = useState(false);
+function ThinkingBlock({ content, defaultExpanded = false }: { content: string; defaultExpanded?: boolean }) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
   const contentRef = useRef<HTMLDivElement>(null);
   const [contentHeight, setContentHeight] = useState(0);
 
@@ -452,6 +550,10 @@ function ThinkingBlock({ content }: { content: string }) {
       setContentHeight(contentRef.current.scrollHeight);
     }
   }, [content]);
+
+  useEffect(() => {
+    if (defaultExpanded) setExpanded(true);
+  }, [defaultExpanded]);
 
   return (
     <div className="w-full max-w-none rounded-xl border border-black/10 dark:border-white/10 bg-black/5 dark:bg-white/5 text-[14px] overflow-hidden">

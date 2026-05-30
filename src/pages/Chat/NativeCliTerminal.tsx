@@ -17,6 +17,9 @@ import {
 } from '@/lib/native-cli-terminal-state';
 import { addNativeCliAgentSkillsChangedListener } from '@/lib/native-cli-events';
 import { ChatInput } from './ChatInput';
+import { ChatMessage } from './ChatMessage';
+import { extractText, extractThinking } from './message-utils';
+import type { RawMessage } from '@/stores/chat';
 import '@xterm/xterm/css/xterm.css';
 
 interface NativeCliTerminalProps {
@@ -47,6 +50,29 @@ type TerminalTurn = {
   conversationId: string;
   userText: string;
   state: 'active' | 'idle' | 'closed';
+  startedAt: number;
+};
+
+type NativeCliTranscriptResponse = {
+  success: boolean;
+  resolved?: boolean;
+  sessionId?: string;
+  messages?: RawMessage[];
+};
+
+type NativeClaudeLiveSnapshot = {
+  routeModel?: string;
+  sessionKey?: string;
+  turnId?: string;
+  status?: 'running' | 'completed' | 'error';
+  content?: unknown[];
+  text?: string;
+  thinking?: string;
+};
+
+type NativeClaudeLiveTurn = {
+  turnId: string;
+  register: Promise<void>;
 };
 
 type PersistedNativeCliSession = {
@@ -70,6 +96,7 @@ type HostNativeCliResolveResponse = {
 const NATIVE_CLI_SESSIONS_KEY = 'openclaw-native-cli-sessions';
 const RUNTIME_NATIVE_CLI_SESSION_PATH = '/api/runtime/sessions/native-cli';
 const RUNTIME_NATIVE_CLI_RESOLVE_PATH = '/api/runtime/sessions/native-cli/resolve';
+const RUNTIME_NATIVE_CLI_TRANSCRIPT_PATH = '/api/runtime/sessions/native-cli/transcript';
 const TERMINAL_STREAM_MARKER_PREFIX = '\x1b]777;OPENCLAW;';
 const TERMINAL_STREAM_MARKER_SUFFIX = '\x07';
 const TERMINAL_STREAM_OSC_PREFIX = 'OPENCLAW;';
@@ -108,10 +135,16 @@ const TERMINAL_SHELL_PASSTHROUGH_WRAPPERS = new Set(['bun', 'bunx', 'corepack', 
 const TERMINAL_SHELL_PASSTHROUGH_WRAPPER_SUBCOMMANDS = new Set(['dlx', 'exec', 'run', 'x']);
 const TERMINAL_MIN_COLS = 40;
 const TERMINAL_MAX_REASONABLE_CELL_WIDTH = 32;
-const TERMINAL_USER_ECHO_DEBOUNCE_MS = 96;
+const TRANSCRIPT_ACTIVE_POLL_MS = 900;
+const TRANSCRIPT_IDLE_POLL_RETENTION_MS = 120_000;
+const PENDING_LOCAL_USER_TTL_MS = 120_000;
+const TERMINAL_STATUS_BUFFER_CHARS = 2400;
+const TERMINAL_STATUS_MAX_CHARS = 480;
+const CLAUDE_TERMINAL_LOADING_SENTINEL = '__openclaw_terminal_loading__';
 const TERMINAL_ESCAPE = String.fromCharCode(27);
 const TERMINAL_BELL = String.fromCharCode(7);
 const TERMINAL_OSC_PATTERN = new RegExp(`${TERMINAL_ESCAPE}\\][^${TERMINAL_BELL}]*(?:${TERMINAL_BELL}|${TERMINAL_ESCAPE}\\\\)`, 'g');
+const TERMINAL_STREAM_MARKER_PATTERN = new RegExp(`${TERMINAL_ESCAPE}\\]777;OPENCLAW;[^${TERMINAL_BELL}${TERMINAL_ESCAPE}]*(?:${TERMINAL_BELL}|${TERMINAL_ESCAPE}\\\\)`, 'g');
 const TERMINAL_CSI_PATTERN = new RegExp(`${TERMINAL_ESCAPE}\\[[0-?]*[ -/]*[@-~]`, 'g');
 const TERMINAL_CHARSET_PATTERN = new RegExp(`${TERMINAL_ESCAPE}[()][A-Za-z0-9]`, 'g');
 const NATIVE_CLI_SESSION_KEY_PATTERN = /^agent:[^:]+:cli:/i;
@@ -130,6 +163,41 @@ function messageDiagnostic(text: string) {
     length: text.length,
     hash: (hash >>> 0).toString(16).padStart(8, '0'),
   };
+}
+
+function claudeLiveContentSignature(snapshot: NativeClaudeLiveSnapshot): string {
+  const content = Array.isArray(snapshot.content) ? snapshot.content : [];
+  const blockSummary = content.map((block) => {
+    if (!block || typeof block !== 'object') return 'unknown';
+    const record = block as Record<string, unknown>;
+    const type = typeof record.type === 'string' ? record.type : 'unknown';
+    const name = typeof record.name === 'string' ? record.name : '';
+    const text = typeof record.text === 'string' ? record.text : '';
+    const thinking = typeof record.thinking === 'string' ? record.thinking : '';
+    const input = record.input == null ? '' : JSON.stringify(record.input);
+    return JSON.stringify({ type, name, text, thinking, input });
+  }).join(',');
+  return [
+    snapshot.status ?? '',
+    typeof snapshot.text === 'string' ? snapshot.text : '',
+    typeof snapshot.thinking === 'string' ? snapshot.thinking : '',
+    blockSummary,
+  ].join('|');
+}
+
+function claudeLiveContentDebug(snapshot: NativeClaudeLiveSnapshot) {
+  const content = Array.isArray(snapshot.content) ? snapshot.content : [];
+  return content.map((block) => {
+    if (!block || typeof block !== 'object') return { type: 'unknown' };
+    const record = block as Record<string, unknown>;
+    return {
+      type: typeof record.type === 'string' ? record.type : 'unknown',
+      name: typeof record.name === 'string' ? record.name : undefined,
+      textLength: typeof record.text === 'string' ? record.text.length : 0,
+      thinkingLength: typeof record.thinking === 'string' ? record.thinking.length : 0,
+      inputLength: record.input == null ? 0 : JSON.stringify(record.input).length,
+    };
+  });
 }
 
 function dataDiagnostic(data: string) {
@@ -182,6 +250,36 @@ function hasPrintableTerminalContent(data: string) {
   return printable.length > 0;
 }
 
+function terminalStatusText(data: string, activeUserText?: string): string {
+  const normalizedUserText = normalizeTerminalLineText(activeUserText ?? '');
+  const plain = data
+    .replace(TERMINAL_STREAM_MARKER_PATTERN, '')
+    .replace(TERMINAL_OSC_PATTERN, '')
+    .replace(TERMINAL_CSI_PATTERN, '')
+    .replace(TERMINAL_CHARSET_PATTERN, '')
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
+    .replace(/\r/g, '\n')
+    .split('\n')
+    .map((line) => line.replace(/\s+/g, ' ').trim())
+    .filter((line) => {
+      if (!line) return false;
+      const normalizedLine = normalizeTerminalLineText(line);
+      if (normalizedUserText && normalizedLine === normalizedUserText) return false;
+      if (/bypass permissions/i.test(line)) return false;
+      if (/shift\s*\+\s*tab/i.test(line)) return false;
+      if (/permissions\s+on/i.test(line)) return false;
+      if (/esc\s+to\s+interrupt/i.test(line)) return false;
+      if (/^[│┌┐└┘─╭╮╰╯═╔╗╚╝┼├┤]+$/.test(line)) return false;
+      if (/^\? for shortcuts$/i.test(line)) return false;
+      return true;
+    })
+    .join('\n')
+    .trim();
+  if (!plain) return '';
+  if (plain.length <= TERMINAL_STATUS_MAX_CHARS) return plain;
+  return plain.slice(-TERMINAL_STATUS_MAX_CHARS).trimStart();
+}
+
 function terminalHasVisibleContent(term: Terminal | null, mount: HTMLElement | null) {
   if (!term || !mount) return false;
   const buffer = term.buffer.active;
@@ -231,6 +329,24 @@ async function updateClaudeProxyModel(routeModel: string, upstreamModel: string)
   if (!response.ok) throw new Error(`Claude proxy model switch failed: ${response.status}`);
 }
 
+async function registerClaudeProxyLivePrompt(routeModel: string, params: {
+  sessionKey: string;
+  turnId: string;
+  prompt: string;
+}): Promise<void> {
+  const response = await fetch(`http://127.0.0.1:${CLAUDE_NATIVE_PROXY_PORT}/native-claude/${encodeURIComponent(routeModel)}/__live-track`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+  if (!response.ok) throw new Error(`Claude proxy live-track failed: ${response.status}`);
+}
+
+function getClaudeProxyLiveStreamUrl(routeModel: string, sessionKey: string, turnId: string): string {
+  const params = new URLSearchParams({ sessionKey, turnId });
+  return `http://127.0.0.1:${CLAUDE_NATIVE_PROXY_PORT}/native-claude/${encodeURIComponent(routeModel)}/__live-stream?${params.toString()}`;
+}
+
 function loadPersistedTerminalState(sessionKey: string): PersistedTerminalState {
   try {
     const raw = sessionStorage.getItem(storageKey(sessionKey));
@@ -242,10 +358,17 @@ function loadPersistedTerminalState(sessionKey: string): PersistedTerminalState 
 
 function savePersistedTerminalState(sessionKey: string, state: PersistedTerminalState) {
   try {
-    sessionStorage.setItem(storageKey(sessionKey), JSON.stringify(state));
+    sessionStorage.setItem(storageKey(sessionKey), JSON.stringify({
+      ...state,
+      buffer: state.buffer ? stripTerminalStreamMarkers(state.buffer) : state.buffer,
+    }));
   } catch {
     // Ignore quota/storage failures; session resume still works via cliSessionId.
   }
+}
+
+function stripTerminalStreamMarkers(buffer: string): string {
+  return buffer.replace(TERMINAL_STREAM_MARKER_PATTERN, '');
 }
 
 function resolveStoredCliSessionId(sessionKey: string, explicit?: string): string {
@@ -423,17 +546,318 @@ function normalizeTerminalLineText(text: string) {
   return text.replace(/\s+/g, ' ').trim();
 }
 
-function compactTerminalLineText(text: string) {
-  return text.replace(/\s+/g, '').trim();
+function nativeCliMessageKey(message: RawMessage, index: number): string {
+  return `${message.role}|${message.id ?? ''}|${message.timestamp ?? ''}|${extractText(message)}|${index}`;
 }
 
-function terminalLineContainsUserText(lineText: string, userText: string) {
-  const normalizedLine = normalizeTerminalLineText(lineText);
-  const normalizedUser = normalizeTerminalLineText(userText);
-  if (normalizedUser && normalizedLine.includes(normalizedUser)) return true;
-  const compactLine = compactTerminalLineText(lineText);
-  const compactUser = compactTerminalLineText(userText);
-  return Boolean(compactUser && compactLine.includes(compactUser));
+function nativeCliMessageTimestampMs(message: RawMessage): number {
+  const timestamp = message.timestamp;
+  if (typeof timestamp === 'number' && Number.isFinite(timestamp)) return timestamp;
+  if (typeof timestamp === 'string') {
+    const parsed = Date.parse(timestamp);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
+}
+
+function nativeCliMessagesEqual(a: RawMessage[], b: RawMessage[]) {
+  if (a.length !== b.length) return false;
+  return a.every((message, index) => nativeCliMessageKey(message, index) === nativeCliMessageKey(b[index], index));
+}
+
+function findLastNativeCliUserIndex(messages: RawMessage[], userText: string): number {
+  const normalizedUserText = normalizeTerminalLineText(userText);
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role === 'user' && normalizeTerminalLineText(extractText(message)) === normalizedUserText) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function nativeCliLiveTurnId(message: RawMessage | null): string {
+  const id = typeof message?.id === 'string' ? message.id : '';
+  return id.startsWith('live-') ? id.slice(5) : '';
+}
+
+function isLiveAssistantMessage(message: RawMessage, liveMessage: RawMessage | null): boolean {
+  return Boolean(liveMessage?.id && message.id && liveMessage.id === message.id);
+}
+
+function nativeCliMessageVisibleText(message: RawMessage): string {
+  return normalizeTerminalLineText(extractText(message));
+}
+
+function nativeCliMessageVisibleThinking(message: RawMessage): string {
+  return normalizeTerminalLineText(extractThinking(message) ?? '');
+}
+
+function nativeCliMessagesHaveSharedContent(a: RawMessage, b: RawMessage): boolean {
+  const aText = nativeCliMessageVisibleText(a);
+  const bText = nativeCliMessageVisibleText(b);
+  const aThinking = nativeCliMessageVisibleThinking(a);
+  const bThinking = nativeCliMessageVisibleThinking(b);
+  const textMatches = Boolean(aText && bText && (
+    aText === bText ||
+    (
+      aText.length >= 80 &&
+      bText.length >= 80 &&
+      (
+        aText.includes(bText.slice(0, 160)) ||
+        bText.includes(aText.slice(0, 160))
+      )
+    )
+  ));
+  const thinkingMatches = Boolean(aThinking && bThinking && (
+    aThinking === bThinking ||
+    (
+      aThinking.length >= 80 &&
+      bThinking.length >= 80 &&
+      (
+        aThinking.includes(bThinking.slice(0, 160)) ||
+        bThinking.includes(aThinking.slice(0, 160))
+      )
+    )
+  ));
+  return textMatches || thinkingMatches;
+}
+
+function transcriptContainsLiveAssistant(transcriptMessages: RawMessage[], liveMessage: RawMessage | null): boolean {
+  if (!liveMessage) return false;
+  const liveText = nativeCliMessageVisibleText(liveMessage);
+  const liveThinking = nativeCliMessageVisibleThinking(liveMessage);
+  if (!liveText && !liveThinking) return false;
+  return transcriptMessages.some((message) => {
+    if (message.role !== 'assistant') return false;
+    return nativeCliMessagesHaveSharedContent(message, liveMessage);
+  });
+}
+
+function transcriptContainsLiveAssistantForTurn(
+  transcriptMessages: RawMessage[],
+  liveMessage: RawMessage | null,
+  liveTurn: TerminalTurn | undefined,
+): boolean {
+  if (!liveTurn) return false;
+  let turnUserIndex = -1;
+  for (let index = transcriptMessages.length - 1; index >= 0; index -= 1) {
+    const message = transcriptMessages[index];
+    if (message.role !== 'user') continue;
+    if (normalizeTerminalLineText(extractText(message)) !== normalizeTerminalLineText(liveTurn.userText)) continue;
+    const timestamp = nativeCliMessageTimestampMs(message);
+    if (timestamp && timestamp < liveTurn.startedAt - 10_000) continue;
+    turnUserIndex = index;
+    break;
+  }
+  const candidateMessages = turnUserIndex >= 0
+    ? transcriptMessages.slice(turnUserIndex + 1)
+    : transcriptMessages.filter((message) => {
+      const timestamp = nativeCliMessageTimestampMs(message);
+      return timestamp && timestamp >= liveTurn.startedAt - 10_000;
+    });
+  return transcriptContainsLiveAssistant(candidateMessages, liveMessage);
+}
+
+function findNativeCliTranscriptUserForTurn(
+  transcriptMessages: RawMessage[],
+  liveTurn: TerminalTurn | undefined,
+): RawMessage | null {
+  if (!liveTurn) return null;
+  for (let index = transcriptMessages.length - 1; index >= 0; index -= 1) {
+    const message = transcriptMessages[index];
+    if (message.role !== 'user') continue;
+    const id = typeof message.id === 'string' ? message.id : '';
+    if (id.startsWith('local-')) continue;
+    if (normalizeTerminalLineText(extractText(message)) !== normalizeTerminalLineText(liveTurn.userText)) continue;
+    const timestamp = nativeCliMessageTimestampMs(message);
+    if (timestamp && timestamp < liveTurn.startedAt - 10_000) continue;
+    return message;
+  }
+  return null;
+}
+
+function reconcilePendingLocalUserMessages(
+  pendingMessages: RawMessage[],
+  visibleMessages: RawMessage[],
+  activeTurnId: string | null,
+): RawMessage[] {
+  const consumedTranscriptUserIndexes = new Set<number>();
+  const now = Date.now();
+  return pendingMessages.filter((pending) => {
+    const pendingId = typeof pending.id === 'string' ? pending.id : '';
+    if (!pendingId.startsWith('local-')) return false;
+    const pendingText = normalizeTerminalLineText(extractText(pending));
+    const pendingAt = nativeCliMessageTimestampMs(pending);
+    if (!pendingText) return false;
+    if (!pendingAt || now - pendingAt > PENDING_LOCAL_USER_TTL_MS) return false;
+    const matchIndex = visibleMessages.findIndex((candidate, index) => {
+      if (consumedTranscriptUserIndexes.has(index)) return false;
+      if (candidate.role !== 'user') return false;
+      if (normalizeTerminalLineText(extractText(candidate)) !== pendingText) return false;
+      const candidateAt = nativeCliMessageTimestampMs(candidate);
+      return Boolean(pendingAt && candidateAt && candidateAt >= pendingAt - 2_000 && candidateAt <= pendingAt + 120_000);
+    });
+    if (matchIndex >= 0) {
+      consumedTranscriptUserIndexes.add(matchIndex);
+      return false;
+    }
+    if (activeTurnId && pendingId === activeTurnId) return true;
+    if (!activeTurnId) return false;
+    return true;
+  });
+}
+
+function nativeCliContentBlocks(content: unknown): unknown[] {
+  if (Array.isArray(content)) return content;
+  if (typeof content === 'string') return content.trim() ? [{ type: 'text', text: content }] : [];
+  return content == null ? [] : [content];
+}
+
+function nativeCliContentBlockSignature(block: unknown): string {
+  if (block == null) return 'null';
+  if (typeof block !== 'object') return `${typeof block}:${String(block)}`;
+  try {
+    return JSON.stringify(block);
+  } catch {
+    return Object.prototype.toString.call(block);
+  }
+}
+
+function mergeNativeCliAssistantMessages(previous: RawMessage, next: RawMessage): RawMessage {
+  const seen = new Set<string>();
+  const content: unknown[] = [];
+  for (const block of [
+    ...nativeCliContentBlocks(previous.content),
+    ...nativeCliContentBlocks(next.content),
+  ]) {
+    const signature = nativeCliContentBlockSignature(block);
+    if (seen.has(signature)) continue;
+    seen.add(signature);
+    content.push(block);
+  }
+  return {
+    ...previous,
+    ...next,
+    id: previous.id ?? next.id,
+    role: 'assistant',
+    timestamp: previous.timestamp ?? next.timestamp,
+    content,
+  };
+}
+
+function mergeNativeCliAssistantFragments(messages: RawMessage[]): RawMessage[] {
+  const result: RawMessage[] = [];
+  const assistantIndexById = new Map<string, number>();
+  for (const message of messages) {
+    const id = typeof message.id === 'string' ? message.id : '';
+    if (message.role === 'assistant' && id) {
+      const existingIndex = assistantIndexById.get(id);
+      if (existingIndex !== undefined) {
+        result[existingIndex] = mergeNativeCliAssistantMessages(result[existingIndex], message);
+        continue;
+      }
+      assistantIndexById.set(id, result.length);
+    }
+    result.push(message);
+  }
+  return result;
+}
+
+function nativeCliMessageSignature(message: RawMessage): string {
+  const text = normalizeTerminalLineText(extractText(message));
+  const content = JSON.stringify(message.content ?? '');
+  const id = typeof message.id === 'string' ? message.id : '';
+  if (id) return `${message.role}|id:${id}`;
+  const timestamp = typeof message.timestamp === 'number' || typeof message.timestamp === 'string'
+    ? String(message.timestamp)
+    : '';
+  if (timestamp) return `${message.role}|time:${timestamp}|${text || content}`;
+  return [
+    message.role,
+    text || content,
+  ].join('|');
+}
+
+function dedupeNativeCliMessages(messages: RawMessage[]): RawMessage[] {
+  const seen = new Set<string>();
+  const result: RawMessage[] = [];
+  for (const message of messages) {
+    const signature = nativeCliMessageSignature(message);
+    if (seen.has(signature)) continue;
+    seen.add(signature);
+    result.push(message);
+  }
+  return result;
+}
+
+function visibleNativeCliMessages(messages: RawMessage[]) {
+  return messages.filter((message) => {
+    const text = extractText(message).trim();
+    if ((message.role === 'system' || message.role === 'assistant' || message.role === 'user')) {
+      if (/^(HEARTBEAT_OK|NO_REPLY)\s*$/.test(text)) return false;
+      if (text.startsWith('Read HEARTBEAT.md if it exists (workspace context).')) return false;
+    }
+    return true;
+  });
+}
+
+function sanitizeClaudeLiveContent(content: unknown[] | undefined, text: string, thinking: string): unknown {
+  const blocks = Array.isArray(content)
+    ? content.filter((block) => block && typeof block === 'object')
+    : [];
+  if (blocks.length > 0) {
+    const hasText = blocks.some((block) => (
+      typeof (block as Record<string, unknown>).text === 'string' &&
+      ((block as Record<string, unknown>).text as string).trim()
+    ));
+    const hasThinking = blocks.some((block) => (
+      typeof (block as Record<string, unknown>).thinking === 'string' &&
+      ((block as Record<string, unknown>).thinking as string).trim()
+    ));
+    const normalizedBlocks = [...blocks];
+    if (thinking.trim() && !hasThinking) normalizedBlocks.unshift({ type: 'thinking', thinking });
+    if (text.trim() && !hasText) normalizedBlocks.push({ type: 'text', text });
+    return normalizedBlocks;
+  }
+  const fallbackBlocks: Array<Record<string, string>> = [];
+  if (thinking.trim()) fallbackBlocks.push({ type: 'thinking', thinking });
+  if (text.trim()) fallbackBlocks.push({ type: 'text', text });
+  return fallbackBlocks.length > 0 ? fallbackBlocks : '';
+}
+
+function claudeLiveSnapshotHasVisibleContent(snapshot: NativeClaudeLiveSnapshot): boolean {
+  const text = typeof snapshot.text === 'string' ? snapshot.text.trim() : '';
+  const thinking = typeof snapshot.thinking === 'string' ? snapshot.thinking.trim() : '';
+  const blocks = Array.isArray(snapshot.content) ? snapshot.content : [];
+  return Boolean(text || thinking || blocks.some((block) => {
+    if (!block || typeof block !== 'object') return false;
+    const record = block as Record<string, unknown>;
+    return record.type === 'tool_use'
+      || (typeof record.text === 'string' && record.text.trim())
+      || (typeof record.thinking === 'string' && record.thinking.trim());
+  }));
+}
+
+function claudeLiveSnapshotToMessage(snapshot: NativeClaudeLiveSnapshot): RawMessage {
+  const text = typeof snapshot.text === 'string' ? snapshot.text : '';
+  const thinking = typeof snapshot.thinking === 'string' ? snapshot.thinking : '';
+  return {
+    id: `live-${snapshot.turnId || Date.now().toString(36)}`,
+    role: 'assistant',
+    content: sanitizeClaudeLiveContent(snapshot.content, text, thinking),
+    timestamp: Date.now(),
+  };
+}
+
+function claudeTerminalStatusToMessage(turnId: string, status: string): RawMessage {
+  return {
+    id: `live-${turnId}`,
+    role: 'assistant',
+    content: status === CLAUDE_TERMINAL_LOADING_SENTINEL ? '' : [{ type: 'text', text: status }],
+    timestamp: Date.now(),
+    details: status === CLAUDE_TERMINAL_LOADING_SENTINEL ? { terminalLoading: true } : undefined,
+  };
 }
 
 function normalizeShellCommandToken(token: string) {
@@ -477,6 +901,10 @@ function shellComposeToPtyInput(text: string): string[] {
   return payloads;
 }
 
+function claudePromptToPtyInput(text: string): string[] {
+  return shellComposeToPtyInput(text);
+}
+
 function NativeCliTerminalStyles() {
   return (
     <style>{`
@@ -495,6 +923,7 @@ function NativeCliTerminalStyles() {
         color: var(--native-cli-foreground);
       }
       .native-cli-terminal__area {
+        --terminal-content-inset: max(24px, calc((100% - var(--terminal-screen-width)) / 2));
         position: absolute;
         inset: 0;
         min-height: 0;
@@ -502,14 +931,67 @@ function NativeCliTerminalStyles() {
         background: var(--native-cli-background);
       }
       .native-cli-terminal__mount {
-        --terminal-content-inset: max(24px, calc((100% - var(--terminal-screen-width)) / 2));
         position: absolute;
-        top: 20px;
-        bottom: 132px;
-        left: 0;
-        width: 100%;
-        overflow: hidden;
+        width: min(var(--terminal-content-width), calc(100% - 48px));
+        height: 420px;
+        left: -10000px;
+        top: -10000px;
+        opacity: 0;
+        pointer-events: none;
         background: var(--native-cli-background);
+      }
+      .native-cli-terminal__transcript {
+        position: absolute;
+        inset: 0;
+        overflow-y: auto;
+        padding: 28px var(--terminal-content-inset) 196px;
+        scrollbar-width: thin;
+        scrollbar-color: hsl(var(--foreground) / 0.14) transparent;
+      }
+      .native-cli-terminal__transcript::-webkit-scrollbar {
+        width: 6px;
+      }
+      .native-cli-terminal__transcript::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      .native-cli-terminal__transcript::-webkit-scrollbar-thumb {
+        background: hsl(var(--foreground) / 0.14);
+        border-radius: 999px;
+      }
+      .native-cli-terminal__messages {
+        width: min(var(--terminal-content-width), 100%);
+        margin: 0 auto;
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+        min-width: 0;
+      }
+      .native-cli-terminal__empty {
+        display: flex;
+        min-height: calc(100vh - 260px);
+        align-items: center;
+        justify-content: center;
+        color: hsl(var(--muted-foreground));
+        font-size: 14px;
+      }
+      .native-cli-terminal__status-row {
+        display: inline-flex;
+        align-self: flex-start;
+        align-items: center;
+        gap: 8px;
+        min-height: 30px;
+        padding: 6px 10px;
+        border: 1px solid hsl(var(--border));
+        border-radius: 8px;
+        background: hsl(var(--card));
+        color: hsl(var(--muted-foreground));
+        font-size: 12px;
+      }
+      .native-cli-terminal__status-row svg {
+        width: 14px;
+        height: 14px;
+        animation: native-cli-spin .8s linear infinite;
+        color: #2563eb;
       }
       .native-cli-terminal__loading {
         position: absolute;
@@ -608,35 +1090,6 @@ function NativeCliTerminalStyles() {
       .native-cli-terminal__mount .xterm-viewport::-webkit-scrollbar-thumb:hover {
         background: hsl(var(--foreground) / 0.2);
       }
-      .native-cli-terminal__mount .xterm-rows div.openclaw-user-echo-row {
-        display: flex !important;
-        justify-content: flex-end;
-        align-items: center;
-        width: min(var(--terminal-content-width), calc(100% - 48px)) !important;
-        min-height: 2.2em;
-        padding: 8px 0;
-        pointer-events: auto;
-        color: transparent !important;
-      }
-      .native-cli-terminal__mount .xterm-rows div.openclaw-user-echo-row * {
-        visibility: hidden !important;
-      }
-      .native-cli-terminal__mount .xterm-rows div.openclaw-user-echo-row::after {
-        content: attr(data-openclaw-user-text);
-        display: block;
-        max-width: min(72%, 680px);
-        padding: 10px 16px;
-        border-radius: 18px 18px 6px 18px;
-        background: #f3f3f3;
-        color: #1a1a1a;
-        font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-        font-size: 15px;
-        font-weight: 400;
-        line-height: 1.6;
-        visibility: visible !important;
-        white-space: pre-wrap;
-        overflow-wrap: anywhere;
-      }
     `}</style>
   );
 }
@@ -658,9 +1111,8 @@ export function NativeCliTerminal({
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
   const resizeRafRef = useRef<number>(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const userEchoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const userEchoRafRef = useRef<number>(0);
-  const rowsObserverRef = useRef<MutationObserver | null>(null);
+  const transcriptPollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const transcriptScrollRef = useRef<HTMLDivElement>(null);
   const terminalTurnsRef = useRef<TerminalTurn[]>([]);
   const activeTerminalTurnIdRef = useRef<string | null>(null);
   const markerBufferRef = useRef('');
@@ -671,6 +1123,7 @@ export function NativeCliTerminal({
   const connectInFlightRef = useRef(false);
   const cliSessionIdRef = useRef('');
   const activeSessionResolveRef = useRef('');
+  const terminalWsUrlRef = useRef('');
   const skillReloadInFlightRef = useRef(false);
   const forceFreshConnectRef = useRef(false);
   const gatewayWsProtocolOverrideRef = useRef<'ws' | 'wss' | null>(null);
@@ -679,12 +1132,24 @@ export function NativeCliTerminal({
   const initialOutputPendingPaintRef = useRef(false);
   const loadingExitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const suppressNativeCliChromeRef = useRef(false);
+  const transcriptIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cliSessionIdPropRef = useRef(cliSessionId);
   const sessionTitleRef = useRef(sessionTitle);
   const sessionUpdatedAtRef = useRef(sessionUpdatedAt);
   const skipResumeResolveRef = useRef(false);
   const reconnectDelayRef = useRef(1000);
   const disposedRef = useRef(false);
+  const transcriptLoadInFlightRef = useRef(false);
+  const transcriptLoadQueuedRef = useRef(false);
+  const liveStreamRef = useRef<EventSource | null>(null);
+  const liveStreamTurnIdRef = useRef<string | null>(null);
+  const liveStreamSnapshotSignatureRef = useRef<string>('');
+  const terminalStatusBufferRef = useRef('');
+  const terminalStatusSignatureRef = useRef('');
+  const terminalDataFrameCountRef = useRef(0);
+  const terminalDataLastAtRef = useRef(0);
+  const pendingLocalUserMessagesRef = useRef<RawMessage[]>([]);
+  const liveAssistantMessageRef = useRef<RawMessage | null>(null);
 
   const [terminalState, dispatchTerminalState] = useReducer(
     nativeCliTerminalReducer,
@@ -694,6 +1159,10 @@ export function NativeCliTerminal({
   const [displayedLoadingLabel, setDisplayedLoadingLabel] = useState('');
   const [loadingExiting, setLoadingExiting] = useState(false);
   const [inputShellState, setInputShellState] = useState<InputShellState>('auto');
+  const [transcriptMessages, setTranscriptMessages] = useState<RawMessage[]>([]);
+  const [activeTranscriptTurnId, setActiveTranscriptTurnId] = useState<string | null>(null);
+  const [liveAssistantMessage, setLiveAssistantMessage] = useState<RawMessage | null>(null);
+  const [liveAssistantStreaming, setLiveAssistantStreaming] = useState(false);
   const inputShellStateRef = useRef<InputShellState>(inputShellState);
 
   const normalizedProvider = useMemo(() => normalizeProvider(cliSessionProvider), [cliSessionProvider]);
@@ -715,6 +1184,10 @@ export function NativeCliTerminal({
       activeClaudeProxyRouteModelRef.current = configuredClaudeProxyRouteModel;
     }
   }, [configuredClaudeProxyRouteModel]);
+
+  useEffect(() => {
+    liveAssistantMessageRef.current = liveAssistantMessage;
+  }, [liveAssistantMessage]);
 
   useEffect(() => {
     inputShellStateRef.current = inputShellState;
@@ -765,85 +1238,73 @@ export function NativeCliTerminal({
     setInputShellState(getScrollDrivenInputState());
   }, [getScrollDrivenInputState]);
 
-  const clearTerminalUserEchoRow = useCallback((row: HTMLElement) => {
-    row.classList.remove('openclaw-user-echo-row');
-    row.removeAttribute('data-openclaw-user-text');
-  }, []);
-
   const resetVisibleTerminalForResume = useCallback(() => {
     markerBufferRef.current = '';
     recentOutputRef.current = '';
     terminalTurnsRef.current = [];
     activeTerminalTurnIdRef.current = null;
+    setActiveTranscriptTurnId(null);
+    setLiveAssistantMessage(null);
     userHasInteractedRef.current = true;
     persistState();
   }, [persistState]);
 
-  const decorateTerminalUserEchoRow = useCallback((row: HTMLElement, userText: string) => {
-    const trimmed = userText.trim();
-    if (row.classList.contains('openclaw-user-echo-row') && row.dataset.openclawUserText === trimmed) return;
-    row.classList.add('openclaw-user-echo-row');
-    row.dataset.openclawUserText = trimmed;
+  const updateLiveAssistantSnapshot = useCallback((_turnId?: string | null) => {
+    // Claude native chat streams through the local proxy, not through hidden xterm output.
   }, []);
 
-  const matchingUserEchoTurn = useCallback((...lineTexts: string[]) => {
-    if (lineTexts.map(normalizeTerminalLineText).filter(Boolean).length === 0) return null;
-    for (const turn of [...terminalTurnsRef.current].reverse()) {
-      if (lineTexts.some((lineText) => terminalLineContainsUserText(lineText, turn.userText))) return turn;
+  const mergeTranscriptMessages = useCallback((messages: RawMessage[]) => {
+    const visibleMessages = dedupeNativeCliMessages(mergeNativeCliAssistantFragments(visibleNativeCliMessages(messages)));
+    const activeTurnId = activeTerminalTurnIdRef.current;
+    if (activeTurnId) {
+      const activeTurn = terminalTurnsRef.current.find((turn) => turn.id === activeTurnId);
+      const activeUserIndex = activeTurn ? findLastNativeCliUserIndex(visibleMessages, activeTurn.userText) : -1;
+      const transcriptHasCurrentAssistant = activeUserIndex >= 0 && visibleMessages
+        .slice(activeUserIndex + 1)
+        .some((message) => message.role === 'assistant' && extractText(message).trim());
+      if (!liveStreamRef.current && transcriptHasCurrentAssistant) setLiveAssistantMessage(null);
+    } else if (liveAssistantMessage) {
+      const liveText = normalizeTerminalLineText(extractText(liveAssistantMessage));
+      const transcriptHasLiveAssistant = Boolean(liveText) && visibleMessages.some((message) => (
+        message.role === 'assistant' &&
+        normalizeTerminalLineText(extractText(message)).includes(liveText.slice(0, 120))
+      ));
+      if (!liveStreamRef.current && transcriptHasLiveAssistant) setLiveAssistantMessage(null);
     }
-    return null;
-  }, []);
-
-  const styleVisibleTerminalUserEchoes = useCallback(() => {
-    if (shellPassthroughRef.current) return;
-    const term = termRef.current;
-    const rowsContainer = mountRef.current?.querySelector<HTMLElement>('.xterm-rows');
-    if (!term || !rowsContainer) return;
-
-    const observer = rowsObserverRef.current;
-    observer?.disconnect();
-    try {
-      const rows = [...rowsContainer.querySelectorAll<HTMLElement>(':scope > div')];
-      const buffer = term.buffer.active;
-      const viewportY = buffer.viewportY;
-      for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
-        const row = rows[rowIndex];
-        const line = buffer.getLine(viewportY + rowIndex);
-        if (!line) {
-          clearTerminalUserEchoRow(row);
-          continue;
-        }
-        const turn = matchingUserEchoTurn(line.translateToString(true), row.textContent ?? '');
-        if (turn) {
-          decorateTerminalUserEchoRow(row, turn.userText);
-        } else {
-          clearTerminalUserEchoRow(row);
-        }
-      }
-    } finally {
-      observer?.observe(rowsContainer, { childList: true, subtree: true, characterData: true });
-    }
-  }, [clearTerminalUserEchoRow, decorateTerminalUserEchoRow, matchingUserEchoTurn]);
-
-  const scheduleTerminalUserEchoStyle = useCallback((immediate = false) => {
-    if (shellPassthroughRef.current) return;
-    if (userEchoTimerRef.current) {
-      clearTimeout(userEchoTimerRef.current);
-      userEchoTimerRef.current = null;
-    }
-    const run = () => {
-      if (userEchoRafRef.current) return;
-      userEchoRafRef.current = requestAnimationFrame(() => {
-        userEchoRafRef.current = 0;
-        styleVisibleTerminalUserEchoes();
+    setTranscriptMessages((prev) => {
+      const prevRealMessages = prev.filter((message) => {
+        const id = typeof message.id === 'string' ? message.id : '';
+        return !id.startsWith('local-');
       });
-    };
-    if (immediate) {
-      run();
-    } else {
-      userEchoTimerRef.current = setTimeout(run, TERMINAL_USER_ECHO_DEBOUNCE_MS);
-    }
-  }, [styleVisibleTerminalUserEchoes]);
+      pendingLocalUserMessagesRef.current = reconcilePendingLocalUserMessages(
+        pendingLocalUserMessagesRef.current,
+        visibleMessages,
+        activeTurnId,
+      );
+      const next = dedupeNativeCliMessages(pendingLocalUserMessagesRef.current.length > 0
+        ? [...visibleMessages, ...pendingLocalUserMessagesRef.current]
+        : visibleMessages);
+      if (nativeCliMessagesEqual(prevRealMessages, next)) return prevRealMessages;
+      const roleCounts = next.reduce<Record<string, number>>((counts, message) => {
+        const role = typeof message.role === 'string' ? message.role : 'unknown';
+        counts[role] = (counts[role] ?? 0) + 1;
+        return counts;
+      }, {});
+      console.info('[native-cli-terminal] transcript messages updated', {
+        agentId,
+        sessionKey,
+        previousCount: prev.length,
+        nextCount: next.length,
+        roleCounts,
+        pendingLocalUsers: pendingLocalUserMessagesRef.current.map((message) => messageDiagnostic(extractText(message))),
+      });
+      return next;
+    });
+    requestAnimationFrame(() => {
+      const scroller = transcriptScrollRef.current;
+      if (scroller) scroller.scrollTop = scroller.scrollHeight;
+    });
+  }, [agentId, liveAssistantMessage, sessionKey]);
 
   const bindNativeCliSessionId = useCallback((sessionId: string) => {
     const trimmed = sessionId.trim();
@@ -876,13 +1337,198 @@ export function NativeCliTerminal({
     }));
   }, [normalizedProvider, persistState, sessionKey]);
 
-  const ensureRowsObserver = useCallback(() => {
-    if (rowsObserverRef.current) return;
-    const rows = mountRef.current?.querySelector<HTMLElement>('.xterm-rows');
-    if (!rows) return;
-    rowsObserverRef.current = new MutationObserver(() => scheduleTerminalUserEchoStyle());
-    rowsObserverRef.current.observe(rows, { childList: true, subtree: true, characterData: true });
-  }, [scheduleTerminalUserEchoStyle]);
+  const loadNativeCliTranscript = useCallback(async (options?: { latest?: boolean; quiet?: boolean; forceDuringLive?: boolean }) => {
+    const sessionId = cliSessionIdRef.current.trim();
+    if (!sessionId && !options?.latest) return;
+    if (liveStreamRef.current && !options?.forceDuringLive) return;
+    if (transcriptLoadInFlightRef.current) {
+      transcriptLoadQueuedRef.current = true;
+      return;
+    }
+    transcriptLoadInFlightRef.current = true;
+    try {
+      const data = await hostApiFetch<NativeCliTranscriptResponse>(RUNTIME_NATIVE_CLI_TRANSCRIPT_PATH, {
+        method: 'POST',
+        body: JSON.stringify({
+          sessionKey,
+          provider: normalizedProvider,
+          sessionId: sessionId || undefined,
+          latest: options?.latest || !sessionId,
+        }),
+      });
+      if (data.sessionId) bindNativeCliSessionId(data.sessionId);
+      const messages = Array.isArray(data.messages) ? data.messages : [];
+      console.debug('[native-cli-terminal] transcript loaded', {
+        agentId,
+        sessionKey,
+        resolved: data.resolved,
+        sessionId: data.sessionId,
+        messages: messages.length,
+      });
+      mergeTranscriptMessages(messages);
+    } catch (error) {
+      console.debug('[native-cli-terminal] transcript load failed', { agentId, sessionKey, error });
+    } finally {
+      transcriptLoadInFlightRef.current = false;
+      if (transcriptLoadQueuedRef.current && !disposedRef.current) {
+        transcriptLoadQueuedRef.current = false;
+        window.setTimeout(() => {
+          void loadNativeCliTranscript({ quiet: true, latest: !cliSessionIdRef.current });
+        }, 250);
+      }
+    }
+  }, [agentId, bindNativeCliSessionId, mergeTranscriptMessages, normalizedProvider, sessionKey]);
+
+  const closeClaudeLiveStream = useCallback((turnId?: string | null) => {
+    if (turnId && liveStreamTurnIdRef.current && liveStreamTurnIdRef.current !== turnId) return;
+    liveStreamRef.current?.close();
+    liveStreamRef.current = null;
+    liveStreamTurnIdRef.current = null;
+    liveStreamSnapshotSignatureRef.current = '';
+    terminalStatusBufferRef.current = '';
+    terminalStatusSignatureRef.current = '';
+    liveAssistantMessageRef.current = null;
+    setLiveAssistantStreaming(false);
+  }, []);
+
+  const startClaudeLiveStream = useCallback((turnId: string, prompt: string): Promise<void> | null => {
+    if (effectiveProvider !== 'claude') return null;
+    const routeModel = activeClaudeProxyRouteModelRef.current || configuredClaudeProxyRouteModel;
+    if (!routeModel) {
+      console.warn('[native-cli-terminal] Claude live stream skipped: missing proxy route model', {
+        agentId,
+        sessionKey,
+        turnId,
+      });
+      return null;
+    }
+
+    closeClaudeLiveStream();
+    liveAssistantMessageRef.current = null;
+    setLiveAssistantMessage(null);
+    setLiveAssistantStreaming(true);
+    liveStreamSnapshotSignatureRef.current = '';
+    terminalStatusBufferRef.current = '';
+    terminalStatusSignatureRef.current = '';
+    const source = new EventSource(getClaudeProxyLiveStreamUrl(routeModel, sessionKey, turnId));
+    liveStreamRef.current = source;
+    liveStreamTurnIdRef.current = turnId;
+
+    const applySnapshot = (event: MessageEvent<string>) => {
+      try {
+        const snapshot = JSON.parse(event.data) as NativeClaudeLiveSnapshot;
+        if (snapshot.turnId && snapshot.turnId !== turnId) return;
+        if (!claudeLiveSnapshotHasVisibleContent(snapshot)) return;
+        const signature = claudeLiveContentSignature(snapshot);
+        if (signature === liveStreamSnapshotSignatureRef.current) return;
+        liveStreamSnapshotSignatureRef.current = signature;
+        console.debug('[native-cli-terminal] Claude live stream snapshot', {
+          agentId,
+          sessionKey,
+          turnId,
+          status: snapshot.status,
+          textLength: typeof snapshot.text === 'string' ? snapshot.text.length : 0,
+          thinkingLength: typeof snapshot.thinking === 'string' ? snapshot.thinking.length : 0,
+          blockCount: Array.isArray(snapshot.content) ? snapshot.content.length : 0,
+          blocks: claudeLiveContentDebug(snapshot),
+        });
+        const nextLiveMessage = claudeLiveSnapshotToMessage({ ...snapshot, turnId });
+        liveAssistantMessageRef.current = nextLiveMessage;
+        setLiveAssistantMessage(nextLiveMessage);
+        console.debug('[native-cli-terminal] live message applied', {
+          agentId,
+          sessionKey,
+          turnId,
+          messageId: nextLiveMessage.id,
+          textLength: extractText(nextLiveMessage).length,
+          displayedCount: transcriptMessages.length + 1,
+        });
+        requestAnimationFrame(() => {
+          const scroller = transcriptScrollRef.current;
+          if (scroller) scroller.scrollTop = scroller.scrollHeight;
+        });
+      } catch (error) {
+        console.warn('[native-cli-terminal] Claude live stream snapshot parse failed', {
+          agentId,
+          sessionKey,
+          turnId,
+          error,
+        });
+      }
+    };
+
+    const markStreamIdle = (event?: MessageEvent<string>) => {
+      if (event) applySnapshot(event);
+      if (activeTerminalTurnIdRef.current === turnId) {
+        activeTerminalTurnIdRef.current = null;
+        setActiveTranscriptTurnId(null);
+      }
+      if (liveStreamRef.current === source) {
+        source.close();
+        liveStreamRef.current = null;
+        liveStreamTurnIdRef.current = null;
+        liveStreamSnapshotSignatureRef.current = '';
+      }
+      setLiveAssistantStreaming(false);
+      void loadNativeCliTranscript({ quiet: true, latest: !cliSessionIdRef.current });
+    };
+
+    source.addEventListener('snapshot', applySnapshot);
+    source.addEventListener('open', () => {
+      console.info('[native-cli-terminal] Claude live stream opened', {
+        agentId,
+        sessionKey,
+        turnId,
+      });
+    });
+    source.addEventListener('done', markStreamIdle);
+    source.onerror = () => {
+      console.warn('[native-cli-terminal] Claude live stream disconnected', {
+        agentId,
+        sessionKey,
+        turnId,
+        readyState: source.readyState,
+      });
+      if (liveStreamRef.current === source && source.readyState === EventSource.CLOSED) {
+        source.close();
+        liveStreamRef.current = null;
+        liveStreamTurnIdRef.current = null;
+        liveStreamSnapshotSignatureRef.current = '';
+        if (activeTerminalTurnIdRef.current === turnId) {
+          activeTerminalTurnIdRef.current = null;
+          setActiveTranscriptTurnId(null);
+        }
+        setLiveAssistantStreaming(false);
+        void loadNativeCliTranscript({ quiet: true, latest: !cliSessionIdRef.current });
+      }
+    };
+
+    const register = registerClaudeProxyLivePrompt(routeModel, { sessionKey, turnId, prompt })
+      .then(() => {
+        console.info('[native-cli-terminal] Claude live stream registered', {
+          agentId,
+          sessionKey,
+          turnId,
+        });
+      })
+      .catch((error) => {
+        console.warn('[native-cli-terminal] Claude live stream register failed', {
+          agentId,
+          sessionKey,
+          turnId,
+          error,
+        });
+      });
+    return register;
+  }, [
+    agentId,
+    closeClaudeLiveStream,
+    configuredClaudeProxyRouteModel,
+    effectiveProvider,
+    loadNativeCliTranscript,
+    sessionKey,
+    transcriptMessages.length,
+  ]);
 
   const upsertTerminalTurn = useCallback((marker: Extract<TerminalStreamMarker, { kind: 'turn_start' }>) => {
     const existing = terminalTurnsRef.current.find((turn) => turn.id === marker.turnId);
@@ -891,7 +1537,11 @@ export function NativeCliTerminal({
       existing.userText = marker.userText;
       existing.state = 'active';
       activeTerminalTurnIdRef.current = existing.id;
-      scheduleTerminalUserEchoStyle(true);
+      setActiveTranscriptTurnId(existing.id);
+      if (!liveStreamRef.current && (!liveAssistantMessage || liveAssistantMessage.id !== `live-${existing.id}`)) {
+        setLiveAssistantMessage(null);
+        setLiveAssistantStreaming(false);
+      }
       return;
     }
 
@@ -901,11 +1551,17 @@ export function NativeCliTerminal({
       normalizeTerminalLineText(turn.userText) === normalizeTerminalLineText(marker.userText)
     ));
     if (localTurn && !marker.turnId.startsWith('local-')) {
+      const oldLocalTurnId = localTurn.id;
       localTurn.id = marker.turnId;
       localTurn.conversationId = marker.conversationId;
       localTurn.userText = marker.userText;
       activeTerminalTurnIdRef.current = localTurn.id;
-      scheduleTerminalUserEchoStyle(true);
+      setActiveTranscriptTurnId(localTurn.id);
+        setLiveAssistantMessage((current) => (
+        current?.id === `live-${oldLocalTurnId}`
+          ? { ...current, id: `live-${localTurn.id}` }
+          : current
+      ));
       return;
     }
 
@@ -919,27 +1575,66 @@ export function NativeCliTerminal({
         conversationId: marker.conversationId,
         userText: marker.userText,
         state: 'active' as const,
+        startedAt: Date.now(),
       },
     ];
     terminalTurnsRef.current = nextTurns.slice(-25);
     activeTerminalTurnIdRef.current = marker.turnId;
-    scheduleTerminalUserEchoStyle(true);
-  }, [scheduleTerminalUserEchoStyle]);
+    setActiveTranscriptTurnId(marker.turnId);
+    if (!liveStreamRef.current && (!liveAssistantMessage || liveAssistantMessage.id !== `live-${marker.turnId}`)) {
+      setLiveAssistantMessage(null);
+      setLiveAssistantStreaming(false);
+    }
+    const optimistic: RawMessage = {
+      id: marker.turnId,
+      role: 'user',
+      content: marker.userText,
+      timestamp: Date.now(),
+    };
+    pendingLocalUserMessagesRef.current = [
+      ...pendingLocalUserMessagesRef.current.filter((message) => message.id !== optimistic.id),
+      optimistic,
+    ].slice(-10);
+    setTranscriptMessages((prev) => (
+      prev.some((message) => message.id === optimistic.id)
+        ? prev
+        : [...prev, optimistic]
+    ));
+  }, [liveAssistantMessage, loadNativeCliTranscript]);
 
   const handleTerminalStreamMarker = useCallback((marker: TerminalStreamMarker) => {
     if (marker.kind === 'turn_start') {
       suppressNativeCliChromeRef.current = false;
       upsertTerminalTurn(marker);
+      void loadNativeCliTranscript({ quiet: true, latest: !cliSessionIdRef.current });
       return;
     }
     const turn = terminalTurnsRef.current.find((candidate) => candidate.id === marker.turnId);
     if (!turn) return;
     turn.state = marker.kind === 'turn_idle' ? 'idle' : 'closed';
+    if (marker.kind === 'turn_idle') {
+      setLiveAssistantStreaming(false);
+      if (transcriptIdleTimerRef.current) clearTimeout(transcriptIdleTimerRef.current);
+      transcriptIdleTimerRef.current = setTimeout(() => {
+        transcriptIdleTimerRef.current = null;
+        if (disposedRef.current) return;
+        if (activeTerminalTurnIdRef.current === marker.turnId) {
+          activeTerminalTurnIdRef.current = null;
+          setActiveTranscriptTurnId(null);
+          void loadNativeCliTranscript({ quiet: true, latest: !cliSessionIdRef.current });
+        }
+      }, TRANSCRIPT_IDLE_POLL_RETENTION_MS);
+    }
     if (activeTerminalTurnIdRef.current === marker.turnId && marker.kind === 'turn_end') {
       activeTerminalTurnIdRef.current = null;
+      setActiveTranscriptTurnId(null);
     }
-    scheduleTerminalUserEchoStyle(true);
-  }, [scheduleTerminalUserEchoStyle, upsertTerminalTurn]);
+    if (marker.kind === 'turn_end') {
+      closeClaudeLiveStream(marker.turnId);
+    }
+    updateLiveAssistantSnapshot(marker.turnId);
+    void loadNativeCliTranscript({ quiet: true, latest: !cliSessionIdRef.current });
+  }, [closeClaudeLiveStream, loadNativeCliTranscript, updateLiveAssistantSnapshot, upsertTerminalTurn]);
 
   const stripTerminalStreamMarkers = useCallback((chunk: string) => {
     let data = `${markerBufferRef.current}${chunk}`;
@@ -1036,21 +1731,54 @@ export function NativeCliTerminal({
   }, []);
 
   const handleTerminalData = useCallback((raw: string) => {
+    terminalDataFrameCountRef.current += 1;
+    terminalDataLastAtRef.current = Date.now();
     const visibleRaw = stripTerminalStreamMarkers(raw);
     updateShellPassthroughState(visibleRaw);
-    if (hasPrintableTerminalContent(visibleRaw)) {
-      console.debug('[native-cli-terminal] terminal output', {
+    const printable = hasPrintableTerminalContent(visibleRaw);
+    const activeTurnId = activeTerminalTurnIdRef.current;
+    if (printable || activeTerminalTurnIdRef.current) {
+      console.debug('[native-cli-terminal] terminal data frame', {
         agentId,
         sessionKey,
+        frame: terminalDataFrameCountRef.current,
         raw: dataDiagnostic(raw),
         visible: dataDiagnostic(visibleRaw),
+        printable,
         shellPassthrough: shellPassthroughRef.current,
         activeTurn: activeTerminalTurnIdRef.current,
         suppressedChrome: suppressNativeCliChromeRef.current,
       });
     }
+    if (printable && activeTurnId && liveStreamRef.current) {
+      terminalStatusBufferRef.current = `${terminalStatusBufferRef.current}${visibleRaw}`.slice(-TERMINAL_STATUS_BUFFER_CHARS);
+      const activeTurn = terminalTurnsRef.current.find((turn) => turn.id === activeTurnId);
+      const status = terminalStatusText(terminalStatusBufferRef.current, activeTurn?.userText);
+      const currentLiveMessage = liveAssistantMessageRef.current;
+      const currentLiveText = currentLiveMessage ? extractText(currentLiveMessage).trim() : '';
+      const currentLiveThinking = currentLiveMessage ? extractThinking(currentLiveMessage)?.trim() ?? '' : '';
+      if (!currentLiveText && !currentLiveThinking) {
+        const displayStatus = status || CLAUDE_TERMINAL_LOADING_SENTINEL;
+        const signature = `${activeTurnId}:${displayStatus}`;
+        if (signature !== terminalStatusSignatureRef.current) {
+          terminalStatusSignatureRef.current = signature;
+          console.debug('[native-cli-terminal] terminal status applied', {
+            agentId,
+            sessionKey,
+            turnId: activeTurnId,
+            status: messageDiagnostic(displayStatus),
+            preview: status.slice(0, 160),
+            loading: !status,
+            raw: dataDiagnostic(visibleRaw),
+          });
+          const statusMessage = claudeTerminalStatusToMessage(activeTurnId, displayStatus);
+          liveAssistantMessageRef.current = statusMessage;
+          setLiveAssistantMessage(statusMessage);
+        }
+      }
+    }
     if (suppressNativeCliChromeRef.current && !activeTerminalTurnIdRef.current && !shellPassthroughRef.current) {
-      if (hasPrintableTerminalContent(visibleRaw)) settleReadyWithoutInitialOutput();
+      if (printable) settleReadyWithoutInitialOutput();
       return;
     }
     bufferRef.current = `${bufferRef.current}${raw}`.slice(-100_000);
@@ -1058,13 +1786,15 @@ export function NativeCliTerminal({
     const term = termRef.current;
     if (term) {
       term.write(raw, () => {
-        if (hasPrintableTerminalContent(visibleRaw)) requestInitialOutputSettle();
+        if (printable) requestInitialOutputSettle();
+        if (activeTerminalTurnIdRef.current && printable) {
+          updateLiveAssistantSnapshot();
+        }
       });
     }
-    scheduleTerminalUserEchoStyle();
-  }, [agentId, persistState, requestInitialOutputSettle, scheduleTerminalUserEchoStyle, sessionKey, settleReadyWithoutInitialOutput, stripTerminalStreamMarkers, updateShellPassthroughState]);
+  }, [agentId, persistState, requestInitialOutputSettle, sessionKey, settleReadyWithoutInitialOutput, stripTerminalStreamMarkers, updateLiveAssistantSnapshot, updateShellPassthroughState]);
 
-  const sendTerminalData = useCallback((data: string) => {
+  const sendTerminalData = useCallback((data: string, trace?: { startedAt: number; frame: number; total: number }) => {
     const ws = wsRef.current;
     if (ws?.readyState !== WebSocket.OPEN) {
       console.warn('[native-cli-terminal] pty data blocked: websocket not open', {
@@ -1075,11 +1805,13 @@ export function NativeCliTerminal({
       });
       return false;
     }
-    console.debug('[native-cli-terminal] sending pty data', {
+    console.info('[native-cli-terminal] sending pty data', {
       agentId,
       sessionKey,
       length: data.length,
       control: data === '\r' ? 'enter' : data === '\u0003' ? 'ctrl-c' : null,
+      frame: trace ? `${trace.frame}/${trace.total}` : undefined,
+      elapsedMs: trace ? Math.round(performance.now() - trace.startedAt) : undefined,
     });
     ws.send(JSON.stringify({ type: 'data', data }));
     return true;
@@ -1169,14 +1901,13 @@ export function NativeCliTerminal({
       resizeRafRef.current = 0;
       if (disposedRef.current) return;
       fitTerminalToContent();
-      scheduleTerminalUserEchoStyle();
       updateInputShellStateFromTerminalScroll();
       requestAnimationFrame(() => {
         if (disposedRef.current) return;
         fitTerminalToContent();
       });
     });
-  }, [fitTerminalToContent, scheduleTerminalUserEchoStyle, updateInputShellStateFromTerminalScroll]);
+  }, [fitTerminalToContent, updateInputShellStateFromTerminalScroll]);
 
   const requestReconnectSoon = useCallback((reason: string, options?: { skipResumeResolve?: boolean }) => {
     const ws = wsRef.current;
@@ -1441,7 +2172,10 @@ export function NativeCliTerminal({
       params.set('resume', '1');
       params.set('sessionId', knownCliSessionId);
     }
-    const ws = new WebSocket(`${wsProtocol}://127.0.0.1:${port}/terminal?${params.toString()}`);
+    const terminalWsUrl = `${wsProtocol}://127.0.0.1:${port}/terminal?${params.toString()}`;
+    terminalWsUrlRef.current = terminalWsUrl;
+    console.info('[native-cli-terminal] terminal websocket url', terminalWsUrl);
+    const ws = new WebSocket(terminalWsUrl);
     wsRef.current = ws;
     let openedAt = 0;
     suppressNativeCliChromeRef.current = effectiveProvider === 'claude';
@@ -1583,7 +2317,7 @@ export function NativeCliTerminal({
     sessionKey,
   ]);
 
-  const decorateLocalTerminalTurn = useCallback((userText: string) => {
+  const decorateLocalTerminalTurn = useCallback((userText: string): NativeClaudeLiveTurn | null => {
     const marker: Extract<TerminalStreamMarker, { kind: 'turn_start' }> = {
       kind: 'turn_start',
       conversationId: 'local',
@@ -1591,11 +2325,12 @@ export function NativeCliTerminal({
       userText,
     };
     upsertTerminalTurn(marker);
+    const register = startClaudeLiveStream(marker.turnId, userText);
     const markerRaw = encodeTerminalStreamMarker(marker);
     termRef.current?.write(markerRaw);
-    bufferRef.current = `${bufferRef.current}${markerRaw}`.slice(-100_000);
     persistState();
-  }, [persistState, upsertTerminalTurn]);
+    return register ? { turnId: marker.turnId, register } : null;
+  }, [persistState, startClaudeLiveStream, upsertTerminalTurn]);
 
   const sendShellCompose = useCallback((text: string, notifyUserText = true): boolean => {
     const diagnostic = messageDiagnostic(text);
@@ -1633,7 +2368,7 @@ export function NativeCliTerminal({
     return true;
   }, [agentId, onUserText, persistState, requestReconnectSoon, sendTerminalData, sessionKey]);
 
-  const sendText = useCallback((text: string): boolean => {
+  const sendText = useCallback(async (text: string): Promise<boolean> => {
     if (!text.trim()) return false;
     const startedAt = Date.now();
     const ws = wsRef.current;
@@ -1650,17 +2385,32 @@ export function NativeCliTerminal({
       });
       return false;
     }
-    const launchPassthrough = shouldLaunchShellPassthrough(text);
+    const useNativeCliChatCompose = effectiveProvider === 'claude';
+    const launchPassthrough = !useNativeCliChatCompose && shouldLaunchShellPassthrough(text);
     console.info('[native-cli-terminal] sendText route', {
       agentId,
       sessionKey,
       message: diagnostic,
+      provider: effectiveProvider,
+      transport: useNativeCliChatCompose ? 'pty_compose' : 'user_text',
       shellPassthrough: shellPassthroughRef.current,
       launchPassthrough,
       cliSessionBound: Boolean(cliSessionIdRef.current),
       activeTurn: activeTerminalTurnIdRef.current,
       terminalState: terminalState.status,
+      dataFrames: terminalDataFrameCountRef.current,
+      lastDataAgoMs: terminalDataLastAtRef.current ? Date.now() - terminalDataLastAtRef.current : null,
     });
+    if (useNativeCliChatCompose && liveAssistantStreaming) {
+      console.warn('[native-cli-terminal] send blocked: claude turn still streaming', {
+        agentId,
+        sessionKey,
+        message: diagnostic,
+        liveAssistantId: liveAssistantMessage?.id,
+        activeTurn: activeTerminalTurnIdRef.current,
+      });
+      return false;
+    }
     if (shellPassthroughRef.current || launchPassthrough) {
       const sent = sendShellCompose(text);
       if (!sent) return false;
@@ -1673,20 +2423,49 @@ export function NativeCliTerminal({
     if (!userHasInteractedRef.current) {
       userHasInteractedRef.current = true;
     }
-    decorateLocalTerminalTurn(text);
-    console.info('[native-cli-terminal] sending user_text', { agentId, sessionKey, message: diagnostic });
-    ws.send(JSON.stringify({ type: 'user_text', text }));
+    const composeStartedAt = performance.now();
+    const liveTurn = decorateLocalTerminalTurn(text);
+    if (liveTurn?.register) {
+      liveTurn.register.catch(() => {
+        // Failure is logged by startClaudeLiveStream; sending should not wait on live UI registration.
+      });
+    }
+    if (useNativeCliChatCompose) {
+      const payloads = claudePromptToPtyInput(text);
+      const sendStartedAt = performance.now();
+      console.info('[native-cli-terminal] sending claude pty compose', {
+        agentId,
+        sessionKey,
+        message: diagnostic,
+        payloadCount: payloads.length,
+        payloadLengths: payloads.map((payload) => payload.length),
+        handoffMs: Math.round(performance.now() - composeStartedAt),
+      });
+      for (let index = 0; index < payloads.length; index += 1) {
+        const sent = sendTerminalData(payloads[index], {
+          startedAt: sendStartedAt,
+          frame: index + 1,
+          total: payloads.length,
+        });
+        if (!sent) return false;
+      }
+    } else {
+      console.info('[native-cli-terminal] sending user_text', { agentId, sessionKey, message: diagnostic });
+      ws.send(JSON.stringify({ type: 'user_text', text }));
+    }
     startCliSessionIdFallbackResolver(text, startedAt);
-    scheduleTerminalUserEchoStyle(true);
     persistState();
     return true;
-  }, [agentId, decorateLocalTerminalTurn, onUserText, persistState, requestReconnectSoon, scheduleTerminalUserEchoStyle, sendShellCompose, sessionKey, startCliSessionIdFallbackResolver, terminalState.status]);
+  }, [agentId, decorateLocalTerminalTurn, effectiveProvider, liveAssistantMessage?.id, liveAssistantStreaming, onUserText, persistState, requestReconnectSoon, sendShellCompose, sendTerminalData, sessionKey, startCliSessionIdFallbackResolver, terminalState.status]);
 
-  const handleChatInputSend = useCallback((text: string): boolean => {
+  const handleChatInputSend = useCallback((text: string): boolean | Promise<boolean> => {
     const trimmed = text.trim();
     if (!trimmed) return false;
     const ws = wsRef.current;
     const diagnostic = messageDiagnostic(trimmed);
+    if (terminalWsUrlRef.current) {
+      console.info('[native-cli-terminal] terminal websocket url', terminalWsUrlRef.current);
+    }
     console.info('[native-cli-terminal] chat input handoff', {
       agentId,
       sessionKey,
@@ -1753,26 +2532,26 @@ export function NativeCliTerminal({
     });
     void refreshAgents().catch((error) => console.warn('[native-cli-terminal] Failed to refresh agents after model switch:', error));
 
-    sendText(`/model ${CLAUDE_NATIVE_SONNET_ALIAS}`);
+    void sendText(`/model ${CLAUDE_NATIVE_SONNET_ALIAS}`);
   }, [agent, agentId, configuredClaudeProxyRouteModel, effectiveProvider, refreshAgents, sendText]);
 
   // Stable ref for mount-effect callbacks so the terminal instance survives
   // callback identity changes (e.g. normalizedProvider undefined → 'claude').
   const mountRef_cb = useRef({
     connect, sendTerminalData, fitTerminalToContent, scheduleTerminalResize,
-    scheduleTerminalUserEchoStyle, ensureRowsObserver,
     maybeSettleInitialOutput, handleTerminalStreamMarker, persistState,
     handleTerminalData, upsertTerminalTurn, bindNativeCliSessionId,
     settleReadyWithoutInitialOutput, resetVisibleTerminalForResume,
     updateInputShellStateFromTerminalScroll, restartTerminalForSkillReload,
+    closeClaudeLiveStream,
   });
   mountRef_cb.current = {
     connect, sendTerminalData, fitTerminalToContent, scheduleTerminalResize,
-    scheduleTerminalUserEchoStyle, ensureRowsObserver,
     maybeSettleInitialOutput, handleTerminalStreamMarker, persistState,
     handleTerminalData, upsertTerminalTurn, bindNativeCliSessionId,
     settleReadyWithoutInitialOutput, resetVisibleTerminalForResume,
     updateInputShellStateFromTerminalScroll, restartTerminalForSkillReload,
+    closeClaudeLiveStream,
   };
 
   useEffect(() => {
@@ -1784,7 +2563,13 @@ export function NativeCliTerminal({
     const initialCliSessionId = resolveStoredCliSessionId(sessionKey, cliSessionIdPropRef.current) || persisted.cliSessionId || '';
     cliSessionIdRef.current = initialCliSessionId;
     userHasInteractedRef.current = Boolean(cliSessionIdRef.current || persisted.userHasInteracted);
-    bufferRef.current = persisted.buffer ?? '';
+    pendingLocalUserMessagesRef.current = [];
+    terminalTurnsRef.current = [];
+    activeTerminalTurnIdRef.current = null;
+    setActiveTranscriptTurnId(null);
+    setLiveAssistantMessage(null);
+    setLiveAssistantStreaming(false);
+    bufferRef.current = stripTerminalStreamMarkers(persisted.buffer ?? '');
     dispatchTerminalState({
       type: 'connect_requested',
       phase: initialCliSessionId ? 'resuming' : 'starting',
@@ -1811,16 +2596,12 @@ export function NativeCliTerminal({
     term.onResize(({ cols, rows }) => {
       const ws = wsRef.current;
       if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'resize', cols, rows }));
-      mountRef_cb.current.scheduleTerminalUserEchoStyle();
     });
     term.onScroll(() => {
-      mountRef_cb.current.scheduleTerminalUserEchoStyle();
       mountRef_cb.current.updateInputShellStateFromTerminalScroll();
     });
     term.onWriteParsed(() => {
-      mountRef_cb.current.ensureRowsObserver();
       mountRef_cb.current.maybeSettleInitialOutput();
-      mountRef_cb.current.scheduleTerminalUserEchoStyle();
       mountRef_cb.current.updateInputShellStateFromTerminalScroll();
     });
     term.onRender(() => {
@@ -1861,16 +2642,18 @@ export function NativeCliTerminal({
     return () => {
       disposedRef.current = true;
       dispatchTerminalState({ type: 'disposed' });
+      mountRef_cb.current.closeClaudeLiveStream();
       mountRef_cb.current.persistState();
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
-      if (userEchoTimerRef.current) clearTimeout(userEchoTimerRef.current);
-      if (userEchoRafRef.current) cancelAnimationFrame(userEchoRafRef.current);
+      if (transcriptPollTimerRef.current) clearInterval(transcriptPollTimerRef.current);
+      if (transcriptIdleTimerRef.current) clearTimeout(transcriptIdleTimerRef.current);
       if (resizeRafRef.current) cancelAnimationFrame(resizeRafRef.current);
       if (initialOutputRafRef.current) cancelAnimationFrame(initialOutputRafRef.current);
       if (loadingExitTimerRef.current) clearTimeout(loadingExitTimerRef.current);
       reconnectTimerRef.current = null;
+      transcriptPollTimerRef.current = null;
+      transcriptIdleTimerRef.current = null;
       initialOutputPendingPaintRef.current = false;
-      rowsObserverRef.current?.disconnect();
       resizeObserverRef.current?.disconnect();
       window.removeEventListener('resize', handleWindowResize);
       window.visualViewport?.removeEventListener('resize', handleWindowResize);
@@ -1905,7 +2688,33 @@ export function NativeCliTerminal({
     })
   ), [agentId]);
 
-  const desiredLoadingLabel = nativeCliTerminalLoadingLabel(terminalState);
+  useEffect(() => {
+    void loadNativeCliTranscript({ latest: true, quiet: true });
+  }, [loadNativeCliTranscript]);
+
+  useEffect(() => {
+    if (transcriptPollTimerRef.current) {
+      clearInterval(transcriptPollTimerRef.current);
+      transcriptPollTimerRef.current = null;
+    }
+    const shouldPoll = terminalState.status === 'connected'
+      && !liveAssistantStreaming
+      && !liveStreamRef.current
+      && Boolean(activeTranscriptTurnId);
+    if (!shouldPoll) return;
+    transcriptPollTimerRef.current = setInterval(() => {
+      void loadNativeCliTranscript({ quiet: true, latest: !cliSessionIdRef.current });
+    }, TRANSCRIPT_ACTIVE_POLL_MS);
+    return () => {
+      if (transcriptPollTimerRef.current) {
+        clearInterval(transcriptPollTimerRef.current);
+        transcriptPollTimerRef.current = null;
+      }
+    };
+  }, [activeTranscriptTurnId, liveAssistantStreaming, loadNativeCliTranscript, terminalState.status]);
+
+  const nativeCliInputDisabled = wsRef.current?.readyState !== WebSocket.OPEN && !nativeCliTerminalCanSend(terminalState);
+  const desiredLoadingLabel = nativeCliInputDisabled ? nativeCliTerminalLoadingLabel(terminalState) : '';
 
   useEffect(() => {
     if (loadingExitTimerRef.current) {
@@ -1937,11 +2746,67 @@ export function NativeCliTerminal({
     return () => window.clearInterval(timer);
   }, [awaitingInitialOutput, settleIfTerminalAlreadyVisible]);
 
+  const displayedTranscriptMessages = useMemo(() => {
+    if (!liveAssistantMessage) return transcriptMessages;
+    const liveTurnId = nativeCliLiveTurnId(liveAssistantMessage);
+    const liveTurn = liveTurnId
+      ? terminalTurnsRef.current.find((turn) => turn.id === liveTurnId)
+      : undefined;
+    const transcriptHasLiveAssistant = transcriptContainsLiveAssistantForTurn(
+      transcriptMessages,
+      liveAssistantMessage,
+      liveTurn,
+    );
+    if (!liveAssistantStreaming && transcriptHasLiveAssistant) return transcriptMessages;
+    const result: RawMessage[] = [];
+    let insertedLive = false;
+    const transcriptUserForLiveTurn = findNativeCliTranscriptUserForTurn(transcriptMessages, liveTurn);
+    const liveAnchorId = String(transcriptUserForLiveTurn?.id ?? liveTurnId);
+    for (const message of transcriptMessages) {
+      if (message.id === liveAssistantMessage.id) continue;
+      result.push(message);
+      if (liveAnchorId && message.id === liveAnchorId) {
+        result.push(liveAssistantMessage);
+        insertedLive = true;
+      }
+    }
+    if (!insertedLive) {
+      if (liveTurn && !transcriptUserForLiveTurn) {
+        result.push({
+          id: liveTurn.id,
+          role: 'user',
+          content: liveTurn.userText,
+          timestamp: liveTurn.startedAt,
+        });
+      }
+      result.push(liveAssistantMessage);
+    }
+    return dedupeNativeCliMessages(result);
+  }, [liveAssistantMessage, liveAssistantStreaming, transcriptMessages]);
+
   return (
     <div className="native-cli-terminal">
       <NativeCliTerminalStyles />
       <div ref={areaRef} className="native-cli-terminal__area">
         <div ref={mountRef} className="native-cli-terminal__mount" />
+        <div ref={transcriptScrollRef} className="native-cli-terminal__transcript">
+          <div className="native-cli-terminal__messages">
+            {displayedTranscriptMessages.length > 0 ? (
+              displayedTranscriptMessages.map((message, index) => (
+                <ChatMessage
+                  key={isLiveAssistantMessage(message, liveAssistantMessage) ? message.id : nativeCliMessageKey(message, index)}
+                  message={message}
+                  showThinking
+                  isStreaming={isLiveAssistantMessage(message, liveAssistantMessage) && liveAssistantStreaming}
+                />
+              ))
+            ) : (
+              <div className="native-cli-terminal__empty">
+                {displayedLoadingLabel || 'No messages yet'}
+              </div>
+            )}
+          </div>
+        </div>
         {displayedLoadingLabel ? (
           <div
             className={`native-cli-terminal__loading${loadingExiting ? ' native-cli-terminal__loading--exiting' : ''}`}
@@ -1961,7 +2826,7 @@ export function NativeCliTerminal({
           <ChatInput
             onSend={handleChatInputSend}
             onModelChange={handleModelChange}
-            disabled={!nativeCliTerminalCanSend(terminalState)}
+            disabled={nativeCliInputDisabled}
             disabledPlaceholder={desiredLoadingLabel || '正在连接会话'}
             sending={false}
             isExpanded={inputShellState !== 'collapsed'}
