@@ -8,6 +8,13 @@ import { invokeIpc } from '@/lib/api-client';
 import { hostApiFetch } from '@/lib/host-api';
 import { useAgentsStore } from '@/stores/agents';
 import { useChatStore } from '@/stores/chat';
+import {
+  enrichWithCachedImages,
+  enrichWithToolResultFiles,
+  getMessageText,
+  isToolResultRole,
+  loadMissingPreviews,
+} from '@/stores/chat/helpers';
 import { useModelsStore } from '@/stores/models';
 import {
   initialNativeCliTerminalState,
@@ -550,6 +557,44 @@ function nativeCliMessageKey(message: RawMessage, index: number): string {
   return `${message.role}|${message.id ?? ''}|${message.timestamp ?? ''}|${extractText(message)}|${index}`;
 }
 
+function nativeCliAttachmentSignature(message: RawMessage): string {
+  return (message._attachedFiles || [])
+    .map((file) => [
+      file.filePath ?? '',
+      file.fileName,
+      file.mimeType,
+      file.fileSize,
+      file.preview ? 'preview' : 'no-preview',
+      file.source ?? '',
+    ].join(':'))
+    .join('|');
+}
+
+function nativeCliPreviewMergeKey(message: RawMessage): string {
+  return `${message.id ?? ''}|${message.role}|${message.timestamp ?? ''}|${getMessageText(message.content)}`;
+}
+
+function mergeNativeCliHydratedMessages(
+  currentMessages: RawMessage[],
+  hydratedMessages: RawMessage[],
+): RawMessage[] {
+  const hydratedFilesByKey = new Map(
+    hydratedMessages
+      .filter((message) => message._attachedFiles?.length)
+      .map((message) => [
+        nativeCliPreviewMergeKey(message),
+        message._attachedFiles!.map((file) => ({ ...file })),
+      ]),
+  );
+
+  return currentMessages.map((message) => {
+    const attachedFiles = hydratedFilesByKey.get(nativeCliPreviewMergeKey(message));
+    return attachedFiles
+      ? { ...message, _attachedFiles: attachedFiles }
+      : message;
+  });
+}
+
 function nativeCliMessageTimestampMs(message: RawMessage): number {
   const timestamp = message.timestamp;
   if (typeof timestamp === 'number' && Number.isFinite(timestamp)) return timestamp;
@@ -562,7 +607,10 @@ function nativeCliMessageTimestampMs(message: RawMessage): number {
 
 function nativeCliMessagesEqual(a: RawMessage[], b: RawMessage[]) {
   if (a.length !== b.length) return false;
-  return a.every((message, index) => nativeCliMessageKey(message, index) === nativeCliMessageKey(b[index], index));
+  return a.every((message, index) => (
+    nativeCliMessageKey(message, index) === nativeCliMessageKey(b[index], index) &&
+    nativeCliAttachmentSignature(message) === nativeCliAttachmentSignature(b[index])
+  ));
 }
 
 function findLastNativeCliUserIndex(messages: RawMessage[], userText: string): number {
@@ -802,6 +850,18 @@ function visibleNativeCliMessages(messages: RawMessage[]) {
   });
 }
 
+function enrichNativeCliTranscriptMessages(messages: RawMessage[]): RawMessage[] {
+  const messagesWithToolFiles = enrichWithToolResultFiles(messages);
+  const visibleMessages = visibleNativeCliMessages(messagesWithToolFiles)
+    .filter((message) => !isToolResultRole(message.role));
+  const mergedMessages = dedupeNativeCliMessages(mergeNativeCliAssistantFragments(visibleMessages));
+  return enrichWithCachedImages(mergedMessages);
+}
+
+function enrichNativeCliLiveMessage(message: RawMessage): RawMessage {
+  return enrichWithCachedImages([message])[0] ?? message;
+}
+
 function sanitizeClaudeLiveContent(content: unknown[] | undefined, text: string, thinking: string): unknown {
   const blocks = Array.isArray(content)
     ? content.filter((block) => block && typeof block === 'object')
@@ -842,11 +902,19 @@ function claudeLiveSnapshotHasVisibleContent(snapshot: NativeClaudeLiveSnapshot)
 function claudeLiveSnapshotToMessage(snapshot: NativeClaudeLiveSnapshot): RawMessage {
   const text = typeof snapshot.text === 'string' ? snapshot.text : '';
   const thinking = typeof snapshot.thinking === 'string' ? snapshot.thinking : '';
+  const hasToolUse = Array.isArray(snapshot.content) && snapshot.content.some((block) => (
+    block && typeof block === 'object' && (block as Record<string, unknown>).type === 'tool_use'
+  ));
   return {
     id: `live-${snapshot.turnId || Date.now().toString(36)}`,
     role: 'assistant',
     content: sanitizeClaudeLiveContent(snapshot.content, text, thinking),
     timestamp: Date.now(),
+    ...(hasToolUse && snapshot.status === 'running' ? {
+      details: {
+        streamingTools: true,
+      },
+    } : {}),
   };
 }
 
@@ -1254,7 +1322,7 @@ export function NativeCliTerminal({
   }, []);
 
   const mergeTranscriptMessages = useCallback((messages: RawMessage[]) => {
-    const visibleMessages = dedupeNativeCliMessages(mergeNativeCliAssistantFragments(visibleNativeCliMessages(messages)));
+    const visibleMessages = enrichNativeCliTranscriptMessages(messages);
     const activeTurnId = activeTerminalTurnIdRef.current;
     if (activeTurnId) {
       const activeTurn = terminalTurnsRef.current.find((turn) => turn.id === activeTurnId);
@@ -1290,15 +1358,27 @@ export function NativeCliTerminal({
         counts[role] = (counts[role] ?? 0) + 1;
         return counts;
       }, {});
+      const fileMessages = next
+        .filter((message) => message._attachedFiles?.length)
+        .map((message) => ({
+          role: message.role,
+          id: message.id,
+          files: message._attachedFiles?.map((file) => file.filePath || file.fileName),
+        }));
       console.info('[native-cli-terminal] transcript messages updated', {
         agentId,
         sessionKey,
         previousCount: prev.length,
         nextCount: next.length,
         roleCounts,
+        fileMessages,
         pendingLocalUsers: pendingLocalUserMessagesRef.current.map((message) => messageDiagnostic(extractText(message))),
       });
       return next;
+    });
+    loadMissingPreviews(visibleMessages).then((updated) => {
+      if (!updated || disposedRef.current) return;
+      setTranscriptMessages((current) => mergeNativeCliHydratedMessages(current, visibleMessages));
     });
     requestAnimationFrame(() => {
       const scroller = transcriptScrollRef.current;
@@ -1432,9 +1512,16 @@ export function NativeCliTerminal({
           blockCount: Array.isArray(snapshot.content) ? snapshot.content.length : 0,
           blocks: claudeLiveContentDebug(snapshot),
         });
-        const nextLiveMessage = claudeLiveSnapshotToMessage({ ...snapshot, turnId });
+        const nextLiveMessage = enrichNativeCliLiveMessage(claudeLiveSnapshotToMessage({ ...snapshot, turnId }));
         liveAssistantMessageRef.current = nextLiveMessage;
         setLiveAssistantMessage(nextLiveMessage);
+        if (nextLiveMessage._attachedFiles?.length) {
+          void loadMissingPreviews([nextLiveMessage]).then((updated) => {
+            if (!updated || disposedRef.current) return;
+            liveAssistantMessageRef.current = { ...nextLiveMessage };
+            setLiveAssistantMessage({ ...nextLiveMessage });
+          });
+        }
         console.debug('[native-cli-terminal] live message applied', {
           agentId,
           sessionKey,

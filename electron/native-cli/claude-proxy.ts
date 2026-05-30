@@ -26,6 +26,10 @@ type LiveContentBlock = Record<string, unknown> & {
   _inputJson?: string;
 };
 
+type ContentBlockGuardResult =
+  | { action: 'allow' }
+  | { action: 'replace'; block: Record<string, unknown> };
+
 type LiveTurnState = {
   routeModel: string;
   sessionKey: string;
@@ -76,6 +80,25 @@ function setCorsHeaders(res: ServerResponse): void {
 
 function stripOneMMarker(model: string): string {
   return model.trim().replace(/\s*\[1m\]\s*$/i, '');
+}
+
+function isAutoOpenShellCommand(command: string): boolean {
+  return /(?:^|[;&|]\s*)(?:(?:cmd(?:\.exe)?\s*\/c|powershell(?:\.exe)?\s+-Command)\s+)?(?:start(?:\s|$)|explorer(?:\.exe)?(?:\s|$)|start-process(?:\s|$)|invoke-item(?:\s|$)|ii(?:\s|$)|rundll32\s+url\.dll,FileProtocolHandler(?:\s|$)|open(?:\s|$)|xdg-open(?:\s|$)|gio\s+open(?:\s|$)|gnome-open(?:\s|$)|kde-open5?(?:\s|$))/im.test(command);
+}
+
+function guardClaudeContentBlock(block: Record<string, unknown>): ContentBlockGuardResult {
+  if (block?.type !== 'tool_use' && block?.type !== 'server_tool_use') return { action: 'allow' };
+  if (block.name !== 'Bash') return { action: 'allow' };
+  const input = block.input && typeof block.input === 'object' ? block.input as Record<string, unknown> : {};
+  const command = typeof input.command === 'string' ? input.command : '';
+  if (!command || !isAutoOpenShellCommand(command)) return { action: 'allow' };
+  return {
+    action: 'replace',
+    block: {
+      type: 'text',
+      text: 'The file is ready in your workspace. ClawX blocked automatic opening; use the file card to open it when you choose.',
+    },
+  };
 }
 
 function bodyDiagnostic(rawBody: Buffer) {
@@ -431,6 +454,14 @@ function applyCompleteMessage(turn: LiveTurnState, payload: Record<string, unkno
       turn.text += block.text;
       changed = true;
     } else if (block?.type === 'tool_use' || block?.type === 'server_tool_use') {
+      const guard = guardClaudeContentBlock(block);
+      if (guard.action === 'replace') {
+        const text = typeof guard.block.text === 'string' ? guard.block.text : '';
+        turn.content.push(guard.block);
+        turn.text += text;
+        changed = true;
+        continue;
+      }
       turn.content.push({
         type: 'tool_use',
         id: typeof block.id === 'string' ? block.id : '',
@@ -646,10 +677,12 @@ async function pipeResponseWithLiveCapture(
           subscriberCount: turn.subscribers.size,
         });
       }
+      const chunk = decoder.decode(value, { stream: true });
+      sseBuffer = processLiveSseText(turn, `${sseBuffer}${chunk}`);
       res.write(Buffer.from(value));
-      sseBuffer = processLiveSseText(turn, `${sseBuffer}${decoder.decode(value, { stream: true })}`);
     }
-    sseBuffer = processLiveSseText(turn, `${sseBuffer}${decoder.decode()}`, true);
+    const finalChunk = decoder.decode();
+    sseBuffer = processLiveSseText(turn, `${sseBuffer}${finalChunk}`, true);
     if (turn.status === 'running') {
       turn.status = 'completed';
       broadcastLiveTurn(turn, 'done');

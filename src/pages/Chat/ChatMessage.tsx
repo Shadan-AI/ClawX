@@ -56,7 +56,8 @@ export const ChatMessage = memo(function ChatMessage({
   const images = extractImages(message);
   const tools = extractToolUse(message);
   const visibleThinking = showThinking ? thinking : null;
-  const visibleTools = suppressToolCards ? [] : tools;
+  const streamingToolCards = isStreaming && Boolean((message.details as Record<string, unknown> | undefined)?.streamingTools);
+  const visibleTools = suppressToolCards || streamingToolCards ? [] : tools;
   const details = message.details && typeof message.details === 'object'
     ? message.details as Record<string, unknown>
     : null;
@@ -73,7 +74,7 @@ export const ChatMessage = memo(function ChatMessage({
     return <ToolResultMessage message={message} />;
   }
 
-  const hasStreamingToolStatus = isStreaming && streamingTools.length > 0;
+  const hasStreamingToolStatus = isStreaming && (streamingTools.length > 0 || streamingToolCards);
   if (!hasText && !visibleThinking && images.length === 0 && visibleTools.length === 0 && attachedFiles.length === 0 && !hasStreamingToolStatus && !terminalLoading) return null;
 
   return (
@@ -99,6 +100,17 @@ export const ChatMessage = memo(function ChatMessage({
       >
         {isStreaming && !isUser && streamingTools.length > 0 && (
           <ToolStatusBar tools={streamingTools} />
+        )}
+
+        {streamingToolCards && (
+          <ToolStatusBar
+            tools={tools.map((tool) => ({
+              id: tool.id,
+              name: friendlyToolName(tool),
+              status: 'running',
+              summary: summarizeToolInput(tool.input),
+            }))}
+          />
         )}
 
         {terminalLoading && !hasText && !visibleThinking && (
@@ -273,6 +285,30 @@ function formatDuration(durationMs?: number): string | null {
   if (!durationMs || !Number.isFinite(durationMs)) return null;
   if (durationMs < 1000) return `${Math.round(durationMs)}ms`;
   return `${(durationMs / 1000).toFixed(1)}s`;
+}
+
+function friendlyToolName(tool: { name: string; input: unknown }): string {
+  if (tool.name !== 'Bash') return tool.name;
+  const command = tool.input && typeof tool.input === 'object'
+    ? (tool.input as Record<string, unknown>).command
+    : undefined;
+  if (typeof command !== 'string') return tool.name;
+  if (/\bpython(?:3|\.exe)?\b/i.test(command)) return 'Running Python';
+  if (/\b(?:node|pnpm|npm|yarn|bun)\b/i.test(command)) return 'Running script';
+  return 'Running command';
+}
+
+function summarizeToolInput(input: unknown): string | undefined {
+  if (!input || typeof input !== 'object') return undefined;
+  const record = input as Record<string, unknown>;
+  if (typeof record.description === 'string' && record.description.trim()) {
+    return record.description.trim();
+  }
+  if (typeof record.command === 'string' && record.command.trim()) {
+    const firstLine = record.command.trim().split(/\r?\n/).find(Boolean);
+    return firstLine ? firstLine.slice(0, 120) : undefined;
+  }
+  return undefined;
 }
 
 function ToolStatusBar({
@@ -612,12 +648,16 @@ function FileCard({ file }: { file: AttachedFileMeta }) {
   }, [file.filePath]);
 
   return (
-    <div 
+    <button
+      type="button"
       className={cn(
-        "flex items-center gap-3 rounded-xl border border-black/10 dark:border-white/10 px-3 py-2.5 bg-black/5 dark:bg-white/5 max-w-[220px]",
-        file.filePath && "cursor-pointer hover:bg-black/10 dark:hover:bg-white/10 transition-colors"
+        "flex max-w-[220px] items-center gap-3 rounded-xl border border-black/10 bg-black/5 px-3 py-2.5 text-left dark:border-white/10 dark:bg-white/5",
+        file.filePath
+          ? "cursor-pointer transition-colors hover:bg-black/10 focus:outline-none focus:ring-2 focus:ring-primary/40 dark:hover:bg-white/10"
+          : "cursor-default"
       )}
       onClick={handleOpen}
+      disabled={!file.filePath}
       title={file.filePath ? "Open file" : undefined}
     >
       <FileIcon mimeType={file.mimeType} className="h-5 w-5 shrink-0 text-muted-foreground" />
@@ -627,7 +667,7 @@ function FileCard({ file }: { file: AttachedFileMeta }) {
           {file.fileSize > 0 ? formatFileSize(file.fileSize) : 'File'}
         </p>
       </div>
-    </div>
+    </button>
   );
 }
 

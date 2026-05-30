@@ -525,6 +525,13 @@ describe('agent config lifecycle', () => {
     });
     expect(env).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN');
     await expect(access(join(testHome, '.openclaw', 'agents', 'coder', 'claude-code'))).resolves.toBeUndefined();
+    const settings = JSON.parse(await readFile(join(testHome, '.openclaw', 'agents', 'coder', 'claude-code', 'settings.json'), 'utf8')) as {
+      hooks?: { PreToolUse?: Array<{ matcher?: string; hooks?: Array<{ command?: string }> }> };
+    };
+    expect(settings.hooks?.PreToolUse?.[0]?.matcher).toBe('Bash');
+    expect(settings.hooks?.PreToolUse?.[0]?.hooks?.[0]?.command).toContain('clawx-block-auto-open.cjs');
+    await expect(readFile(join(testHome, '.openclaw', 'agents', 'coder', 'claude-code', 'hooks', 'clawx-block-auto-open.cjs'), 'utf8'))
+      .resolves.toContain('Blocked by ClawX');
   });
 
   it('repairs existing Claude native cli auth env on startup migration', async () => {
@@ -575,6 +582,63 @@ describe('agent config lifecycle', () => {
     });
     expect(nativeCli?.env).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN');
     await expect(access(join(testHome, '.openclaw', 'agents', 'legacy', 'claude-code'))).resolves.toBeUndefined();
+    await expect(readFile(join(testHome, '.openclaw', 'agents', 'legacy', 'claude-code', 'hooks', 'clawx-block-auto-open.cjs'), 'utf8'))
+      .resolves.toContain('open files or external apps');
+  });
+
+  it('preserves Claude settings when adding managed safety hooks', async () => {
+    const claudeConfigDir = join(testHome, '.openclaw', 'agents', 'coder', 'claude-code');
+    await mkdir(claudeConfigDir, { recursive: true });
+    await writeFile(join(claudeConfigDir, 'settings.json'), JSON.stringify({
+      theme: 'dark',
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'Write',
+            hooks: [
+              {
+                type: 'command',
+                command: 'node custom-hook.cjs',
+              },
+            ],
+          },
+        ],
+      },
+    }, null, 2), 'utf8');
+    await writeOpenClawJson({
+      agents: {
+        list: [
+          {
+            id: 'coder',
+            name: 'Coder',
+            runtime: {
+              type: 'native-cli',
+              nativeCli: {
+                provider: 'claude',
+                command: 'claude',
+                env: {
+                  ANTHROPIC_API_KEY: 'test-key',
+                  ANTHROPIC_MODEL: 'deepseek-v4-flash',
+                },
+              },
+            },
+          },
+        ],
+      },
+    });
+
+    const { ensureNativeCliRuntimeResumeArgs } = await import('@electron/utils/agent-config');
+
+    await expect(ensureNativeCliRuntimeResumeArgs()).resolves.toBe(true);
+
+    const settings = JSON.parse(await readFile(join(claudeConfigDir, 'settings.json'), 'utf8')) as {
+      theme?: string;
+      hooks?: { PreToolUse?: Array<{ matcher?: string; hooks?: Array<{ command?: string }> }> };
+    };
+    const preToolUse = settings.hooks?.PreToolUse ?? [];
+    expect(settings.theme).toBe('dark');
+    expect(preToolUse.some((entry) => entry.matcher === 'Write' && entry.hooks?.[0]?.command === 'node custom-hook.cjs')).toBe(true);
+    expect(preToolUse.filter((entry) => entry.hooks?.some((hook) => hook.command?.includes('clawx-block-auto-open.cjs')))).toHaveLength(1);
   });
 
   it('syncs selected OpenClaw skills into a Claude native cli plugin', async () => {

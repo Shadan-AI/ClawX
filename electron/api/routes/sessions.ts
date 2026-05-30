@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import type { Dirent } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename, isAbsolute, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { getOpenClawConfigDir, expandPath } from '../../utils/paths';
 import { readOpenClawConfig } from '../../utils/channel-config';
@@ -117,6 +117,191 @@ function stringifyToolResultContent(value: unknown): string {
     if (record.content) return stringifyToolResultContent(record.content);
   }
   return value == null ? '' : JSON.stringify(value, null, 2);
+}
+
+function resolveNativeCliToolPath(cwd: string, value: unknown): string | undefined {
+  const raw = coerceNonEmptyString(value);
+  if (!raw) return undefined;
+  if (/^[a-z]+:\/\//i.test(raw)) return undefined;
+  return isAbsolute(raw) ? raw : resolve(cwd, raw);
+}
+
+function normalizeNativeCliToolInputPaths(input: unknown, cwd: string): unknown {
+  const record = asRecord(input);
+  if (!record) return input;
+  const next = { ...record };
+  let changed = false;
+  for (const key of ['file_path', 'filePath', 'path', 'file']) {
+    if (!(key in next)) continue;
+    const resolvedPath = resolveNativeCliToolPath(cwd, next[key]);
+    if (!resolvedPath || resolvedPath === next[key]) continue;
+    next[key] = resolvedPath;
+    changed = true;
+  }
+  return changed ? next : input;
+}
+
+function normalizeNativeCliMessageToolPaths(message: Record<string, unknown>, cwd: string): Record<string, unknown> {
+  const content = Array.isArray(message.content) ? message.content : null;
+  let changed = false;
+  const normalizedContent = content?.map((block) => {
+    const item = asRecord(block);
+    if (!item || (item.type !== 'tool_use' && item.type !== 'toolCall')) return block;
+    const input = normalizeNativeCliToolInputPaths(item.input ?? item.arguments ?? {}, cwd);
+    if (
+      (item.input === undefined || input === item.input) &&
+      (item.arguments === undefined || input === item.arguments)
+    ) {
+      return block;
+    }
+    changed = true;
+    return {
+      ...item,
+      ...(item.input !== undefined ? { input } : {}),
+      ...(item.arguments !== undefined ? { arguments: input } : {}),
+    };
+  });
+  return changed && normalizedContent ? { ...message, content: normalizedContent } : message;
+}
+
+function nativeCliMimeFromExtension(filePath: string): string {
+  const ext = filePath.split('.').pop()?.toLowerCase() || '';
+  const map: Record<string, string> = {
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    gif: 'image/gif',
+    webp: 'image/webp',
+    bmp: 'image/bmp',
+    avif: 'image/avif',
+    svg: 'image/svg+xml',
+    html: 'text/html',
+    htm: 'text/html',
+    css: 'text/css',
+    js: 'text/javascript',
+    jsx: 'text/javascript',
+    ts: 'text/typescript',
+    tsx: 'text/typescript',
+    json: 'application/json',
+    pdf: 'application/pdf',
+    doc: 'application/msword',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    xls: 'application/vnd.ms-excel',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    ppt: 'application/vnd.ms-powerpoint',
+    pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    txt: 'text/plain',
+    csv: 'text/csv',
+    md: 'text/markdown',
+    rtf: 'application/rtf',
+    epub: 'application/epub+zip',
+    zip: 'application/zip',
+    tar: 'application/x-tar',
+    gz: 'application/gzip',
+    rar: 'application/vnd.rar',
+    '7z': 'application/x-7z-compressed',
+    mp3: 'audio/mpeg',
+    wav: 'audio/wav',
+    ogg: 'audio/ogg',
+    aac: 'audio/aac',
+    flac: 'audio/flac',
+    m4a: 'audio/mp4',
+    mp4: 'video/mp4',
+    mov: 'video/quicktime',
+    avi: 'video/x-msvideo',
+    mkv: 'video/x-matroska',
+    webm: 'video/webm',
+    m4v: 'video/mp4',
+  };
+  return map[ext] || 'application/octet-stream';
+}
+
+function nativeCliTranscriptSearchText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) return value.map((entry) => nativeCliTranscriptSearchText(entry)).filter(Boolean).join('\n');
+  const record = asRecord(value);
+  if (!record) return '';
+  return [
+    typeof record.text === 'string' ? record.text : '',
+    typeof record.thinking === 'string' ? record.thinking : '',
+    nativeCliTranscriptSearchText(record.content),
+  ].filter(Boolean).join('\n');
+}
+
+function extractNativeCliFileRefsFromText(text: string, cwd: string): string[] {
+  const refs: string[] = [];
+  const seen = new Set<string>();
+  const exts = 'png|jpe?g|gif|webp|bmp|avif|svg|html?|css|jsx?|tsx?|json|pdf|docx?|xlsx?|pptx?|txt|csv|md|rtf|epub|zip|tar|gz|rar|7z|mp3|wav|ogg|aac|flac|m4a|mp4|mov|avi|mkv|webm|m4v';
+  const regex = new RegExp(`(?<![\\w.:\\\\/-])((?:[A-Za-z]:\\\\|/|~/|\\.{1,2}[\\\\/])?[^\\s"'()\\[\\]<>|]*?\\.(?:${exts}))(?=$|[\\s"'()\\[\\]<>,.;!?])`, 'gi');
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(text)) !== null) {
+    const raw = match[1]?.trim().replace(/[.,;:!?]+$/g, '');
+    if (!raw || /^[a-z]+:\/\//i.test(raw)) continue;
+    const resolvedPath = resolveNativeCliToolPath(cwd, raw);
+    if (!resolvedPath || seen.has(resolvedPath)) continue;
+    seen.add(resolvedPath);
+    refs.push(resolvedPath);
+  }
+  return refs;
+}
+
+async function enrichNativeCliTranscriptFileRefs(
+  messages: Record<string, unknown>[],
+  cwd: string,
+): Promise<Record<string, unknown>[]> {
+  const fsP = await import('node:fs/promises');
+  const statCache = new Map<string, { fileSize: number } | null>();
+  const statFile = async (filePath: string): Promise<{ fileSize: number } | null> => {
+    if (statCache.has(filePath)) return statCache.get(filePath) ?? null;
+    try {
+      const stat = await fsP.stat(filePath);
+      const result = stat.isFile() ? { fileSize: stat.size } : null;
+      statCache.set(filePath, result);
+      return result;
+    } catch {
+      statCache.set(filePath, null);
+      return null;
+    }
+  };
+
+  const enriched: Record<string, unknown>[] = [];
+  for (const message of messages) {
+    if (message.role !== 'assistant') {
+      enriched.push(message);
+      continue;
+    }
+    const text = nativeCliTranscriptSearchText(message.content);
+    const refs = extractNativeCliFileRefsFromText(text, cwd);
+    if (refs.length === 0) {
+      enriched.push(message);
+      continue;
+    }
+
+    const existingFiles = Array.isArray(message._attachedFiles)
+      ? message._attachedFiles.filter((file) => file && typeof file === 'object') as Array<Record<string, unknown>>
+      : [];
+    const existingPaths = new Set(existingFiles.map((file) => file.filePath).filter((filePath): filePath is string => typeof filePath === 'string'));
+    const nextFiles = [...existingFiles];
+    for (const filePath of refs) {
+      if (existingPaths.has(filePath)) continue;
+      const stat = await statFile(filePath);
+      if (!stat) continue;
+      nextFiles.push({
+        fileName: basename(filePath),
+        mimeType: nativeCliMimeFromExtension(filePath),
+        fileSize: stat.fileSize,
+        preview: null,
+        filePath,
+        source: 'message-ref',
+      });
+      existingPaths.add(filePath);
+    }
+
+    enriched.push(nextFiles.length > existingFiles.length
+      ? { ...message, _attachedFiles: nextFiles }
+      : message);
+  }
+  return enriched;
 }
 
 function nativeCliContentBlocks(content: unknown): unknown[] {
@@ -647,7 +832,10 @@ async function readNativeCliTranscript(params: {
       const message = asRecord(entry.message);
       if (!message) return [];
       for (const toolUse of extractClaudeToolUses(message)) {
-        if (toolUse.id) toolUses.set(toolUse.id, { name: toolUse.name, input: toolUse.input });
+        if (toolUse.id) toolUses.set(toolUse.id, {
+          name: toolUse.name,
+          input: normalizeNativeCliToolInputPaths(toolUse.input, context.cwd),
+        });
       }
       const toolResult = type === 'user' ? extractClaudeToolResultContent(message) : null;
       if (toolResult) {
@@ -665,12 +853,14 @@ async function readNativeCliTranscript(params: {
           isError: toolResult.isError,
         }];
       }
-      return [{ ...message, id: message.id ?? entry.uuid, timestamp: message.timestamp ?? entry.timestamp }];
+      const normalizedMessage = normalizeNativeCliMessageToolPaths(message, context.cwd);
+      return [{ ...normalizedMessage, id: normalizedMessage.id ?? entry.uuid, timestamp: normalizedMessage.timestamp ?? entry.timestamp }];
     } catch {
       return [];
     }
   });
   const { messages, mergedAssistantIds } = mergeNativeCliTranscriptFragments(parsedMessages);
+  const enrichedMessages = await enrichNativeCliTranscriptFileRefs(messages, context.cwd);
   logNativeCliTranscriptMerge({
     agentId: params.agentId,
     provider,
@@ -681,7 +871,7 @@ async function readNativeCliTranscript(params: {
     mergedAssistantIds,
   });
 
-  return { sessionId: selected.sessionId, sessionFile: selected.path, messages };
+  return { sessionId: selected.sessionId, sessionFile: selected.path, messages: enrichedMessages };
 }
 
 function getSessionKeyTail(sessionKey: string): string {

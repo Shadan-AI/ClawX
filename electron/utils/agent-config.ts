@@ -1,4 +1,4 @@
-import { access, copyFile, cp, mkdir, readdir, rm, writeFile } from 'fs/promises';
+import { access, copyFile, cp, mkdir, readFile, readdir, rm, writeFile } from 'fs/promises';
 import { constants, existsSync, readFileSync } from 'fs';
 import { delimiter, dirname, extname, isAbsolute, join, normalize, sep } from 'path';
 import { deleteAgentChannelAccounts, listConfiguredChannels, readOpenClawConfig, writeOpenClawConfig } from './channel-config';
@@ -21,6 +21,7 @@ const CLAUDE_NATIVE_HAIKU_ALIAS = 'claude-haiku-4-5';
 const CLAUDE_NATIVE_SONNET_ALIAS = 'claude-sonnet-4-6';
 const CLAUDE_NATIVE_OPUS_ALIAS = 'claude-opus-4-7';
 const CLAUDE_AGENT_SKILLS_PLUGIN_DIRNAME = 'clawx-agent-skills';
+const CLAUDE_BLOCK_AUTO_OPEN_HOOK = 'clawx-block-auto-open.cjs';
 const AGENT_BOOTSTRAP_FILES = [
   'AGENTS.md',
   'SOUL.md',
@@ -211,6 +212,110 @@ async function syncClaudeAgentSkillsPlugin(agentId: string, skills: string[]): P
     skillCount: sourceSkillDirs.length,
     skippedSkillCount: selectedSkills.length - sourceSkillDirs.length,
   });
+}
+
+function quoteShellArg(value: string): string {
+  return `"${value.replace(/"/g, '\\"')}"`;
+}
+
+async function readJsonObject(path: string): Promise<Record<string, unknown>> {
+  try {
+    const content = await readFile(path, 'utf8');
+    const parsed = JSON.parse(content) as unknown;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      logger.warn('Failed to read Claude settings; recreating managed settings fields', {
+        path,
+        error: String(error),
+      });
+    }
+  }
+  return {};
+}
+
+function asRecordArray(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is Record<string, unknown> => (
+      Boolean(item) && typeof item === 'object' && !Array.isArray(item)
+    ))
+    : [];
+}
+
+function hookEntryUsesCommand(entry: Record<string, unknown>, command: string): boolean {
+  return asRecordArray(entry.hooks).some((hook) => hook.command === command);
+}
+
+async function ensureClaudeCodeSafetyHooks(claudeConfigDir: string): Promise<void> {
+  const hooksDir = join(claudeConfigDir, 'hooks');
+  const hookScript = join(hooksDir, CLAUDE_BLOCK_AUTO_OPEN_HOOK);
+  const hookCommand = `node ${quoteShellArg(hookScript)}`;
+  const settingsPath = join(claudeConfigDir, 'settings.json');
+
+  await mkdir(hooksDir, { recursive: true });
+  await writeFile(
+    hookScript,
+    `'use strict';
+
+let input = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (chunk) => {
+  input += chunk;
+});
+process.stdin.on('end', () => {
+  let payload = {};
+  try {
+    payload = input ? JSON.parse(input) : {};
+  } catch {
+    process.exit(0);
+    return;
+  }
+
+  const toolInput = payload && typeof payload === 'object'
+    ? (payload.tool_input || payload.toolInput || payload.input || {})
+    : {};
+  const command = toolInput && typeof toolInput === 'object' && typeof toolInput.command === 'string'
+    ? toolInput.command
+    : '';
+  if (!command.trim()) {
+    process.exit(0);
+    return;
+  }
+
+  const openerPattern = /(?:^|[;&|]\\s*)(?:(?:cmd(?:\\.exe)?\\s*\\/c|powershell(?:\\.exe)?\\s+-Command)\\s+)?(?:start(?:\\s|$)|explorer(?:\\.exe)?(?:\\s|$)|start-process(?:\\s|$)|invoke-item(?:\\s|$)|ii(?:\\s|$)|rundll32\\s+url\\.dll,FileProtocolHandler(?:\\s|$)|open(?:\\s|$)|xdg-open(?:\\s|$)|gio\\s+open(?:\\s|$)|gnome-open(?:\\s|$)|kde-open5?(?:\\s|$))/im;
+  if (!openerPattern.test(command)) {
+    process.exit(0);
+    return;
+  }
+
+  console.error('Blocked by ClawX: do not open files or external apps automatically. Tell the user the file is ready and let them click the file card in ClawX.');
+  process.exit(2);
+});
+`,
+    'utf8',
+  );
+
+  const settings = await readJsonObject(settingsPath);
+  const hooks = settings.hooks && typeof settings.hooks === 'object' && !Array.isArray(settings.hooks)
+    ? { ...settings.hooks as Record<string, unknown> }
+    : {};
+  const preToolUse = asRecordArray(hooks.PreToolUse)
+    .filter((entry) => !hookEntryUsesCommand(entry, hookCommand));
+  preToolUse.unshift({
+    matcher: 'Bash',
+    hooks: [
+      {
+        type: 'command',
+        command: hookCommand,
+      },
+    ],
+  });
+  hooks.PreToolUse = preToolUse;
+  settings.hooks = hooks;
+
+  await writeFile(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, 'utf8');
 }
 
 function stripClaudeAgentSkillsPluginArgs(args: string[], pluginDir: string | undefined): string[] {
@@ -1466,6 +1571,7 @@ export async function updateAgentRuntime(agentId: string, runtime: Record<string
     const claudeConfigDir = getClaudeConfigDirForRuntime(agentId, normalizedRuntime);
     if (claudeConfigDir) {
       await ensureDir(claudeConfigDir);
+      await ensureClaudeCodeSafetyHooks(claudeConfigDir);
     }
     const nextEntry: AgentListEntry = { ...entries[index], runtime: normalizedRuntime };
     entries[index] = nextEntry;
@@ -1510,6 +1616,7 @@ export async function ensureNativeCliRuntimeResumeArgs(): Promise<boolean> {
       const claudeConfigDir = getClaudeConfigDirForRuntime(entry.id, runtime as Record<string, unknown>);
       if (claudeConfigDir) {
         await ensureDir(claudeConfigDir);
+        await ensureClaudeCodeSafetyHooks(claudeConfigDir);
         await syncClaudeAgentSkillsPlugin(entry.id, asStringArray(entry.skills) ?? []);
       }
     }

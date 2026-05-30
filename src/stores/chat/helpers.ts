@@ -118,6 +118,14 @@ function mimeFromExtension(filePath: string): string {
     'bmp': 'image/bmp',
     'avif': 'image/avif',
     'svg': 'image/svg+xml',
+    'html': 'text/html',
+    'htm': 'text/html',
+    'css': 'text/css',
+    'js': 'text/javascript',
+    'jsx': 'text/javascript',
+    'ts': 'text/typescript',
+    'tsx': 'text/typescript',
+    'json': 'application/json',
     // Documents
     'pdf': 'application/pdf',
     'doc': 'application/msword',
@@ -163,7 +171,7 @@ function mimeFromExtension(filePath: string): string {
 function extractRawFilePaths(text: string): Array<{ filePath: string; mimeType: string }> {
   const refs: Array<{ filePath: string; mimeType: string }> = [];
   const seen = new Set<string>();
-  const exts = 'png|jpe?g|gif|webp|bmp|avif|svg|pdf|docx?|xlsx?|pptx?|txt|csv|md|rtf|epub|zip|tar|gz|rar|7z|mp3|wav|ogg|aac|flac|m4a|mp4|mov|avi|mkv|webm|m4v';
+  const exts = 'png|jpe?g|gif|webp|bmp|avif|svg|html?|css|jsx?|tsx?|json|pdf|docx?|xlsx?|pptx?|txt|csv|md|rtf|epub|zip|tar|gz|rar|7z|mp3|wav|ogg|aac|flac|m4a|mp4|mov|avi|mkv|webm|m4v';
   // Unix absolute paths (/... or ~/...) — lookbehind rejects mid-token slashes
   // (e.g. "path/to/file.mp4", "https://example.com/file.mp4")
   const unixRegex = new RegExp(`(?<![\\w./:])((?:\\/|~\\/)[^\\s\\n"'()\\[\\],<>]*?\\.(?:${exts}))`, 'gi');
@@ -287,22 +295,23 @@ function getToolCallFilePath(msg: RawMessage, toolCallId: string): string | unde
   return undefined;
 }
 
-/**
- * Collect all tool call file paths from a message into a Map<toolCallId, filePath>.
- */
-function collectToolCallPaths(msg: RawMessage, paths: Map<string, string>): void {
+function collectFileProducingToolCallPaths(msg: RawMessage): Map<string, { filePath: string; fileProducing: boolean }> {
+  const paths = new Map<string, { filePath: string; fileProducing: boolean }>();
   const content = msg.content;
   if (Array.isArray(content)) {
     for (const block of content as ContentBlock[]) {
-      if ((block.type === 'tool_use' || block.type === 'toolCall') && block.id) {
-        const args = (block.input ?? block.arguments) as Record<string, unknown> | undefined;
-        if (args) {
-          const fp = args.file_path ?? args.filePath ?? args.path ?? args.file;
-          if (typeof fp === 'string') paths.set(block.id, fp);
-        }
+      if ((block.type !== 'tool_use' && block.type !== 'toolCall') || !block.id) continue;
+      const args = (block.input ?? block.arguments) as Record<string, unknown> | undefined;
+      const fp = args?.file_path ?? args?.filePath ?? args?.path ?? args?.file;
+      if (typeof fp === 'string') {
+        paths.set(block.id, {
+          filePath: fp,
+          fileProducing: isFileProducingToolName(block.name),
+        });
       }
     }
   }
+
   const msgAny = msg as unknown as Record<string, unknown>;
   const toolCalls = msgAny.tool_calls ?? msgAny.toolCalls;
   if (Array.isArray(toolCalls)) {
@@ -314,12 +323,25 @@ function collectToolCallPaths(msg: RawMessage, paths: Map<string, string>): void
       try {
         args = typeof fn.arguments === 'string' ? JSON.parse(fn.arguments) : (fn.arguments ?? fn.input) as Record<string, unknown>;
       } catch { /* ignore */ }
-      if (args) {
-        const fp = args.file_path ?? args.filePath ?? args.path ?? args.file;
-        if (typeof fp === 'string') paths.set(id, fp);
+      const fp = args?.file_path ?? args?.filePath ?? args?.path ?? args?.file;
+      if (typeof fp === 'string') {
+        paths.set(id, {
+          filePath: fp,
+          fileProducing: isFileProducingToolName(fn.name ?? tc.name),
+        });
       }
     }
   }
+  return paths;
+}
+
+function isFileProducingToolName(name: unknown): boolean {
+  if (typeof name !== 'string') return false;
+  const normalized = name.toLowerCase();
+  if (/(?:^|[_-])(?:read|view|list|search|grep|glob|ls|cat|stat|inspect|open)(?:$|[_-])/.test(normalized)) {
+    return false;
+  }
+  return /(?:write|edit|create|save|patch|generate|export|download|upload|move|copy|rename|replace|touch|notebook|artifact)/i.test(normalized);
 }
 
 /**
@@ -333,17 +355,39 @@ function collectToolCallPaths(msg: RawMessage, paths: Map<string, string>): void
  */
 function enrichWithToolResultFiles(messages: RawMessage[]): RawMessage[] {
   const pending: AttachedFileMeta[] = [];
-  const toolCallPaths = new Map<string, string>();
+  const toolCallPaths = new Map<string, { filePath: string; fileProducing: boolean }>();
 
   return messages.map((msg) => {
     // Track file paths from assistant tool call arguments for later matching
     if (msg.role === 'assistant') {
-      collectToolCallPaths(msg, toolCallPaths);
+      for (const [id, metadata] of collectFileProducingToolCallPaths(msg)) {
+        toolCallPaths.set(id, metadata);
+      }
+      if (pending.length > 0) {
+        const toAttach = pending.splice(0);
+        const existingPaths = new Set(
+          (msg._attachedFiles || []).map(f => f.filePath).filter(Boolean),
+        );
+        const newFiles = toAttach.filter(f => !f.filePath || !existingPaths.has(f.filePath));
+        if (newFiles.length > 0) {
+          return {
+            ...msg,
+            _attachedFiles: [...(msg._attachedFiles || []), ...newFiles],
+          };
+        }
+      }
     }
 
     if (isToolResultRole(msg.role)) {
       // Resolve file path from the matching tool call
-      const matchedPath = msg.toolCallId ? toolCallPaths.get(msg.toolCallId) : undefined;
+      const matchedToolPath = msg.toolCallId ? toolCallPaths.get(msg.toolCallId) : undefined;
+      const matchedPath = matchedToolPath?.filePath;
+      if (matchedPath && matchedToolPath?.fileProducing && !(msg as RawMessage).isError) {
+        pending.push(makeAttachedFile({
+          filePath: matchedPath,
+          mimeType: mimeFromExtension(matchedPath),
+        }, 'tool-result'));
+      }
 
       // 1. Image/file content blocks in the structured content array
       const imageFiles = extractImagesAsAttachedFiles(msg.content);
@@ -374,20 +418,6 @@ function enrichWithToolResultFiles(messages: RawMessage[]): RawMessage[] {
       }
 
       return msg; // will be filtered later
-    }
-
-    if (msg.role === 'assistant' && pending.length > 0) {
-      const toAttach = pending.splice(0);
-      // Deduplicate against files already on the assistant message
-      const existingPaths = new Set(
-        (msg._attachedFiles || []).map(f => f.filePath).filter(Boolean),
-      );
-      const newFiles = toAttach.filter(f => !f.filePath || !existingPaths.has(f.filePath));
-      if (newFiles.length === 0) return msg;
-      return {
-        ...msg,
-        _attachedFiles: [...(msg._attachedFiles || []), ...newFiles],
-      };
     }
 
     return msg;
