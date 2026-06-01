@@ -492,7 +492,7 @@ describe('agent config lifecycle', () => {
 
     const { updateAgentRuntime } = await import('@electron/utils/agent-config');
 
-    await updateAgentRuntime('coder', {
+    const firstUpdate = await updateAgentRuntime('coder', {
       type: 'native-cli',
       nativeCli: {
         provider: 'claude',
@@ -505,6 +505,22 @@ describe('agent config lifecycle', () => {
         },
       },
     });
+    expect(firstUpdate.runtimeChanged).toBe(true);
+
+    const secondUpdate = await updateAgentRuntime('coder', {
+      type: 'native-cli',
+      nativeCli: {
+        provider: 'claude',
+        command: 'claude',
+        env: {
+          ANTHROPIC_BASE_URL: 'https://one-api.shadanai.com',
+          ANTHROPIC_API_KEY: 'oneapi-key',
+          ANTHROPIC_AUTH_TOKEN: 'stale-claude-login-token',
+          ANTHROPIC_MODEL: 'deepseek-v4-flash',
+        },
+      },
+    });
+    expect(secondUpdate.runtimeChanged).toBe(false);
 
     const config = await readOpenClawJson();
     const coder = ((config.agents as { list: Array<{ id: string; runtime?: { nativeCli?: { args?: string[]; resumeArgs?: string[]; env?: Record<string, string> } } }> }).list)
@@ -526,10 +542,20 @@ describe('agent config lifecycle', () => {
     expect(env).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN');
     await expect(access(join(testHome, '.openclaw', 'agents', 'coder', 'claude-code'))).resolves.toBeUndefined();
     const settings = JSON.parse(await readFile(join(testHome, '.openclaw', 'agents', 'coder', 'claude-code', 'settings.json'), 'utf8')) as {
+      skipDangerousModePermissionPrompt?: boolean;
       hooks?: { PreToolUse?: Array<{ matcher?: string; hooks?: Array<{ command?: string }> }> };
     };
+    expect(settings.skipDangerousModePermissionPrompt).toBe(true);
     expect(settings.hooks?.PreToolUse?.[0]?.matcher).toBe('Bash');
     expect(settings.hooks?.PreToolUse?.[0]?.hooks?.[0]?.command).toContain('clawx-block-auto-open.cjs');
+    const claudeState = JSON.parse(await readFile(join(testHome, '.openclaw', 'agents', 'coder', 'claude-code', '.claude.json'), 'utf8')) as {
+      hasCompletedOnboarding?: boolean;
+      projects?: Record<string, { hasTrustDialogAccepted?: boolean; projectOnboardingSeenCount?: number }>;
+    };
+    const project = claudeState.projects?.[`${testHome}/.openclaw/workspace-coder`];
+    expect(claudeState.hasCompletedOnboarding).toBe(true);
+    expect(project?.hasTrustDialogAccepted).toBe(true);
+    expect(project?.projectOnboardingSeenCount).toBe(1);
     await expect(readFile(join(testHome, '.openclaw', 'agents', 'coder', 'claude-code', 'hooks', 'clawx-block-auto-open.cjs'), 'utf8'))
       .resolves.toContain('Blocked by ClawX');
   });
@@ -582,6 +608,16 @@ describe('agent config lifecycle', () => {
     });
     expect(nativeCli?.env).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN');
     await expect(access(join(testHome, '.openclaw', 'agents', 'legacy', 'claude-code'))).resolves.toBeUndefined();
+    const settings = JSON.parse(await readFile(join(testHome, '.openclaw', 'agents', 'legacy', 'claude-code', 'settings.json'), 'utf8')) as {
+      skipDangerousModePermissionPrompt?: boolean;
+    };
+    expect(settings.skipDangerousModePermissionPrompt).toBe(true);
+    const claudeState = JSON.parse(await readFile(join(testHome, '.openclaw', 'agents', 'legacy', 'claude-code', '.claude.json'), 'utf8')) as {
+      hasCompletedOnboarding?: boolean;
+      projects?: Record<string, { hasTrustDialogAccepted?: boolean }>;
+    };
+    expect(claudeState.hasCompletedOnboarding).toBe(true);
+    expect(claudeState.projects?.[`${testHome}/.openclaw/workspace-legacy`]?.hasTrustDialogAccepted).toBe(true);
     await expect(readFile(join(testHome, '.openclaw', 'agents', 'legacy', 'claude-code', 'hooks', 'clawx-block-auto-open.cjs'), 'utf8'))
       .resolves.toContain('open files or external apps');
   });
@@ -591,6 +627,7 @@ describe('agent config lifecycle', () => {
     await mkdir(claudeConfigDir, { recursive: true });
     await writeFile(join(claudeConfigDir, 'settings.json'), JSON.stringify({
       theme: 'dark',
+      skipDangerousModePermissionPrompt: false,
       hooks: {
         PreToolUse: [
           {
@@ -633,12 +670,20 @@ describe('agent config lifecycle', () => {
 
     const settings = JSON.parse(await readFile(join(claudeConfigDir, 'settings.json'), 'utf8')) as {
       theme?: string;
+      skipDangerousModePermissionPrompt?: boolean;
       hooks?: { PreToolUse?: Array<{ matcher?: string; hooks?: Array<{ command?: string }> }> };
     };
     const preToolUse = settings.hooks?.PreToolUse ?? [];
     expect(settings.theme).toBe('dark');
+    expect(settings.skipDangerousModePermissionPrompt).toBe(true);
     expect(preToolUse.some((entry) => entry.matcher === 'Write' && entry.hooks?.[0]?.command === 'node custom-hook.cjs')).toBe(true);
     expect(preToolUse.filter((entry) => entry.hooks?.some((hook) => hook.command?.includes('clawx-block-auto-open.cjs')))).toHaveLength(1);
+    const claudeState = JSON.parse(await readFile(join(claudeConfigDir, '.claude.json'), 'utf8')) as {
+      hasCompletedOnboarding?: boolean;
+      projects?: Record<string, { hasTrustDialogAccepted?: boolean }>;
+    };
+    expect(claudeState.hasCompletedOnboarding).toBe(true);
+    expect(claudeState.projects?.[`${testHome}/.openclaw/workspace-coder`]?.hasTrustDialogAccepted).toBe(true);
   });
 
   it('syncs selected OpenClaw skills into a Claude native cli plugin', async () => {

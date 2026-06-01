@@ -333,8 +333,6 @@ export function Chat() {
             sessionKey={currentSessionKey}
             cliSessionId={nativeCliSessionId}
             cliSessionProvider={nativeCliProvider}
-            sessionTitle={currentSession?.label ?? currentSession?.displayName}
-            sessionUpdatedAt={currentSession?.updatedAt}
             onUserText={handleNativeCliUserText}
           />
         </div>

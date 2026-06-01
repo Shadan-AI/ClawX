@@ -75,5 +75,5 @@ export function nativeCliTerminalLoadingLabel(state: NativeCliTerminalState): st
 }
 
 export function nativeCliTerminalCanSend(state: NativeCliTerminalState): boolean {
-  return state.status === 'connected';
+  return state.status === 'connected' && !state.awaitingInitialOutput;
 }

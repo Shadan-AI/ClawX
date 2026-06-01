@@ -21,7 +21,7 @@ describe('native CLI terminal state machine', () => {
     state = nativeCliTerminalReducer(state, { type: 'websocket_opened' });
     expect(state.status).toBe('connected');
     expect(state.awaitingInitialOutput).toBe(true);
-    expect(nativeCliTerminalCanSend(state)).toBe(true);
+    expect(nativeCliTerminalCanSend(state)).toBe(false);
 
     state = nativeCliTerminalReducer(state, { type: 'ready_without_initial_output' });
     expect(state).toMatchObject({
@@ -30,6 +30,7 @@ describe('native CLI terminal state machine', () => {
       awaitingInitialOutput: false,
     });
     expect(nativeCliTerminalLoadingLabel(state)).toBe('');
+    expect(nativeCliTerminalCanSend(state)).toBe(true);
   });
 
   it('models resume and reconnect transitions', () => {

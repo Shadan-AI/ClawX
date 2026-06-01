@@ -142,6 +142,129 @@ function replaceSnippetInFile(filePath: string, search: string, replace: string)
   }
 }
 
+function findStatementEnd(source: string, start: number): number {
+  let parenDepth = 0;
+  let braceDepth = 0;
+  let bracketDepth = 0;
+  let stringQuote: '"' | "'" | '`' | null = null;
+  let escaped = false;
+  let lineComment = false;
+  let blockComment = false;
+
+  for (let index = start; index < source.length; index += 1) {
+    const char = source[index];
+    const next = source[index + 1];
+
+    if (lineComment) {
+      if (char === '\n') lineComment = false;
+      continue;
+    }
+    if (blockComment) {
+      if (char === '*' && next === '/') {
+        blockComment = false;
+        index += 1;
+      }
+      continue;
+    }
+    if (stringQuote) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === '\\') {
+        escaped = true;
+        continue;
+      }
+      if (char === stringQuote) stringQuote = null;
+      continue;
+    }
+
+    if (char === '/' && next === '/') {
+      lineComment = true;
+      index += 1;
+      continue;
+    }
+    if (char === '/' && next === '*') {
+      blockComment = true;
+      index += 1;
+      continue;
+    }
+    if (char === '"' || char === "'" || char === '`') {
+      stringQuote = char;
+      continue;
+    }
+
+    if (char === '(') parenDepth += 1;
+    else if (char === ')') parenDepth = Math.max(0, parenDepth - 1);
+    else if (char === '{') braceDepth += 1;
+    else if (char === '}') braceDepth = Math.max(0, braceDepth - 1);
+    else if (char === '[') bracketDepth += 1;
+    else if (char === ']') bracketDepth = Math.max(0, bracketDepth - 1);
+    else if (char === ';' && parenDepth === 0 && braceDepth === 0 && bracketDepth === 0) {
+      return index + 1;
+    }
+  }
+
+  return -1;
+}
+
+function removeConsoleWarnStatementsByMarker(source: string, markers: string[]): { text: string; removed: number } {
+  let text = source;
+  let removed = 0;
+  for (const marker of markers) {
+    let searchFrom = 0;
+    while (searchFrom < text.length) {
+      const markerIndex = text.indexOf(marker, searchFrom);
+      if (markerIndex < 0) break;
+
+      const statementStart = text.lastIndexOf('console.warn(', markerIndex);
+      if (statementStart < 0) {
+        searchFrom = markerIndex + marker.length;
+        continue;
+      }
+
+      const between = text.slice(statementStart, markerIndex);
+      if (!between.includes('console.warn(')) {
+        const statementEnd = findStatementEnd(text, statementStart);
+        if (statementEnd > statementStart) {
+          const lineStart = text.lastIndexOf('\n', statementStart - 1) + 1;
+          const prefix = text.slice(lineStart, statementStart);
+          const removeStart = /^\s*$/.test(prefix) ? lineStart : statementStart;
+          const removeEnd = text[statementEnd] === '\n' ? statementEnd + 1 : statementEnd;
+          text = text.slice(0, removeStart) + text.slice(removeEnd);
+          removed += 1;
+          searchFrom = removeStart;
+          continue;
+        }
+      }
+
+      searchFrom = markerIndex + marker.length;
+    }
+  }
+  return { text, removed };
+}
+
+function removeInjectedTerminalDiagnosticStatements(filePath: string): number {
+  try {
+    const current = readFileSync(fsPath(filePath), 'utf-8');
+    const result = removeConsoleWarnStatementsByMarker(current, [
+      '[openclaw] terminal pty output',
+      '[openclaw] terminal pty spawn',
+      '[openclaw] terminal pty spawned',
+      '[openclaw] terminal pty exit',
+      '[openclaw] terminal ws message',
+      '[openclaw] terminal pty write',
+      '[openclaw] terminal pty resize',
+    ]);
+    if (result.removed === 0 || result.text === current) return 0;
+    writeFileSync(fsPath(filePath), result.text, 'utf-8');
+    return result.removed;
+  } catch (error) {
+    logger.warn(`[gateway-prep] Failed to clean terminal diagnostics from ${filePath}:`, error);
+    return 0;
+  }
+}
+
 function patchOpenClawBoxImModelValidation(openclawDir: string): number {
   const ownerBootstrapTargets = findFilesByName(join(openclawDir, 'dist'), /^owner-bootstrap-.*\.js$/, 2);
   const patches = [
@@ -203,7 +326,7 @@ function patchOpenClawTerminalDiagnostics(openclawDir: string): number {
   const helperSearch = `function userTextToPtyInput(text) {
 \treturn text.endsWith("\\r") || text.endsWith("\\n") ? text : \`\${text}\\r\`;
 }`;
-  const helperReplace = `function terminalDataDebug(data) {
+  const existingHelperWithoutPreviewSearch = `function terminalDataDebug(data) {
 \tlet hash = 2166136261;
 \tconst text = typeof data === "string" ? data : String(data ?? "");
 \tfor (let index = 0; index < text.length; index += 1) {
@@ -214,6 +337,26 @@ function patchOpenClawTerminalDiagnostics(openclawDir: string): number {
 \t\tlength: text.length,
 \t\thash: (hash >>> 0).toString(16).padStart(8, "0"),
 \t\tcontrol: text === "\\r" ? "enter" : text === "\\n" ? "newline" : text === "\\u0003" ? "ctrl-c" : null
+\t};
+}`;
+  const helperReplace = `function terminalDataDebug(data) {
+\tlet hash = 2166136261;
+\tconst text = typeof data === "string" ? data : String(data ?? "");
+\tfor (let index = 0; index < text.length; index += 1) {
+\t\thash ^= text.charCodeAt(index);
+\t\thash = Math.imul(hash, 16777619);
+\t}
+\treturn {
+\t\tlength: text.length,
+\t\thash: (hash >>> 0).toString(16).padStart(8, "0"),
+\t\tcontrol: text === "\\r" ? "enter" : text === "\\n" ? "newline" : text === "\\u0003" ? "ctrl-c" : null,
+\t\tpreview: text === "\\r" || text === "\\n" || text === "\\u0003" ? void 0 : text
+\t\t\t.replace(/\\x1b\\[[0-?]*[ -/]*[@-~]/g, "")
+\t\t\t.replace(/\\x1b\\][^\\u0007]*(?:\\u0007|\\x1b\\\\)/g, "")
+\t\t\t.replace(/[\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f]/g, "")
+\t\t\t.replace(/\\s+/g, " ")
+\t\t\t.trim()
+\t\t\t.slice(0, 220) || void 0
 \t};
 }
 function terminalMessageDebug(msg) {
@@ -348,6 +491,9 @@ function userTextToPtyInput(text) {
     for (const [search, replace] of diagnosticLogUpgrades) {
       if (replaceSnippetInFile(target, search, replace)) patched++;
     }
+    if (replaceSnippetInFile(target, existingHelperWithoutPreviewSearch, helperReplace.split('\nfunction terminalMessageDebug(msg) {')[0])) {
+      patched++;
+    }
     for (const patch of patches) {
       try {
         if (readFileSync(fsPath(target), 'utf-8').includes(patch.marker)) continue;
@@ -358,6 +504,128 @@ function userTextToPtyInput(text) {
     }
   }
   return patched;
+}
+
+function removeOpenClawTerminalDiagnostics(openclawDir: string): number {
+  const gatewayTargets = findFilesByName(join(openclawDir, 'dist'), /^gateway-cli-.*\.js$/, 2);
+  const replacements: Array<[string, string]> = [
+    [
+      `function handlePtyOutput(ws, session, raw) {
+\tconsole.warn("[openclaw] terminal pty output", {
+\t\tdata: terminalDataDebug(raw),
+\t\tcurrentTurn: session.currentTurn ? { id: session.currentTurn.id, ended: session.currentTurn.ended } : null,
+\t\tconversationId: session.conversationId
+\t});
+\tsendJson$1(ws, {`,
+      `function handlePtyOutput(ws, session, raw) {
+\tsendJson$1(ws, {`,
+    ],
+    [
+      `\t\tconsole.warn("[openclaw] terminal pty spawn", {
+\t\t\tnativeCli: nativeCli ? {
+\t\t\t\tagentId: nativeCli.agentId,
+\t\t\t\tprovider: nativeCli.provider,
+\t\t\t\tsessionKey: nativeCli.sessionKey,
+\t\t\t\tresume: nativeCli.resume,
+\t\t\t\tcanResume,
+\t\t\t\tresumeSessionId: resumeSessionId ? terminalDataDebug(resumeSessionId) : null
+\t\t\t} : null,
+\t\t\tshell,
+\t\t\tshellArgs,
+\t\t\tcwd: nativeCli?.cwd ?? process.env.HOME ?? process.cwd(),
+\t\t\tcols: nativeCli?.config.cols ?? 80,
+\t\t\trows: nativeCli?.config.rows ?? 24
+\t\t});
+\t\tconst pty = spawn(shell, shellArgs, {
+\t\t\tname: isWindows ? "xterm" : "xterm-256color",
+\t\t\tcols: nativeCli?.config.cols ?? 80,
+\t\t\trows: nativeCli?.config.rows ?? 24,
+\t\t\tcwd: nativeCli?.cwd ?? process.env.HOME ?? process.cwd(),
+\t\t\tenv: shellEnv
+\t\t});
+\t\tconsole.warn("[openclaw] terminal pty spawned", {
+\t\t\tpid: pty.pid,
+\t\t\tprocess: typeof pty.process === "string" ? pty.process : void 0
+\t\t});`,
+      `\t\tconst pty = spawn(shell, shellArgs, {
+\t\t\tname: isWindows ? "xterm" : "xterm-256color",
+\t\t\tcols: nativeCli?.config.cols ?? 80,
+\t\t\trows: nativeCli?.config.rows ?? 24,
+\t\t\tcwd: nativeCli?.cwd ?? process.env.HOME ?? process.cwd(),
+\t\t\tenv: shellEnv
+\t\t});`,
+    ],
+    [
+      `\t\tpty.onExit(({ exitCode }) => {
+\t\t\tconsole.warn("[openclaw] terminal pty exit", {
+\t\t\t\texitCode,
+\t\t\t\tnativeCli: nativeCli ? {
+\t\t\t\t\tagentId: nativeCli.agentId,
+\t\t\t\t\tprovider: nativeCli.provider,
+\t\t\t\t\tsessionKey: nativeCli.sessionKey,
+\t\t\t\t\tresume: nativeCli.resume
+\t\t\t\t} : null
+\t\t\t});
+\t\t\tstopPoller?.();`,
+      `\t\tpty.onExit(({ exitCode }) => {
+\t\t\tstopPoller?.();`,
+    ],
+    [
+      `\t\tws.on("message", (raw) => {
+\t\t\ttry {
+\t\t\t\tconst rawText = rawToString(raw);
+\t\t\t\tconst msg = JSON.parse(rawText);
+\t\t\t\tconsole.warn("[openclaw] terminal ws message", {
+\t\t\t\t\traw: terminalDataDebug(rawText),
+\t\t\t\t\tmessage: terminalMessageDebug(msg),
+\t\t\t\t\tnativeCli: nativeCli ? {
+\t\t\t\t\t\tagentId: nativeCli.agentId,
+\t\t\t\t\t\tprovider: nativeCli.provider,
+\t\t\t\t\t\tsessionKey: nativeCli.sessionKey,
+\t\t\t\t\t\tresume: nativeCli.resume
+\t\t\t\t\t} : null
+\t\t\t\t});
+\t\t\t\tif (msg.type === "data" && typeof msg.data === "string") {
+\t\t\t\t\tconsole.warn("[openclaw] terminal pty write", { source: "data", data: terminalDataDebug(msg.data) });
+\t\t\t\t\tpty.write(msg.data);
+\t\t\t\t} else if (msg.type === "user_text" && typeof msg.text === "string") {
+\t\t\t\t\tstartTurn(ws, chatSession, msg.text);
+\t\t\t\t\tconst ptyInput = userTextToPtyInput(msg.text);
+\t\t\t\t\tconsole.warn("[openclaw] terminal pty write", { source: "user_text", data: terminalDataDebug(ptyInput) });
+\t\t\t\t\tpty.write(ptyInput);
+\t\t\t\t} else if (msg.type === "terminal_input" && typeof msg.data === "string") {
+\t\t\t\t\tconsole.warn("[openclaw] terminal pty write", { source: "terminal_input", data: terminalDataDebug(msg.data) });
+\t\t\t\t\tpty.write(msg.data);
+\t\t\t\t} else if (msg.type === "resize" && typeof msg.cols === "number" && typeof msg.rows === "number") {
+\t\t\t\t\tconsole.warn("[openclaw] terminal pty resize", { cols: msg.cols, rows: msg.rows });
+\t\t\t\t\tptyControls.resize?.(Math.max(1, msg.cols), Math.max(1, msg.rows));
+\t\t\t\t}
+\t\t\t} catch (error) {
+\t\t\t\tconsole.warn("[openclaw] terminal ws message parse failed", { error: String(error) });
+\t\t\t}
+\t\t});`,
+      `\t\tws.on("message", (raw) => {
+\t\t\ttry {
+\t\t\t\tconst msg = JSON.parse(rawToString(raw));
+\t\t\t\tif (msg.type === "data" && typeof msg.data === "string") pty.write(msg.data);
+\t\t\t\telse if (msg.type === "user_text" && typeof msg.text === "string") {
+\t\t\t\t\tstartTurn(ws, chatSession, msg.text);
+\t\t\t\t\tpty.write(userTextToPtyInput(msg.text));
+\t\t\t\t} else if (msg.type === "terminal_input" && typeof msg.data === "string") pty.write(msg.data);
+\t\t\t\telse if (msg.type === "resize" && typeof msg.cols === "number" && typeof msg.rows === "number") ptyControls.resize?.(Math.max(1, msg.cols), Math.max(1, msg.rows));
+\t\t\t} catch {}
+\t\t});`,
+    ],
+  ];
+
+  let removed = 0;
+  for (const target of gatewayTargets) {
+    removed += removeInjectedTerminalDiagnosticStatements(target);
+    for (const [search, replace] of replacements) {
+      if (replaceSnippetInFile(target, search, replace)) removed++;
+    }
+  }
+  return removed;
 }
 
 function getNodePtyWindowsPackageRoots(openclawDir: string): string[] {
@@ -462,10 +730,16 @@ function patchNodePtyWindowsCleanup(openclawDir: string): number {
 
 function repairOpenClawRuntimeBeforeLaunch(openclawDir: string): void {
   const boxImPatchCount = patchOpenClawBoxImModelValidation(openclawDir);
-  const terminalDiagnosticPatchCount = patchOpenClawTerminalDiagnostics(openclawDir);
+  const terminalDiagnosticsEnabled = process.env.CLAWX_OPENCLAW_TERMINAL_DIAGNOSTICS === '1';
+  const terminalDiagnosticPatchCount = terminalDiagnosticsEnabled
+    ? patchOpenClawTerminalDiagnostics(openclawDir)
+    : 0;
+  const terminalDiagnosticCleanupCount = terminalDiagnosticsEnabled
+    ? 0
+    : removeOpenClawTerminalDiagnostics(openclawDir);
   const nodePtyPatchCount = process.platform === 'win32' ? patchNodePtyWindowsCleanup(openclawDir) : 0;
-  if (boxImPatchCount > 0 || terminalDiagnosticPatchCount > 0 || nodePtyPatchCount > 0) {
-    logger.info(`[gateway-prep] Patched OpenClaw runtime before launch (boxIm=${boxImPatchCount}, terminalDiagnostics=${terminalDiagnosticPatchCount}, nodePty=${nodePtyPatchCount})`);
+  if (boxImPatchCount > 0 || terminalDiagnosticPatchCount > 0 || terminalDiagnosticCleanupCount > 0 || nodePtyPatchCount > 0) {
+    logger.info(`[gateway-prep] Patched OpenClaw runtime before launch (boxIm=${boxImPatchCount}, terminalDiagnostics=${terminalDiagnosticPatchCount}, terminalDiagnosticsRemoved=${terminalDiagnosticCleanupCount}, nodePty=${nodePtyPatchCount})`);
   }
 }
 

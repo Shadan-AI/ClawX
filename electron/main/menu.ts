@@ -4,6 +4,32 @@
  */
 import { Menu, app, shell, BrowserWindow } from 'electron';
 
+const ZOOM_STEP = 0.1;
+const MIN_ZOOM_FACTOR = 0.5;
+const MAX_ZOOM_FACTOR = 3;
+
+function getFocusedWebContents() {
+  const win = BrowserWindow.getFocusedWindow();
+  if (!win || win.isDestroyed()) return null;
+  return win.webContents;
+}
+
+function clampZoomFactor(value: number) {
+  return Math.min(MAX_ZOOM_FACTOR, Math.max(MIN_ZOOM_FACTOR, value));
+}
+
+function zoomPage(delta: number) {
+  const webContents = getFocusedWebContents();
+  if (!webContents) return;
+  const current = webContents.getZoomFactor();
+  webContents.setZoomFactor(clampZoomFactor(Number((current + delta).toFixed(2))));
+}
+
+function resetPageZoom() {
+  const webContents = getFocusedWebContents();
+  webContents?.setZoomFactor(1);
+}
+
 /**
  * Create application menu
  */
@@ -89,9 +115,27 @@ export function createMenu(): void {
         { role: 'forceReload' },
         { role: 'toggleDevTools' },
         { type: 'separator' },
-        { role: 'resetZoom' },
-        { role: 'zoomIn' },
-        { role: 'zoomOut' },
+        {
+          label: 'Actual Size',
+          accelerator: 'CmdOrCtrl+0',
+          click: resetPageZoom,
+        },
+        {
+          label: 'Zoom In',
+          accelerator: 'CmdOrCtrl+=',
+          click: () => zoomPage(ZOOM_STEP),
+        },
+        {
+          label: 'Zoom In',
+          accelerator: 'CmdOrCtrl+Plus',
+          visible: false,
+          click: () => zoomPage(ZOOM_STEP),
+        },
+        {
+          label: 'Zoom Out',
+          accelerator: 'CmdOrCtrl+-',
+          click: () => zoomPage(-ZOOM_STEP),
+        },
         { type: 'separator' },
         { role: 'togglefullscreen' },
       ],

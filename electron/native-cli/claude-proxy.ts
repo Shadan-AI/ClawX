@@ -36,6 +36,7 @@ type LiveTurnState = {
   turnId: string;
   prompt: string;
   status: 'running' | 'completed' | 'error';
+  awaitingToolContinuation: boolean;
   content: LiveContentBlock[];
   text: string;
   thinking: string;
@@ -166,11 +167,88 @@ function routeDiagnostic(req: IncomingMessage, pathname: string, routeModel: str
   };
 }
 
-function rewriteMessagesBody(rawBody: Buffer, upstreamModel: string): Buffer {
-  if (rawBody.length === 0) return rawBody;
+type RewriteMessagesBodyResult = {
+  body: Buffer;
+  strippedThinkingBlockCount: number;
+  droppedAssistantMessageCount: number;
+};
+
+function isAnthropicReasoningBlock(block: unknown): boolean {
+  return Boolean(block && typeof block === 'object' && [
+    'thinking',
+    'redacted_thinking',
+  ].includes(String((block as Record<string, unknown>).type ?? '')));
+}
+
+function sanitizeAssistantReasoningHistory(body: Record<string, unknown>): {
+  body: Record<string, unknown>;
+  strippedThinkingBlockCount: number;
+  droppedAssistantMessageCount: number;
+} {
+  const messages = Array.isArray(body.messages)
+    ? body.messages as Array<Record<string, unknown>>
+    : null;
+  if (!messages) {
+    return { body, strippedThinkingBlockCount: 0, droppedAssistantMessageCount: 0 };
+  }
+
+  let strippedThinkingBlockCount = 0;
+  let droppedAssistantMessageCount = 0;
+  const sanitizedMessages = messages.flatMap((message) => {
+    if (message?.role !== 'assistant' || !Array.isArray(message.content)) {
+      return [message];
+    }
+
+    const nextContent = message.content.filter((block) => {
+      if (!isAnthropicReasoningBlock(block)) return true;
+      strippedThinkingBlockCount += 1;
+      return false;
+    });
+    if (nextContent.length === message.content.length) return [message];
+    if (nextContent.length === 0) {
+      droppedAssistantMessageCount += 1;
+      return [];
+    }
+    return [{ ...message, content: nextContent }];
+  });
+
+  if (strippedThinkingBlockCount === 0 && droppedAssistantMessageCount === 0) {
+    return { body, strippedThinkingBlockCount, droppedAssistantMessageCount };
+  }
+
+  return {
+    body: { ...body, messages: sanitizedMessages },
+    strippedThinkingBlockCount,
+    droppedAssistantMessageCount,
+  };
+}
+
+function rewriteMessagesBody(rawBody: Buffer, upstreamModel: string): RewriteMessagesBodyResult {
+  if (rawBody.length === 0) {
+    return { body: rawBody, strippedThinkingBlockCount: 0, droppedAssistantMessageCount: 0 };
+  }
   const body = JSON.parse(rawBody.toString('utf8')) as Record<string, unknown>;
   body.model = stripOneMMarker(upstreamModel);
-  return Buffer.from(JSON.stringify(body), 'utf8');
+  const routingNote = [
+    `ClawX routing note: the visible Claude Code CLI alias is backed by upstream model "${body.model}".`,
+    `If the user asks what model is currently running, answer "${body.model}", not the Claude CLI alias.`,
+  ].join(' ');
+  if (typeof body.system === 'string') {
+    body.system = `${body.system}\n\n${routingNote}`;
+  } else if (Array.isArray(body.system)) {
+    body.system = [
+      ...body.system,
+      { type: 'text', text: routingNote },
+    ];
+  } else {
+    body.system = routingNote;
+  }
+  const sanitized = sanitizeAssistantReasoningHistory(body);
+  return {
+    body: Buffer.from(JSON.stringify(sanitized.body), 'utf8'),
+    strippedThinkingBlockCount: sanitized.strippedThinkingBlockCount,
+    droppedAssistantMessageCount: sanitized.droppedAssistantMessageCount,
+  };
 }
 
 function jsonByteLength(value: unknown): number {
@@ -287,6 +365,7 @@ function getOrCreateLiveTurn(routeModel: string, sessionKey: string, turnId: str
     turnId,
     prompt,
     status: 'running',
+    awaitingToolContinuation: false,
     content: [],
     text: '',
     thinking: '',
@@ -299,6 +378,14 @@ function getOrCreateLiveTurn(routeModel: string, sessionKey: string, turnId: str
   };
   liveTurns.set(key, created);
   return created;
+}
+
+function isToolContinuationStopReason(reason: unknown): boolean {
+  return typeof reason === 'string' && [
+    'tool_use',
+    'tool_calls',
+    'function_call',
+  ].includes(reason);
 }
 
 function liveSnapshot(turn: LiveTurnState) {
@@ -498,7 +585,12 @@ function applyLiveSseEvent(turn: LiveTurnState, eventName: string, payload: Reco
         : '';
     if (reasoning) appendLiveThinking(turn, reasoning);
     if (text) appendLiveText(turn, text);
-    if (firstChoice.finish_reason) {
+    if (isToolContinuationStopReason(firstChoice.finish_reason)) {
+      turn.awaitingToolContinuation = true;
+      turn.status = 'running';
+      broadcastLiveTurn(turn);
+    } else if (firstChoice.finish_reason && turn.status !== 'completed') {
+      turn.awaitingToolContinuation = false;
       turn.status = 'completed';
       broadcastLiveTurn(turn, 'done');
     }
@@ -513,7 +605,12 @@ function applyLiveSseEvent(turn: LiveTurnState, eventName: string, payload: Reco
   if (effectiveEventName === 'message_delta') {
     const delta = payload.delta && typeof payload.delta === 'object' ? payload.delta as Record<string, unknown> : {};
     const stopReason = delta.stop_reason ?? payload.stop_reason;
-    if (stopReason) {
+    if (isToolContinuationStopReason(stopReason)) {
+      turn.awaitingToolContinuation = true;
+      turn.status = 'running';
+      broadcastLiveTurn(turn);
+    } else if (stopReason && turn.status !== 'completed') {
+      turn.awaitingToolContinuation = false;
       turn.status = 'completed';
       broadcastLiveTurn(turn, 'done');
     }
@@ -593,8 +690,13 @@ function applyLiveSseEvent(turn: LiveTurnState, eventName: string, payload: Reco
   }
 
   if (effectiveEventName === 'message_stop') {
-    turn.status = 'completed';
-    broadcastLiveTurn(turn, 'done');
+    if (turn.awaitingToolContinuation) {
+      turn.status = 'running';
+      broadcastLiveTurn(turn);
+    } else if (turn.status !== 'completed') {
+      turn.status = 'completed';
+      broadcastLiveTurn(turn, 'done');
+    }
     return;
   }
 
@@ -683,9 +785,11 @@ async function pipeResponseWithLiveCapture(
     }
     const finalChunk = decoder.decode();
     sseBuffer = processLiveSseText(turn, `${sseBuffer}${finalChunk}`, true);
-    if (turn.status === 'running') {
+    if (turn.status === 'running' && !turn.awaitingToolContinuation) {
       turn.status = 'completed';
       broadcastLiveTurn(turn, 'done');
+    } else if (turn.awaitingToolContinuation) {
+      broadcastLiveTurn(turn);
     }
   } catch (error) {
     turn.status = 'error';
@@ -709,13 +813,15 @@ async function forwardToOneApi(
   const liveTurn = path === '/messages' ? matchLiveTurnFromRequest(routeModel, rawBody) : null;
   if (liveTurn && liveTurn.status !== 'error') {
     liveTurn.status = 'running';
+    liveTurn.awaitingToolContinuation = false;
     liveTurn.requestCount += 1;
     liveTurn.lastRequestAt = Date.now();
     liveTurn.updatedAt = liveTurn.lastRequestAt;
   }
-  const body = path === '/messages' || path === '/messages/count_tokens'
+  const rewrite = path === '/messages' || path === '/messages/count_tokens'
     ? rewriteMessagesBody(rawBody, upstreamModel)
-    : rawBody;
+    : { body: rawBody, strippedThinkingBlockCount: 0, droppedAssistantMessageCount: 0 };
+  const body = rewrite.body;
   const requestDiagnostic = bodyDiagnostic(body);
   logger.info('[native-claude-proxy] forwarding request', {
     method: req.method,
@@ -725,6 +831,10 @@ async function forwardToOneApi(
     live: Boolean(liveTurn),
     liveTurnId: liveTurn?.turnId,
     body: requestDiagnostic,
+    rewrite: (rewrite.strippedThinkingBlockCount || rewrite.droppedAssistantMessageCount) ? {
+      strippedThinkingBlockCount: rewrite.strippedThinkingBlockCount,
+      droppedAssistantMessageCount: rewrite.droppedAssistantMessageCount,
+    } : undefined,
     breakdown: path === '/messages' ? requestBodyBreakdown(rawBody, body) : undefined,
   });
   const response = await fetch(`${ONEAPI_BASE_URL}${path}`, {
@@ -769,6 +879,20 @@ function handleModels(res: ServerResponse, upstreamModel: string): void {
         : model.display_name,
       created_at: '2026-01-01T00:00:00Z',
     })),
+  });
+}
+
+function handleRouteHealth(req: IncomingMessage, res: ServerResponse, routeModel: string, upstreamModel: string): void {
+  if (req.method === 'HEAD') {
+    res.statusCode = 204;
+    res.end();
+    return;
+  }
+
+  sendJson(res, 200, {
+    ok: true,
+    routeModel,
+    upstreamModel,
   });
 }
 
@@ -860,6 +984,11 @@ export function startClaudeNativeProxy(port = getPort('CLAWX_NATIVE_CLAUDE_PROXY
       }
 
       const resolvedUpstreamModel = resolveUpstreamModel(upstreamModel);
+
+      if ((req.method === 'GET' || req.method === 'HEAD') && path === '/') {
+        handleRouteHealth(req, res, upstreamModel, resolvedUpstreamModel);
+        return;
+      }
 
       if (req.method === 'GET' && path === '/models') {
         handleModels(res, resolvedUpstreamModel);

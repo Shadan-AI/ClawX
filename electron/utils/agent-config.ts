@@ -298,6 +298,7 @@ process.stdin.on('end', () => {
   );
 
   const settings = await readJsonObject(settingsPath);
+  settings.skipDangerousModePermissionPrompt = true;
   const hooks = settings.hooks && typeof settings.hooks === 'object' && !Array.isArray(settings.hooks)
     ? { ...settings.hooks as Record<string, unknown> }
     : {};
@@ -316,6 +317,59 @@ process.stdin.on('end', () => {
   settings.hooks = hooks;
 
   await writeFile(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, 'utf8');
+}
+
+function toClaudeProjectKey(workspacePath: string): string {
+  return normalize(workspacePath).replace(/\\/g, '/');
+}
+
+async function ensureClaudeCodeProjectTrust(claudeConfigDir: string, workspacePath: string): Promise<void> {
+  const claudeJsonPath = join(claudeConfigDir, '.claude.json');
+  const config = await readJsonObject(claudeJsonPath);
+  const now = new Date().toISOString();
+
+  if (typeof config.firstStartTime !== 'string' || !config.firstStartTime.trim()) {
+    config.firstStartTime = now;
+  }
+  config.hasCompletedOnboarding = true;
+  if (typeof config.lastOnboardingVersion !== 'string' || !config.lastOnboardingVersion.trim()) {
+    config.lastOnboardingVersion = 'clawx-managed';
+  }
+
+  const projects = config.projects && typeof config.projects === 'object' && !Array.isArray(config.projects)
+    ? { ...config.projects as Record<string, unknown> }
+    : {};
+  const projectKey = toClaudeProjectKey(workspacePath);
+  const existingProject = projects[projectKey] && typeof projects[projectKey] === 'object' && !Array.isArray(projects[projectKey])
+    ? { ...projects[projectKey] as Record<string, unknown> }
+    : {};
+
+  projects[projectKey] = {
+    allowedTools: Array.isArray(existingProject.allowedTools) ? existingProject.allowedTools : [],
+    mcpContextUris: Array.isArray(existingProject.mcpContextUris) ? existingProject.mcpContextUris : [],
+    mcpServers: existingProject.mcpServers && typeof existingProject.mcpServers === 'object' && !Array.isArray(existingProject.mcpServers)
+      ? existingProject.mcpServers
+      : {},
+    enabledMcpjsonServers: Array.isArray(existingProject.enabledMcpjsonServers) ? existingProject.enabledMcpjsonServers : [],
+    disabledMcpjsonServers: Array.isArray(existingProject.disabledMcpjsonServers) ? existingProject.disabledMcpjsonServers : [],
+    ...existingProject,
+    hasTrustDialogAccepted: true,
+    projectOnboardingSeenCount: typeof existingProject.projectOnboardingSeenCount === 'number'
+      ? Math.max(existingProject.projectOnboardingSeenCount, 1)
+      : 1,
+    hasClaudeMdExternalIncludesApproved: existingProject.hasClaudeMdExternalIncludesApproved === true,
+    hasClaudeMdExternalIncludesWarningShown: existingProject.hasClaudeMdExternalIncludesWarningShown === true,
+    lastGracefulShutdown: existingProject.lastGracefulShutdown === false ? false : true,
+  };
+  config.projects = projects;
+
+  await writeFile(claudeJsonPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+}
+
+async function ensureClaudeCodeRuntimeFiles(claudeConfigDir: string, workspacePath: string): Promise<void> {
+  await ensureDir(claudeConfigDir);
+  await ensureClaudeCodeSafetyHooks(claudeConfigDir);
+  await ensureClaudeCodeProjectTrust(claudeConfigDir, workspacePath);
 }
 
 function stripClaudeAgentSkillsPluginArgs(args: string[], pluginDir: string | undefined): string[] {
@@ -651,6 +705,7 @@ export interface AgentsSnapshot {
   configuredChannelTypes: string[];
   channelOwners: Record<string, string>;
   channelAccountOwners: Record<string, string>;
+  runtimeChanged?: boolean;
 }
 
 function resolveModelRef(model: unknown): string | null {
@@ -1570,8 +1625,13 @@ export async function updateAgentRuntime(agentId: string, runtime: Record<string
     const normalizedRuntime = normalizeAgentRuntime(runtime, { agentId, skills: asStringArray(entries[index].skills) ?? [] });
     const claudeConfigDir = getClaudeConfigDirForRuntime(agentId, normalizedRuntime);
     if (claudeConfigDir) {
-      await ensureDir(claudeConfigDir);
-      await ensureClaudeCodeSafetyHooks(claudeConfigDir);
+      const workspacePath = expandPath(entries[index].workspace || `~/.openclaw/workspace-${agentId}`);
+      await ensureClaudeCodeRuntimeFiles(claudeConfigDir, workspacePath);
+    }
+    const runtimeChanged = JSON.stringify(entries[index].runtime ?? null) !== JSON.stringify(normalizedRuntime);
+    if (!runtimeChanged) {
+      logger.debug('Skipped unchanged agent runtime update', { agentId });
+      return { ...buildSnapshotFromConfig(config), runtimeChanged: false };
     }
     const nextEntry: AgentListEntry = { ...entries[index], runtime: normalizedRuntime };
     entries[index] = nextEntry;
@@ -1586,7 +1646,7 @@ export async function updateAgentRuntime(agentId: string, runtime: Record<string
     }
     const runtimeType = typeof normalizedRuntime.type === 'string' ? normalizedRuntime.type : undefined;
     logger.info('Updated agent runtime', { agentId, runtimeType });
-    return buildSnapshotFromConfig(config);
+    return { ...buildSnapshotFromConfig(config), runtimeChanged: true };
   });
 }
 
@@ -1615,8 +1675,8 @@ export async function ensureNativeCliRuntimeResumeArgs(): Promise<boolean> {
       if (!runtime || typeof runtime !== 'object' || Array.isArray(runtime)) continue;
       const claudeConfigDir = getClaudeConfigDirForRuntime(entry.id, runtime as Record<string, unknown>);
       if (claudeConfigDir) {
-        await ensureDir(claudeConfigDir);
-        await ensureClaudeCodeSafetyHooks(claudeConfigDir);
+        const workspacePath = expandPath(entry.workspace || `~/.openclaw/workspace-${entry.id}`);
+        await ensureClaudeCodeRuntimeFiles(claudeConfigDir, workspacePath);
         await syncClaudeAgentSkillsPlugin(entry.id, asStringArray(entry.skills) ?? []);
       }
     }
