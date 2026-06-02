@@ -154,6 +154,8 @@ const CLAUDE_NATIVE_HAIKU_ALIAS = 'claude-haiku-4-5';
 const CLAUDE_PROMPT_BUFFER_CHARS = 20_000;
 const CLAUDE_NATIVE_VIEWPORT_BOTTOM_GAP = 44;
 const CLAUDE_NATIVE_START_ROW = 1;
+const CLAUDE_PROMPT_READY_TIMEOUT_MS = 12_000;
+const CLAUDE_STARTUP_LOG_FRAME_LIMIT = 12;
 
 function messageDiagnostic(text: string) {
   let hash = 2166136261;
@@ -165,6 +167,18 @@ function messageDiagnostic(text: string) {
     length: text.length,
     hash: (hash >>> 0).toString(16).padStart(8, '0'),
   };
+}
+
+function terminalDebugPreview(data: string, maxChars = 260): string {
+  return data
+    .replace(TERMINAL_STREAM_MARKER_PATTERN, '')
+    .replace(TERMINAL_OSC_PATTERN, '')
+    .replace(TERMINAL_CSI_PATTERN, '')
+    .replace(TERMINAL_CHARSET_PATTERN, '')
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maxChars);
 }
 
 function plainTerminalText(data: string): string {
@@ -1429,6 +1443,11 @@ function NativeCliTerminalStyles() {
         animation: native-cli-spin .8s linear infinite;
         color: #2563eb;
       }
+      .native-cli-terminal__loading-inner--error {
+        color: hsl(var(--destructive));
+        border-color: hsl(var(--destructive) / .25);
+        background: hsl(var(--destructive) / .08);
+      }
       .native-cli-terminal__composer {
         position: absolute;
         left: 0;
@@ -1522,6 +1541,7 @@ export function NativeCliTerminal({
   const resizeRafRef = useRef<number>(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const transcriptPollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const claudePromptReadyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const transcriptScrollRef = useRef<HTMLDivElement>(null);
   const terminalTurnsRef = useRef<TerminalTurn[]>([]);
   const activeTerminalTurnIdRef = useRef<string | null>(null);
@@ -1558,6 +1578,9 @@ export function NativeCliTerminal({
   const terminalWsDataFrameCountRef = useRef(0);
   const terminalDataFrameCountRef = useRef(0);
   const terminalDataLastAtRef = useRef(0);
+  const terminalFirstOutputAtRef = useRef(0);
+  const terminalLastOutputPreviewRef = useRef('');
+  const claudePromptReadyFallbackRef = useRef(false);
   const claudeResumeReplayCompleteRef = useRef(false);
   const claudePromptBufferRef = useRef('');
   const claudePromptReadyRef = useRef(false);
@@ -1574,6 +1597,7 @@ export function NativeCliTerminal({
   );
   const awaitingInitialOutput = terminalState.awaitingInitialOutput;
   const [displayedLoadingLabel, setDisplayedLoadingLabel] = useState('');
+  const [startupError, setStartupError] = useState('');
   const [loadingExiting, setLoadingExiting] = useState(false);
   const [inputShellState, setInputShellState] = useState<InputShellState>('auto');
   const [transcriptMessages, setTranscriptMessages] = useState<RawMessage[]>([]);
@@ -1671,6 +1695,28 @@ export function NativeCliTerminal({
     setInputShellState(getScrollDrivenInputState());
   }, [getScrollDrivenInputState]);
 
+  const clearClaudePromptReadyTimer = useCallback(() => {
+    if (claudePromptReadyTimerRef.current) {
+      clearTimeout(claudePromptReadyTimerRef.current);
+      claudePromptReadyTimerRef.current = null;
+    }
+  }, []);
+
+  const logClaudeStartupFrame = useCallback((raw: string, signal: { ready: boolean; reason: string } | null) => {
+    if (effectiveProvider !== 'claude') return;
+    if (claudePromptReadyRef.current) return;
+    if (terminalDataFrameCountRef.current > CLAUDE_STARTUP_LOG_FRAME_LIMIT) return;
+    console.warn('[native-cli-terminal] claude startup frame', {
+      agentId,
+      sessionKey,
+      frame: terminalDataFrameCountRef.current,
+      wsMessages: terminalWsMessageCountRef.current,
+      dataFrames: terminalWsDataFrameCountRef.current,
+      signal,
+      preview: terminalDebugPreview(raw),
+    });
+  }, [agentId, effectiveProvider, sessionKey]);
+
   const resetVisibleTerminalForResume = useCallback(() => {
     markerBufferRef.current = '';
     recentOutputRef.current = '';
@@ -1679,8 +1725,13 @@ export function NativeCliTerminal({
     claudeResumeReplayCompleteRef.current = false;
     claudePromptBufferRef.current = '';
     claudePromptReadyRef.current = false;
+    claudePromptReadyFallbackRef.current = false;
+    terminalFirstOutputAtRef.current = 0;
+    terminalLastOutputPreviewRef.current = '';
     claudeStartupConfirmationAcceptedRef.current = false;
     claudeNativeRowOffsetRef.current = 0;
+    setStartupError('');
+    clearClaudePromptReadyTimer();
     suppressNativeCliChromeRef.current = effectiveProvider === 'claude';
     if (effectiveProvider === 'claude') {
       bufferRef.current = '';
@@ -2042,6 +2093,31 @@ export function NativeCliTerminal({
     });
   }, []);
 
+  const markClaudePromptReady = useCallback((reason: string, fallback = false) => {
+    if (effectiveProvider !== 'claude') return;
+    if (claudePromptReadyRef.current) return;
+    claudePromptReadyRef.current = true;
+    claudePromptReadyFallbackRef.current = fallback;
+    clearClaudePromptReadyTimer();
+    if (!fallback) {
+      setStartupError('');
+    }
+    console.warn('[native-cli-terminal] claude prompt ready', {
+      agentId,
+      sessionKey,
+      reason,
+      fallback,
+      frames: terminalDataFrameCountRef.current,
+      wsMessages: terminalWsMessageCountRef.current,
+      dataFrames: terminalWsDataFrameCountRef.current,
+      firstOutputAgoMs: terminalFirstOutputAtRef.current ? Date.now() - terminalFirstOutputAtRef.current : null,
+      lastOutput: terminalLastOutputPreviewRef.current,
+    });
+    persistState();
+    settleReadyWithoutInitialOutput();
+    mountRef_cb.current.flushPendingClaudeSend();
+  }, [agentId, clearClaudePromptReadyTimer, effectiveProvider, persistState, sessionKey, settleReadyWithoutInitialOutput]);
+
   const handleTerminalData = useCallback((raw: string) => {
     terminalDataFrameCountRef.current += 1;
     terminalDataLastAtRef.current = Date.now();
@@ -2050,13 +2126,16 @@ export function NativeCliTerminal({
     const claudeFrameHasConversation = effectiveProvider === 'claude' && hasClaudeConversationOutput(visibleRaw);
     updateShellPassthroughState(visibleRaw);
     const printable = hasPrintableTerminalContent(visibleRaw);
+    if (printable) {
+      terminalFirstOutputAtRef.current ||= Date.now();
+      terminalLastOutputPreviewRef.current = terminalDebugPreview(visibleRaw);
+    }
     const activeTurnId = activeTerminalTurnIdRef.current;
     let claudeReadySignal: { ready: boolean; reason: string } | null = null;
     if (effectiveProvider === 'claude' && printable) {
       claudePromptBufferRef.current = `${claudePromptBufferRef.current}${visibleRaw}`.slice(-CLAUDE_PROMPT_BUFFER_CHARS);
       claudeReadySignal = claudePromptReadySignal(claudePromptBufferRef.current);
       if (claudeReadySignal.ready && !claudePromptReadyRef.current) {
-        claudePromptReadyRef.current = true;
         const pending = pendingClaudeSendRef.current;
         clearPendingClaudeSendTimer(pending);
         if (
@@ -2070,10 +2149,9 @@ export function NativeCliTerminal({
           claudeNativeRowOffsetRef.current = Math.max(0, cursorRow - (CLAUDE_NATIVE_START_ROW - 1));
           resetTerminalToTop(termRef.current);
         }
-        persistState();
-        settleReadyWithoutInitialOutput();
-        mountRef_cb.current.flushPendingClaudeSend();
+        markClaudePromptReady(claudeReadySignal.reason);
       } else {
+        logClaudeStartupFrame(visibleRaw, claudeReadySignal);
         const startupConfirmation = claudeStartupConfirmationSignal(claudePromptBufferRef.current);
         if (
           startupConfirmation.confirm
@@ -2083,8 +2161,6 @@ export function NativeCliTerminal({
           claudeStartupConfirmationAcceptedRef.current = true;
           wsRef.current.send(JSON.stringify({ type: 'data', data: '\r' }));
         }
-      }
-      if (!claudeReadySignal.ready && terminalDataFrameCountRef.current <= 12) {
       }
     }
     if (
@@ -2499,7 +2575,12 @@ export function NativeCliTerminal({
     forceFreshConnectRef.current = false;
     cliSessionIdRef.current = knownCliSessionId;
     claudePromptBufferRef.current = '';
+    claudePromptReadyFallbackRef.current = false;
+    terminalFirstOutputAtRef.current = 0;
+    terminalLastOutputPreviewRef.current = '';
     claudeStartupConfirmationAcceptedRef.current = false;
+    setStartupError('');
+    clearClaudePromptReadyTimer();
     if (knownCliSessionId) {
       dispatchTerminalState({ type: 'connect_requested', phase: 'resuming' });
       resetVisibleTerminalForResume();
@@ -2540,6 +2621,28 @@ export function NativeCliTerminal({
       const term = termRef.current;
       if (term) ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
       if (effectiveProvider !== 'claude' && !knownCliSessionId) mountRef_cb.current.settleReadyWithoutInitialOutput();
+      if (effectiveProvider === 'claude') {
+        clearClaudePromptReadyTimer();
+        claudePromptReadyTimerRef.current = setTimeout(() => {
+          if (disposedRef.current) return;
+          if (wsRef.current !== ws) return;
+          if (claudePromptReadyRef.current) return;
+          const hasOutput = terminalFirstOutputAtRef.current > 0;
+          console.warn('[native-cli-terminal] claude prompt readiness timeout', {
+            agentId,
+            sessionKey,
+            timeoutMs: CLAUDE_PROMPT_READY_TIMEOUT_MS,
+            hasOutput,
+            wsMessages: terminalWsMessageCountRef.current,
+            dataFrames: terminalWsDataFrameCountRef.current,
+            terminalFrames: terminalDataFrameCountRef.current,
+            lastOutput: terminalLastOutputPreviewRef.current,
+            url: terminalWsUrlRef.current,
+          });
+          setStartupError('');
+          markClaudePromptReady(hasOutput ? 'timeout_after_output' : 'timeout_without_output', true);
+        }, CLAUDE_PROMPT_READY_TIMEOUT_MS);
+      }
     };
 
     ws.onmessage = (event) => {
@@ -2563,8 +2666,23 @@ export function NativeCliTerminal({
           mountRef_cb.current.handleTerminalStreamMarker({ kind: 'turn_end', conversationId: String(msg.conversationId ?? ''), turnId: msg.turnId });
         } else if (msg.type === 'session_id' && typeof msg.sessionId === 'string') {
           mountRef_cb.current.bindNativeCliSessionId(msg.sessionId);
-        } else if (msg.type === 'exit' && userHasInteractedRef.current) {
-          termRef.current?.write(`\r\n\x1b[33m[process exited: ${String(msg.code ?? 0)}]\x1b[0m\r\n`);
+        } else if (msg.type === 'exit') {
+          const exitCode = String(msg.code ?? 0);
+          const message = `Claude CLI process exited (${exitCode}). Check that Claude Code is installed, logged in, and usable from this environment.`;
+          clearClaudePromptReadyTimer();
+          setStartupError(message);
+          console.warn('[native-cli-terminal] process exited', {
+            agentId,
+            sessionKey,
+            provider: effectiveProvider,
+            code: msg.code ?? 0,
+            wsMessages: terminalWsMessageCountRef.current,
+            dataFrames: terminalWsDataFrameCountRef.current,
+            lastOutput: terminalLastOutputPreviewRef.current,
+          });
+          if (userHasInteractedRef.current || effectiveProvider === 'claude') {
+            termRef.current?.write(`\r\n\x1b[33m[process exited: ${exitCode}]\x1b[0m\r\n`);
+          }
         }
       } catch {
         if (typeof event.data === 'string') mountRef_cb.current.handleTerminalData(event.data);
@@ -2578,6 +2696,10 @@ export function NativeCliTerminal({
       connectInFlightRef.current = false;
       dispatchTerminalState({ type: 'websocket_closed' });
       initialOutputPendingPaintRef.current = false;
+      clearClaudePromptReadyTimer();
+      if (effectiveProvider === 'claude' && !suppressNextDisconnectBannerRef.current) {
+        setStartupError('Claude CLI connection closed. Reconnecting...');
+      }
       const suppressDisconnectBanner = suppressNextDisconnectBannerRef.current;
       suppressNextDisconnectBannerRef.current = false;
       if (!suppressDisconnectBanner && userHasInteractedRef.current) {
@@ -2607,11 +2729,26 @@ export function NativeCliTerminal({
       connectInFlightRef.current = false;
       dispatchTerminalState({ type: 'websocket_error' });
       initialOutputPendingPaintRef.current = false;
+      clearClaudePromptReadyTimer();
+      if (effectiveProvider === 'claude') {
+        setStartupError('Claude CLI WebSocket error. Reconnecting...');
+      }
+      console.warn('[native-cli-terminal] websocket error', {
+        agentId,
+        sessionKey,
+        provider: effectiveProvider,
+        url: terminalWsUrlRef.current,
+        wsMessages: terminalWsMessageCountRef.current,
+        dataFrames: terminalWsDataFrameCountRef.current,
+        lastOutput: terminalLastOutputPreviewRef.current,
+      });
     };
   }, [
     agentId,
     bindNativeCliSessionId,
+    clearClaudePromptReadyTimer,
     effectiveProvider,
+    markClaudePromptReady,
     normalizedProvider,
     persistState,
     resetVisibleTerminalForResume,
@@ -2885,7 +3022,7 @@ export function NativeCliTerminal({
     handleTerminalData, upsertTerminalTurn, bindNativeCliSessionId,
     settleReadyWithoutInitialOutput, resetVisibleTerminalForResume,
     updateInputShellStateFromTerminalScroll, restartTerminalForSkillReload,
-    closeClaudeLiveStream, flushPendingClaudeSend,
+    closeClaudeLiveStream, flushPendingClaudeSend, markClaudePromptReady,
   });
   mountRef_cb.current = {
     connect, sendTerminalData, fitTerminalToContent, scheduleTerminalResize,
@@ -2893,7 +3030,7 @@ export function NativeCliTerminal({
     handleTerminalData, upsertTerminalTurn, bindNativeCliSessionId,
     settleReadyWithoutInitialOutput, resetVisibleTerminalForResume,
     updateInputShellStateFromTerminalScroll, restartTerminalForSkillReload,
-    closeClaudeLiveStream, flushPendingClaudeSend,
+    closeClaudeLiveStream, flushPendingClaudeSend, markClaudePromptReady,
   };
 
   useEffect(() => {
@@ -3000,6 +3137,7 @@ export function NativeCliTerminal({
       if (transcriptPollTimerRef.current) clearInterval(transcriptPollTimerRef.current);
       if (transcriptIdleTimerRef.current) clearTimeout(transcriptIdleTimerRef.current);
       if (postSendTranscriptRefreshTimerRef.current) clearTimeout(postSendTranscriptRefreshTimerRef.current);
+      clearClaudePromptReadyTimer();
       clearPendingClaudeSendTimer(pendingClaudeSendRef.current);
       pendingClaudeSendRef.current = null;
       if (resizeRafRef.current) cancelAnimationFrame(resizeRafRef.current);
@@ -3077,7 +3215,9 @@ export function NativeCliTerminal({
     || (effectiveProvider === 'claude'
       ? !claudePromptReadyRef.current
       : !nativeCliTerminalCanSend(terminalState));
-  const desiredLoadingLabel = nativeCliInputDisabled ? nativeCliTerminalLoadingLabel(terminalState) : '';
+  const desiredLoadingLabel = startupError
+    || (nativeCliInputDisabled ? nativeCliTerminalLoadingLabel(terminalState) : '');
+  const displayedStatusLabel = startupError || displayedLoadingLabel;
 
   useEffect(() => {
     if (loadingExitTimerRef.current) {
@@ -3176,15 +3316,15 @@ export function NativeCliTerminal({
             </div>
           </div>
         ) : null}
-        {!showNativeClaudeTerminal && displayedLoadingLabel ? (
+        {displayedStatusLabel ? (
           <div
             className={`native-cli-terminal__loading${loadingExiting ? ' native-cli-terminal__loading--exiting' : ''}`}
             role="status"
             aria-live="polite"
           >
-            <div className="native-cli-terminal__loading-inner">
-              <Loader2 />
-              <span>{displayedLoadingLabel}</span>
+            <div className={`native-cli-terminal__loading-inner${startupError ? ' native-cli-terminal__loading-inner--error' : ''}`}>
+              {startupError ? null : <Loader2 />}
+              <span>{displayedStatusLabel}</span>
             </div>
           </div>
         ) : null}
@@ -3196,7 +3336,7 @@ export function NativeCliTerminal({
             onSend={handleChatInputSend}
             onModelChange={handleModelChange}
             disabled={nativeCliInputDisabled}
-            disabledPlaceholder={desiredLoadingLabel || '正在连接会话'}
+            disabledPlaceholder={startupError || desiredLoadingLabel || '正在连接会话'}
             sending={false}
             isExpanded={inputShellState !== 'collapsed'}
             onFocusChange={handleInputFocusChange}
