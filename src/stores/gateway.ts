@@ -102,10 +102,8 @@ function maybeLoadHistory(
 }
 
 function handleGatewayNotification(notification: { method?: string; params?: Record<string, unknown> } | undefined): void {
-  console.log('[DEBUG handleGatewayNotification] Received notification:', notification);
   const payload = notification;
   if (!payload || payload.method !== 'agent' || !payload.params || typeof payload.params !== 'object') {
-    console.log('[DEBUG handleGatewayNotification] Skipping - invalid payload or method');
     return;
   }
 
@@ -118,20 +116,9 @@ function handleGatewayNotification(notification: { method?: string; params?: Rec
   const hasNewFormatChatData = p.stream && (data.text || data.delta);
   const hasChatData = hasOldFormatChatData || hasNewFormatChatData;
   
-  console.log('[DEBUG handleGatewayNotification] Parsed:', { 
-    phase, 
-    hasChatData, 
-    hasOldFormat: !!hasOldFormatChatData,
-    hasNewFormat: !!hasNewFormatChatData,
-    stream: p.stream,
-    hasText: !!data.text,
-    hasDelta: !!data.delta
-  });
-
   // Handle error phase even without chat data
   if (phase === 'error') {
     const errorMessage = data.error ?? p.error ?? data.message ?? p.message ?? 'An error occurred';
-    console.log('[DEBUG handleGatewayNotification] Error phase detected:', errorMessage);
     import('./chat')
       .then(({ useChatStore }) => {
         useChatStore.getState().handleChatEvent({
@@ -162,12 +149,6 @@ function handleGatewayNotification(notification: { method?: string; params?: Rec
         sessionKey: p.sessionKey ?? data.sessionKey,
         seq: p.seq ?? data.seq,
       };
-      console.log('[DEBUG handleGatewayNotification] Converted new format to standard:', {
-        runId: normalizedEvent.runId,
-        sessionKey: normalizedEvent.sessionKey,
-        state: normalizedEvent.state,
-        contentLength: content.length,
-      });
     } else {
       // Old format - pass through
       normalizedEvent = {
@@ -179,23 +160,14 @@ function handleGatewayNotification(notification: { method?: string; params?: Rec
         state: p.state ?? data.state,
         message: p.message ?? data.message,
       };
-      console.log('[DEBUG handleGatewayNotification] Normalized old format event:', {
-        runId: normalizedEvent.runId,
-        sessionKey: normalizedEvent.sessionKey,
-        state: normalizedEvent.state,
-        hasMessage: !!normalizedEvent.message,
-      });
     }
     
     if (shouldProcessGatewayEvent(normalizedEvent)) {
-      console.log('[DEBUG handleGatewayNotification] Passing to handleChatEvent');
       import('./chat')
         .then(({ useChatStore }) => {
           useChatStore.getState().handleChatEvent(normalizedEvent);
         })
         .catch(() => {});
-    } else {
-      console.log('[DEBUG handleGatewayNotification] Event filtered by shouldProcessGatewayEvent (duplicate)');
     }
   }
 

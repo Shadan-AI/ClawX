@@ -214,7 +214,6 @@ export function Agents() {
           refreshProviderSnapshot(),
         ]);
         
-        console.log('[Agents/init] Phase 1 completed: templates, skills, employees loaded');
         
         // 第二阶段：加载 agents 和 channels（此时 agentTemplates 已经有数据了）
         await Promise.allSettled([
@@ -222,7 +221,6 @@ export function Agents() {
           fetchChannelAccounts(),
         ]);
         
-        console.log('[Agents/init] Phase 2 completed: agents and channels loaded');
       } catch (error) {
         console.error('[Agents/init] Load error:', error);
       } finally {
@@ -281,26 +279,12 @@ export function Agents() {
   const visibleAgents = useMemo(() => {
     const digitalEmployeeMap = new Map(digitalEmployees.map(emp => [emp.openclawAgentId, emp]));
     const { agentSkills, agentTemplates } = useAgentsStore.getState();
-    
-    console.log('[Agents/index] visibleAgents calculation:', {
-      agentsCount: agents.length,
-      digitalEmployeesCount: digitalEmployees.length,
-      agentTemplates,
-      templatesCount: templates.length,
-      allSkillsCount: skills.length,
-    });
-    
+
     return agents.map(agent => {
       const employee = digitalEmployeeMap.get(agent.id);
       const templateId = agentTemplates[agent.id];
       const currentSkills = agentSkills[agent.id] || [];
-      
-      console.log(`[Agents/index] Processing agent ${agent.id}:`, {
-        templateId,
-        currentSkillsCount: currentSkills.length,
-        currentSkills: currentSkills.slice(0, 3), // 只显示前3个
-      });
-      
+
       // 判断是否使用了模板
       let templateName = '无';
       
@@ -308,12 +292,10 @@ export function Agents() {
       if (templateId !== undefined) {
         if (templateId === null) {
           // 明确设置为 null，表示"自定义"
-          console.log(`[Agents/index] Agent ${agent.id}: templateId is null -> 自定义`);
           templateName = '自定义';
         } else {
           // 有具体的 templateId，查找模板
           const template = templates.find(t => t.id === templateId);
-          console.log(`[Agents/index] Agent ${agent.id}: templateId=${templateId}, template found:`, !!template);
           
           if (template) {
             // 检查技能是否被修改
@@ -325,31 +307,19 @@ export function Agents() {
                 return skill?.id;
               })
               .filter((id): id is string => id !== undefined);
-            
-            console.log(`[Agents/index] Agent ${agent.id}: template skills comparison:`, {
-              templateSlugs: template.skills,
-              templateSkillIds,
-              currentSkills,
-              templateSkillIdsCount: templateSkillIds.length,
-              currentSkillsCount: currentSkills.length,
-            });
-            
+
             const skillsMatch = 
               currentSkills.length === templateSkillIds.length &&
               currentSkills.every(skill => templateSkillIds.includes(skill)) &&
               templateSkillIds.every(skill => currentSkills.includes(skill));
-            
-            console.log(`[Agents/index] Agent ${agent.id}: skillsMatch=${skillsMatch}`);
-            
+
             templateName = skillsMatch ? template.nameZh || template.name : '自定义';
           } else {
             // 模板不存在，显示"自定义"
-            console.log(`[Agents/index] Agent ${agent.id}: template not found -> 自定义`);
             templateName = '自定义';
           }
         }
       } else {
-        console.log(`[Agents/index] Agent ${agent.id}: templateId is undefined -> 无`);
       }
       
       return {
@@ -367,26 +337,21 @@ export function Agents() {
   const isUsingStableValue = loading && hasCompletedInitialLoad;
   
   const handleRefresh = async () => {
-    console.log('[Agents/handleRefresh] Starting refresh...');
     
     // 1. 先同步 bots（从 IM 平台同步到本地配置，创建 agents 和 bindings）
     try {
-      console.log('[Agents/handleRefresh] Calling syncBots...');
-      const result = await invokeIpc('box-im:syncBots');
-      console.log('[Agents/handleRefresh] syncBots result:', result);
+      await invokeIpc('box-im:syncBots');
     } catch (syncErr) {
       console.error('[Agents/handleRefresh] syncBots failed:', syncErr);
     }
     
     // 2. 刷新所有数据（包括新创建的频道）
-    console.log('[Agents/handleRefresh] Fetching data...');
     await Promise.all([
       fetchAgents(),
       fetchChannelAccounts(), // 这会重新读取 openclaw.json，获取新的 bindings
       fetchDigitalEmployees(),
     ]);
     
-    console.log('[Agents/handleRefresh] Refresh completed');
     toast.success('已同步 IM 平台的员工');
   };
   
@@ -680,19 +645,12 @@ export function Agents() {
             
             // 2. 如果是数字员工，也删除数字员工记录
             const employee = digitalEmployees.find(e => e.openclawAgentId === agentToDelete.id);
-            console.log('[Agents] Attempting to delete employee:', {
-              agentId: agentToDelete.id,
-              employee,
-              allEmployees: digitalEmployees.map(e => ({ id: e.id, agentId: e.openclawAgentId, nickName: e.nickName })),
-            });
-            
             if (employee) {
               try {
                 const tokenKey = await useModelsStore.getState().getTokenKey();
                 if (tokenKey) {
                   const apiUrl = 'https://im.shadanai.com/api';
                   const deleteUrl = `${apiUrl}/bot/${employee.openclawAgentId}`;
-                  console.log('[Agents] Deleting bot from database:', deleteUrl);
                   
                   const response = await fetch(deleteUrl, {
                     method: 'DELETE',
@@ -702,21 +660,17 @@ export function Agents() {
                     },
                   });
                   
-                  console.log('[Agents] Delete response status:', response.status);
-                  
                   if (!response.ok) {
                     const errorText = await response.text();
                     console.error('[Agents] Failed to delete digital employee:', response.status, errorText);
                     // 不抛出错误，继续删除本地配置
                   } else {
                     const result = await response.json();
-                    console.log('[Agents] Delete response body:', result);
                     
                     if (result.code !== 200) {
                       console.error('[Agents] Delete API returned error:', result);
                       // 不抛出错误，继续删除本地配置
                     } else {
-                      console.log('[Agents] Digital employee deleted successfully:', employee.id);
                     }
                   }
                 }
@@ -738,7 +692,6 @@ export function Agents() {
             // 4. 同步 bots 到配置文件（更新频道绑定）
             try {
               await invokeIpc('box-im:syncBots');
-              console.log('[Agents] Bots synced after deletion');
             } catch (syncErr) {
               console.warn('[Agents] Failed to sync bots after deletion:', syncErr);
             }
@@ -779,13 +732,8 @@ function AgentCard({
   const [isShaking, setIsShaking] = useState(false);
   
   const handleChatWithAgent = () => {
-    const newSessionKey = useChatStore.getState().newSessionForAgent(agent.id, {
+    useChatStore.getState().newSessionForAgent(agent.id, {
       nativeCli: agent.runtime?.type === 'native-cli',
-    });
-    console.log('[Agents] Created new chat session for agent:', {
-      agentId: agent.id,
-      nativeCli: agent.runtime?.type === 'native-cli',
-      sessionKey: newSessionKey,
     });
     navigate('/');
   };
@@ -1329,7 +1277,7 @@ function AddAgentDialog({
           const runtime = await buildNativeCliRuntimeConfig(runtimePreset, selectedModel);
           await hostApiFetch(`/api/agents/${encodeURIComponent(editAgent.id)}/runtime`, {
             method: 'PUT',
-            body: JSON.stringify({ runtime }),
+            body: JSON.stringify({ runtime, reloadGateway: false }),
           });
         } else {
           // 切回 embedded 模式
@@ -1364,11 +1312,6 @@ function AddAgentDialog({
             })
             .filter((id): id is string => id !== undefined);
 
-          console.log('[AddAgentDialog] Converting template skills:', {
-            templateSlugs: template.skills,
-            skillIds,
-          });
-
           if (skillIds.length > 0) {
             const { updateEmployeeSkills } = useModelsStore.getState();
             await updateEmployeeSkills(employee.id, skillIds);
@@ -1394,13 +1337,10 @@ function AddAgentDialog({
 
         // 加载并应用模板的profile文件
         try {
-          console.log('[AddAgentDialog] Loading template profile files...');
           const { fetchTemplateProfiles } = useAgentTemplatesStore.getState();
           const profileFiles = await fetchTemplateProfiles(selectedTemplateId);
 
           if (profileFiles && Object.keys(profileFiles).length > 0) {
-            console.log('[AddAgentDialog] Applying profile files:', Object.keys(profileFiles));
-
             // 写入每个profile文件
             for (const [filename, content] of Object.entries(profileFiles)) {
               await invokeIpc('agent-profile:save', {
@@ -1410,7 +1350,6 @@ function AddAgentDialog({
               });
             }
 
-            console.log('[AddAgentDialog] Profile files applied successfully');
             const templateLabel = template?.nameZh || template?.name || '已选模板';
             toast.success(`已应用模板 "${templateLabel}" 的配置文件`);
           }
@@ -1430,9 +1369,7 @@ function AddAgentDialog({
 
       // 同步 bots 到配置文件（创建频道绑定）
       try {
-        console.log('[AddAgentDialog] Syncing bots to create channel bindings...');
         await invokeIpc('box-im:syncBots');
-        console.log('[AddAgentDialog] Bots synced successfully');
 
         // 再次刷新以显示新的频道和模板
         await Promise.all([onRefresh(), fetchAgents()]);
@@ -1443,9 +1380,8 @@ function AddAgentDialog({
             const runtime = await buildNativeCliRuntimeConfig(runtimePreset, selectedModel);
             await hostApiFetch(`/api/agents/${encodeURIComponent(employee.openclawAgentId)}/runtime`, {
               method: 'PUT',
-              body: JSON.stringify({ runtime }),
+              body: JSON.stringify({ runtime, reloadGateway: false }),
             });
-            console.log('[AddAgentDialog] Runtime config saved:', runtime);
           } catch (runtimeErr) {
             console.error('[AddAgentDialog] Failed to save runtime config:', runtimeErr);
             toast.warning('运行方式配置保存失败');

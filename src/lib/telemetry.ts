@@ -50,8 +50,13 @@ export function trackUiEvent(event: string, payload: TelemetryPayload = {}): voi
     ts,
   };
 
-  // Local-only telemetry for UX diagnostics.
-  console.info(`[ui-metric] ${event} ${safeStringify(logPayload)}`);
+  try {
+    if (window.localStorage.getItem('clawx:telemetry-log') === '1') {
+      console.info(`[ui-metric] ${event} ${safeStringify(logPayload)}`);
+    }
+  } catch {
+    // Ignore logging failures; telemetry history is still kept in memory.
+  }
 }
 
 export function getUiCounter(event: string): number {

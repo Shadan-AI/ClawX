@@ -25,6 +25,18 @@ function scheduleGatewayReload(ctx: HostApiContext, reason: string): void {
   void reason;
 }
 
+function shouldReloadGatewayForRuntimeUpdate(
+  runtime: Record<string, unknown>,
+  explicitReloadGateway?: boolean,
+): boolean {
+  if (explicitReloadGateway === false) return false;
+  if (explicitReloadGateway === true) return true;
+
+  // Native CLI sessions are launched through the Host API runtime session
+  // route, so changing that runtime config should not restart the Gateway.
+  return runtime.type !== 'native-cli';
+}
+
 import { exec } from 'child_process';
 import { promisify } from 'util';
 const execAsync = promisify(exec);
@@ -188,8 +200,15 @@ export async function handleAgentRoutes(
         const body = await parseJsonBody<{ runtime: Record<string, unknown>; reloadGateway?: boolean }>(req);
         const agentId = decodeURIComponent(parts[0]);
         const snapshot = await updateAgentRuntime(agentId, body.runtime);
-        if (snapshot.runtimeChanged !== false && body.reloadGateway !== false) {
+        const shouldReloadGateway = shouldReloadGatewayForRuntimeUpdate(body.runtime, body.reloadGateway);
+        if (snapshot.runtimeChanged !== false && shouldReloadGateway) {
           scheduleGatewayReload(ctx, 'update-agent-runtime');
+        } else if (snapshot.runtimeChanged !== false) {
+          console.info('[agents] Skipped Gateway reload after runtime update', {
+            agentId,
+            runtimeType: body.runtime?.type,
+            reloadGateway: body.reloadGateway,
+          });
         }
         sendJson(res, 200, { success: true, ...snapshot });
       } catch (error) {

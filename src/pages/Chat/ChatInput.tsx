@@ -493,10 +493,6 @@ export function ChatInput({ onSend, onModelChange, onStop, disabled = false, sen
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const modelMenuRef = useRef<HTMLDivElement>(null);
 
-  // Debug: 监控模型数据
-  useEffect(() => {
-    console.log('[ChatInput] Models:', models.length, 'Current:', currentModelId, 'Model:', currentModel?.name);
-  }, [models, currentModelId, currentModel]);
 
   const refresh = useChatStore((s) => s.refresh);
   const loading = useChatStore((s) => s.loading);
@@ -632,7 +628,6 @@ export function ChatInput({ onSend, onModelChange, onStop, disabled = false, sen
       }
 
       // Stage all files via IPC
-      console.log('[pickFiles] Staging files:', result.filePaths);
       const staged = await hostApiFetch<Array<{
         id: string;
         fileName: string;
@@ -644,7 +639,6 @@ export function ChatInput({ onSend, onModelChange, onStop, disabled = false, sen
         method: 'POST',
         body: JSON.stringify({ filePaths: result.filePaths }),
       });
-      console.log('[pickFiles] Stage result:', staged?.map(s => ({ id: s?.id, fileName: s?.fileName, mimeType: s?.mimeType, fileSize: s?.fileSize, stagedPath: s?.stagedPath, hasPreview: !!s?.preview })));
 
       // Update each placeholder with real data
       setAttachments(prev => {
@@ -697,9 +691,7 @@ export function ChatInput({ onSend, onModelChange, onStop, disabled = false, sen
       }]);
 
       try {
-        console.log(`[stageBuffer] Reading file: ${file.name} (${file.type}, ${file.size} bytes)`);
         const base64 = await readFileAsBase64(file);
-        console.log(`[stageBuffer] Base64 length: ${base64?.length ?? 'null'}`);
         const staged = await hostApiFetch<{
           id: string;
           fileName: string;
@@ -715,7 +707,6 @@ export function ChatInput({ onSend, onModelChange, onStop, disabled = false, sen
             mimeType: file.type || 'application/octet-stream',
           }),
         });
-        console.log(`[stageBuffer] Staged: id=${staged?.id}, path=${staged?.stagedPath}, size=${staged?.fileSize}`);
         setAttachments(prev => prev.map(a =>
           a.id === tempId ? { ...staged, status: 'ready' as const } : a,
         ));
@@ -762,22 +753,6 @@ export function ChatInput({ onSend, onModelChange, onStop, disabled = false, sen
     
     const attachmentsToSend = readyAttachments.length > 0 ? readyAttachments : undefined;
     const diagnostic = messageDiagnostic(textToSend);
-    console.info('[chat-input] send requested', {
-      message: diagnostic,
-      attachments: attachments.length,
-      readyAttachments: readyAttachments.length,
-      hasAttachmentsToSend: Boolean(attachmentsToSend),
-      disabled,
-      sending,
-      targetAgentId,
-      activeSkillSlug: activeSkill?.slug ?? null,
-    });
-    if (attachmentsToSend) {
-      console.log('[handleSend] Attachment details:', attachmentsToSend.map(a => ({
-        id: a.id, fileName: a.fileName, mimeType: a.mimeType, fileSize: a.fileSize,
-        stagedPath: a.stagedPath, status: a.status, hasPreview: !!a.preview,
-      })));
-    }
     const sendResult = onSend(textToSend, attachmentsToSend, targetAgentId);
     if (sendResult === false) {
       console.warn('[chat-input] send rejected before clear', {
@@ -809,18 +784,13 @@ export function ChatInput({ onSend, onModelChange, onStop, disabled = false, sen
 
     setInput('');
     setAttachments([]);
-    setActiveSkill(null); // 发送后清除技能选择
+    setActiveSkill(null);
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
     setTargetAgentId(null);
     setPickerOpen(false);
-    console.info('[chat-input] send accepted and input cleared', {
-      message: diagnostic,
-      targetAgentId,
-      activeSkillSlug: activeSkill?.slug ?? null,
-    });
-  }, [input, attachments, canSend, onSend, targetAgentId, activeSkill, disabled, sending]);
+  }, [input, attachments, canSend, onSend, targetAgentId, activeSkill]);
 
   const handleStop = useCallback(() => {
     if (!canStop) return;
@@ -829,7 +799,6 @@ export function ChatInput({ onSend, onModelChange, onStop, disabled = false, sen
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
-      // 当输入框为空且按 Backspace 时,删除技能标签
       if (e.key === 'Backspace' && !input && activeSkill) {
         e.preventDefault();
         setActiveSkill(null);
@@ -851,7 +820,6 @@ export function ChatInput({ onSend, onModelChange, onStop, disabled = false, sen
     [handleSend, input, targetAgentId, activeSkill],
   );
 
-  // Handle paste (Ctrl/Cmd+V with files)
   const handlePaste = useCallback(
     (e: React.ClipboardEvent) => {
       const items = e.clipboardData?.items;
@@ -872,7 +840,6 @@ export function ChatInput({ onSend, onModelChange, onStop, disabled = false, sen
     [stageBufferFiles],
   );
 
-  // Handle drag & drop
   const [dragOver, setDragOver] = useState(false);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -899,7 +866,6 @@ export function ChatInput({ onSend, onModelChange, onStop, disabled = false, sen
     [stageBufferFiles],
   );
 
-  // ── Typing particles (removed shake animation) ────────────────
   const inputBoxRef = useRef<HTMLDivElement>(null);
   const [particles, setParticles] = useState<Array<{ id: number; x: number; y: number; color: string; size: number }>>([]);
   const particleIdRef = useRef(0);
@@ -1438,7 +1404,6 @@ export function ChatInput({ onSend, onModelChange, onStop, disabled = false, sen
                         aria-haspopup="listbox"
                         aria-expanded={modelMenuOpen}
                         onClick={() => {
-                          console.log('[ChatInput] Model menu clicked, current state:', modelMenuOpen);
                           setModelMenuOpen((open) => !open);
                         }}
                         className={cn(
@@ -1471,7 +1436,6 @@ export function ChatInput({ onSend, onModelChange, onStop, disabled = false, sen
                                   role="option"
                                   aria-selected={isSelected}
                                   onClick={() => { 
-                                    console.log('[ChatInput] Switching to model:', model.id, model.name);
                                     void Promise.resolve(onModelChange ? onModelChange(model.id) : setCurrentModel(model.id))
                                       .then(() => setModelMenuOpen(false))
                                       .catch((error) => console.error('[ChatInput] Failed to switch model:', error));

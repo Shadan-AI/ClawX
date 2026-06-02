@@ -269,7 +269,6 @@ export const useModelsStore = create<ModelState>((set, get) => ({
           model: `shadan/${modelId}`,
         });
         
-        console.log(`[setCurrentModel] Updated model to ${modelId} for session ${sessionKey}`);
       }
     } catch (err) {
       console.error('Failed to update session model:', err);
@@ -293,22 +292,15 @@ export const useModelsStore = create<ModelState>((set, get) => ({
 
     if (!modelRef) {
       if (digitalEmployees.length === 0) {
-        console.log('[ensureSessionModel] digitalEmployees is empty, fetching...');
         await get().fetchDigitalEmployees();
         digitalEmployees = get().digitalEmployees;
       }
 
       modelRef = resolveEmployeeModelRef(agentId, digitalEmployees);
-      if (modelRef) {
-        console.log(`[ensureSessionModel] Using synced employee model: ${modelRef} for agent ${agentId}`);
-      }
     }
 
     if (!modelRef) {
       modelRef = await resolveAgentModelRef(agentId);
-      if (modelRef) {
-        console.log(`[ensureSessionModel] Using agent default model: ${modelRef} for agent ${agentId}`);
-      }
     }
 
     if (!modelRef) {
@@ -317,7 +309,6 @@ export const useModelsStore = create<ModelState>((set, get) => ({
         console.warn('[ensureSessionModel] No safe model available');
         return;
       }
-      console.log(`[ensureSessionModel] No agent model configured, using safe fallback model: ${modelRef}`);
     }
 
     set({ currentModelId: toCurrentModelId(modelRef, models) });
@@ -326,7 +317,6 @@ export const useModelsStore = create<ModelState>((set, get) => ({
         key: sessionKey,
         model: modelRef,
       });
-      console.log(`[ensureSessionModel] Set session model to ${modelRef} for ${sessionKey}`);
     } catch (err) {
       console.error('Failed to ensure session model:', err);
     }
@@ -335,7 +325,6 @@ export const useModelsStore = create<ModelState>((set, get) => ({
 
     // 如果 digitalEmployees 为空,先加载
     if (digitalEmployees.length === 0) {
-      console.log('[ensureSessionModel] digitalEmployees is empty, fetching...');
       await get().fetchDigitalEmployees();
       // 重新获取最新的 digitalEmployees
       digitalEmployees = get().digitalEmployees;
@@ -350,14 +339,11 @@ export const useModelsStore = create<ModelState>((set, get) => ({
       const employee = digitalEmployees.find(e => e.openclawAgentId === agentId);
       if (employee?.model) {
         modelId = employee.model;
-        console.log(`[ensureSessionModel] Using agent default model: ${modelId} for agent ${agentId}`);
       } else {
         // 如果 agent 没有配置模型,使用第一个可用模型作为默认值
         if (models.length > 0) {
           modelId = models[0].id;
-          console.log(`[ensureSessionModel] No agent model configured, using first available model: ${modelId}`);
         } else {
-          console.log(`[ensureSessionModel] No models available`);
           return;
         }
       }
@@ -370,7 +356,6 @@ export const useModelsStore = create<ModelState>((set, get) => ({
           key: sessionKey,
           model: `shadan/${modelId}`,
         });
-        console.log(`[ensureSessionModel] Set session model to ${modelId} for ${sessionKey}`);
       } catch (err) {
         console.error('Failed to ensure session model:', err);
       }
@@ -401,12 +386,10 @@ export const useModelsStore = create<ModelState>((set, get) => ({
 
   fetchDigitalEmployees: async () => {
     try {
-      console.log('[models] Fetching digital employees...');
       
       // 直接调用 im-platform API，绕过 Gateway
       const tokenKey = await getTokenKey();
       if (!tokenKey) {
-        console.log('[models] No tokenKey, skipping fetch');
         set({ digitalEmployees: [] });
         return;
       }
@@ -425,7 +408,6 @@ export const useModelsStore = create<ModelState>((set, get) => ({
       }
       
       const result = await response.json();
-      console.log('[models] Digital employees response:', result);
       
       if (result.code !== 200) {
         throw new Error(`API error: ${result.message}`);
@@ -459,8 +441,6 @@ export const useModelsStore = create<ModelState>((set, get) => ({
         };
       }) as DigitalEmployee[];
       
-      console.log('[models] Parsed employees:', employees);
-      console.log('[models] Employee count:', employees.length);
       set({ digitalEmployees: employees });
       
       // 同步技能和模板到 agents store
@@ -469,12 +449,6 @@ export const useModelsStore = create<ModelState>((set, get) => ({
       const agentTemplates: Record<string, number | null> = {};
       
       employees.forEach(emp => {
-        console.log('[models] Processing employee:', { 
-          id: emp.id, 
-          openclawAgentId: emp.openclawAgentId, 
-          skills: emp.skills,
-          templateId: (emp as any).templateId 
-        });
         
         if (emp.openclawAgentId) {
           // 同步技能
@@ -490,8 +464,6 @@ export const useModelsStore = create<ModelState>((set, get) => ({
         }
       });
       
-      console.log('[models] Agent skills to sync:', agentSkills);
-      console.log('[models] Agent templates to sync:', agentTemplates);
       
       // 批量更新 agents store 的技能和模板
       useAgentsStore.setState((state) => ({
@@ -516,7 +488,6 @@ export const useModelsStore = create<ModelState>((set, get) => ({
 
   createDigitalEmployee: async (nickName: string, headImage?: string, model?: string) => {
     try {
-      console.log('[models] Creating digital employee:', { nickName, headImage, model });
       
       // 1. 生成稳定的 agentId
       const agentId = 'bot-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
@@ -549,7 +520,6 @@ export const useModelsStore = create<ModelState>((set, get) => ({
       }
       
       const result = await response.json();
-      console.log('[models] Create bot response:', result);
       
       if (result.code !== 200) {
         throw new Error(result.message || '创建失败');
@@ -576,7 +546,6 @@ export const useModelsStore = create<ModelState>((set, get) => ({
             name: agentId,
             workspace: `~/.openclaw/workspace-${agentId}`,
           });
-          console.log('[models] Gateway agent created successfully');
         } else {
           console.warn('[models] Gateway not running, skipping agent creation');
         }
@@ -590,7 +559,6 @@ export const useModelsStore = create<ModelState>((set, get) => ({
         digitalEmployees: [...state.digitalEmployees, newEmployee],
       }));
       
-      console.log('[models] Digital employee created:', newEmployee);
       return newEmployee;
     } catch (error) {
       console.error('[models] Failed to create digital employee:', error);
@@ -600,7 +568,6 @@ export const useModelsStore = create<ModelState>((set, get) => ({
 
   updateEmployeeSkills: async (employeeId: number, skills: string[]) => {
     try {
-      console.log('[models] updateEmployeeSkills called:', { employeeId, skills });
       
       // 直接调用 im-platform API，而不是通过 Gateway
       const { invokeIpc } = await import('@/lib/api-client');
@@ -625,8 +592,7 @@ export const useModelsStore = create<ModelState>((set, get) => ({
         throw new Error(`API 请求失败: ${response.status} ${errorText}`);
       }
       
-      const result = await response.json();
-      console.log('[models] API response:', result);
+      await response.json();
       
       // Update local state
       set((state) => ({
@@ -635,7 +601,6 @@ export const useModelsStore = create<ModelState>((set, get) => ({
         ),
       }));
       
-      console.log('[models] Local state updated');
     } catch (err) {
       console.error('[models] Failed to update employee skills:', err);
       throw err;
@@ -644,7 +609,6 @@ export const useModelsStore = create<ModelState>((set, get) => ({
 
   updateEmployeeTemplate: async (employeeId: number, templateId: number | null) => {
     try {
-      console.log('[models] updateEmployeeTemplate called:', { employeeId, templateId });
       
       const { invokeIpc } = await import('@/lib/api-client');
       const tokenKey = await invokeIpc<string | null>('box-im:getTokenKey');
@@ -669,7 +633,6 @@ export const useModelsStore = create<ModelState>((set, get) => ({
       }
       
       const result = await response.json();
-      console.log('[models] Template update response:', result);
       
       if (result.code !== 200) {
         throw new Error(result.message || '更新模板失败');

@@ -187,9 +187,9 @@ function mapUnifiedErrorCode(code?: string): AppErrorCode {
 
 function shouldLogApiRequests(): boolean {
   try {
-    return import.meta.env.DEV || window.localStorage.getItem('clawx:api-log') === '1';
+    return window.localStorage.getItem('clawx:api-log') === '1';
   } catch {
-    return !!import.meta.env.DEV;
+    return false;
   }
 }
 
