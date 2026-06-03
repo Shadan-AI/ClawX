@@ -118,6 +118,90 @@ const CLAUDE_NATIVE_PROXY_PORT = 13211;
 const CLAUDE_NATIVE_SONNET_ALIAS = 'claude-sonnet-4-6';
 const CLAUDE_NATIVE_OPUS_ALIAS = 'claude-opus-4-7';
 const CLAUDE_NATIVE_HAIKU_ALIAS = 'claude-haiku-4-5';
+const NATIVE_CLI_TERMINAL_DEBUG_STORAGE_KEY = 'openclaw-debug-native-cli';
+const NATIVE_CLI_TERMINAL_DEBUG_CHUNK_LIMIT = 80;
+const NATIVE_CLI_TERMINAL_DEBUG_PREVIEW_LIMIT = 1200;
+
+function isNativeCliTerminalDebugEnabled(): boolean {
+  if (import.meta.env.DEV) return true;
+  try {
+    return window.localStorage.getItem(NATIVE_CLI_TERMINAL_DEBUG_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function previewNativeCliTerminalChunk(text: string, limit = NATIVE_CLI_TERMINAL_DEBUG_PREVIEW_LIMIT): string {
+  const preview = text
+    .replace(TERMINAL_OSC_PATTERN, '')
+    .replace(TERMINAL_CSI_PATTERN, '')
+    .replace(TERMINAL_CHARSET_PATTERN, '')
+    .replace(/\r/g, '\\r')
+    .replace(/\n/g, '\\n')
+    .replace(/\t/g, '\\t');
+  return preview.length > limit ? `${preview.slice(0, limit)}…` : preview;
+}
+
+function traceNativeCliTerminal(stage: string, payload: Record<string, unknown>): void {
+  // Temporary deep trace: shows exactly which data reaches the xterm UI and from where.
+  // Keep this as console.info (not console.debug) so it is visible with default DevTools filters.
+  console.info(`[native-cli-terminal:trace] ${stage}`, payload);
+}
+
+type StripClaudeStartupChromeResult = {
+  text: string;
+  stripped: boolean;
+  reason?: string;
+};
+
+function cleanTerminalLineForDetection(line: string): string {
+  return line
+    .replace(TERMINAL_OSC_PATTERN, '')
+    .replace(TERMINAL_CSI_PATTERN, '')
+    .replace(TERMINAL_CHARSET_PATTERN, '')
+    .replace(/[\u0000-\u001f\u007f]/g, '')
+    .trim();
+}
+
+function stripClaudeStartupChromeFromVisibleText(text: string): StripClaudeStartupChromeResult {
+  const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const lines = normalized.split('\n');
+  const cleanedLines = lines.map(cleanTerminalLineForDetection);
+  const headerIndex = cleanedLines.findIndex((line) => (
+    /Claude\s+Code/i.test(line) && /[╭┌┏─━]/.test(line)
+  ));
+
+  if (headerIndex < 0) return { text, stripped: false };
+
+  const conversationIndex = cleanedLines.findIndex((line, index) => (
+    index > headerIndex && /^\s*(?:❯\s*\S|>\s+\S|●\s+(?!high\b)\S|✻\s+\S)/i.test(line)
+  ));
+
+  let removeEndExclusive = lines.length;
+  let reason = 'header-to-end';
+  if (conversationIndex >= 0) {
+    removeEndExclusive = conversationIndex;
+    reason = 'conversation-boundary';
+  }
+
+  while (removeEndExclusive < lines.length && lines[removeEndExclusive].trim() === '') {
+    removeEndExclusive += 1;
+  }
+
+  const nextLines = [
+    ...lines.slice(0, headerIndex),
+    ...lines.slice(removeEndExclusive),
+  ];
+  if (headerIndex === 0) {
+    while (nextLines.length > 0 && nextLines[0].trim() === '') nextLines.shift();
+  }
+
+  return {
+    text: nextLines.join('\r\n'),
+    stripped: true,
+    reason,
+  };
+}
 
 function storageKey(sessionKey: string) {
   return `openclaw-terminal-state:native-cli:${sessionKey}`;
@@ -621,6 +705,8 @@ export function NativeCliTerminal({
   const rowsObserverRef = useRef<MutationObserver | null>(null);
   const terminalTurnsRef = useRef<TerminalTurn[]>([]);
   const activeTerminalTurnIdRef = useRef<string | null>(null);
+  const terminalDebugChunkCountRef = useRef(0);
+  const claudeStartupChromeStrippedRef = useRef(false);
   const markerBufferRef = useRef('');
   const bufferRef = useRef('');
   const recentOutputRef = useRef('');
@@ -635,6 +721,7 @@ export function NativeCliTerminal({
   const sessionTitleRef = useRef(sessionTitle);
   const sessionUpdatedAtRef = useRef(sessionUpdatedAt);
   const skipResumeResolveRef = useRef(false);
+  const suppressReconnectRef = useRef(false);
   const reconnectDelayRef = useRef(1000);
   const disposedRef = useRef(false);
 
@@ -926,13 +1013,26 @@ export function NativeCliTerminal({
   }, []);
 
   const updateShellPassthroughState = useCallback((chunk: string) => {
+    const before = shellPassthroughRef.current;
+    const matchedSignature = TERMINAL_SHELL_PASSTHROUGH_SIGNATURES.find((signature) => (
+      `${recentOutputRef.current}${chunk}`.includes(signature)
+    ));
     recentOutputRef.current = `${recentOutputRef.current}${chunk}`.slice(-TERMINAL_SHELL_PASSTHROUGH_BUFFER_CHARS);
-    if (TERMINAL_SHELL_PASSTHROUGH_SIGNATURES.some((signature) => recentOutputRef.current.includes(signature))) {
+    if (matchedSignature) {
       shellPassthroughRef.current = true;
     } else if (shellPassthroughRef.current && /\n[^\n]*[$%#] $/.test(recentOutputRef.current.slice(-240))) {
       shellPassthroughRef.current = false;
     }
-  }, []);
+    if (before !== shellPassthroughRef.current) {
+      traceNativeCliTerminal('shell-passthrough-state-changed', {
+        sessionKey,
+        before,
+        after: shellPassthroughRef.current,
+        matchedSignature,
+        recentPreview: previewNativeCliTerminalChunk(recentOutputRef.current),
+      });
+    }
+  }, [sessionKey]);
 
   const settleInitialOutputAfterPaint = useCallback(() => {
     if (initialOutputRafRef.current) {
@@ -990,16 +1090,92 @@ export function NativeCliTerminal({
   const handleTerminalData = useCallback((raw: string) => {
     const visibleRaw = stripTerminalStreamMarkers(raw);
     updateShellPassthroughState(visibleRaw);
-    bufferRef.current = `${bufferRef.current}${raw}`.slice(-100_000);
+
+    const chunkIndex = terminalDebugChunkCountRef.current + 1;
+    terminalDebugChunkCountRef.current = chunkIndex;
+
+    let renderRaw = raw;
+    let visibleRender = visibleRaw;
+    if (effectiveProvider === 'claude') {
+      const stripped = stripClaudeStartupChromeFromVisibleText(raw);
+      if (stripped.stripped) {
+        claudeStartupChromeStrippedRef.current = true;
+        renderRaw = stripped.text;
+        visibleRender = renderRaw;
+        traceNativeCliTerminal('claude-startup-chrome-stripped-before-ui', {
+          sessionKey,
+          chunkIndex,
+          reason: stripped.reason,
+          beforeBytes: raw.length,
+          afterBytes: renderRaw.length,
+          beforePreview: previewNativeCliTerminalChunk(raw),
+          afterPreview: previewNativeCliTerminalChunk(renderRaw),
+        });
+      }
+    }
+
+    const renderHasPrintable = hasPrintableTerminalContent(visibleRender);
+    if (effectiveProvider === 'claude' && !claudeStartupChromeStrippedRef.current && !renderHasPrintable) {
+      traceNativeCliTerminal('claude-startup-pre-banner-control-chunk-suppressed-before-ui', {
+        sessionKey,
+        chunkIndex,
+        rawBytes: raw.length,
+        renderBytes: renderRaw.length,
+        preview: previewNativeCliTerminalChunk(raw),
+      });
+      return;
+    }
+    if (effectiveProvider === 'claude' && claudeStartupChromeStrippedRef.current && renderRaw.length === 0) {
+      traceNativeCliTerminal('claude-startup-banner-empty-chunk-suppressed-before-ui', {
+        sessionKey,
+        chunkIndex,
+        rawBytes: raw.length,
+        renderBytes: renderRaw.length,
+        hasPrintable: renderHasPrintable,
+        preview: previewNativeCliTerminalChunk(raw),
+      });
+      return;
+    }
+
+    bufferRef.current = `${bufferRef.current}${renderRaw}`.slice(-100_000);
+
+    traceNativeCliTerminal('handle-terminal-data-before-render', {
+      sessionKey,
+      chunkIndex,
+      rawBytes: raw.length,
+      renderBytes: renderRaw.length,
+      visibleBytes: visibleRender.length,
+      hasPrintable: renderHasPrintable,
+      shellPassthrough: shellPassthroughRef.current,
+      bufferBytes: bufferRef.current.length,
+      rawPreview: previewNativeCliTerminalChunk(raw),
+      renderPreview: previewNativeCliTerminalChunk(renderRaw),
+      visiblePreview: previewNativeCliTerminalChunk(visibleRender),
+    });
+
     persistState();
     const term = termRef.current;
     if (term) {
-      term.write(raw, () => {
-        if (hasPrintableTerminalContent(visibleRaw)) requestInitialOutputSettle();
+      term.write(renderRaw, () => {
+        traceNativeCliTerminal('xterm-write-committed-to-ui', {
+          sessionKey,
+          chunkIndex,
+          termCols: term.cols,
+          termRows: term.rows,
+          hasPrintable: renderHasPrintable,
+          visiblePreview: previewNativeCliTerminalChunk(visibleRender),
+        });
+        if (renderHasPrintable) requestInitialOutputSettle();
+      });
+    } else {
+      traceNativeCliTerminal('terminal-data-dropped-no-xterm', {
+        sessionKey,
+        chunkIndex,
+        rawPreview: previewNativeCliTerminalChunk(raw),
       });
     }
     scheduleTerminalUserEchoStyle();
-  }, [persistState, requestInitialOutputSettle, scheduleTerminalUserEchoStyle, stripTerminalStreamMarkers, updateShellPassthroughState]);
+  }, [effectiveProvider, persistState, requestInitialOutputSettle, scheduleTerminalUserEchoStyle, sessionKey, stripTerminalStreamMarkers, updateShellPassthroughState]);
 
   const sendTerminalData = useCallback((data: string) => {
     const ws = wsRef.current;
@@ -1175,7 +1351,17 @@ export function NativeCliTerminal({
       params.set('resume', '1');
       params.set('sessionId', knownCliSessionId);
     }
-    const ws = new WebSocket(`${wsProtocol}://127.0.0.1:${port}/terminal?${params.toString()}`);
+    const wsUrl = `${wsProtocol}://127.0.0.1:${port}/terminal?${params.toString()}`;
+    traceNativeCliTerminal('websocket-create-terminal-stream', {
+      sessionKey,
+      agentId,
+      knownCliSessionId,
+      normalizedProvider,
+      wsUrl,
+      phase: knownCliSessionId ? 'resume' : 'start',
+    });
+    suppressReconnectRef.current = false;
+    const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
     let openedAt = 0;
 
@@ -1184,6 +1370,12 @@ export function NativeCliTerminal({
       if (wsRef.current !== ws) return;
       openedAt = Date.now();
       reconnectDelayRef.current = 1000;
+      traceNativeCliTerminal('websocket-opened-terminal-stream', {
+        sessionKey,
+        agentId,
+        knownCliSessionId,
+        normalizedProvider,
+      });
       dispatchTerminalState({ type: 'websocket_opened' });
       mountRef_cb.current.fitTerminalToContent();
       const term = termRef.current;
@@ -1194,9 +1386,25 @@ export function NativeCliTerminal({
     ws.onmessage = (event) => {
       if (disposedRef.current) return;
       if (wsRef.current !== ws) return;
+      const eventText = String(event.data);
+      traceNativeCliTerminal('websocket-message-raw-from-backend', {
+        sessionKey,
+        bytes: eventText.length,
+        preview: previewNativeCliTerminalChunk(eventText),
+      });
       try {
-        const msg = JSON.parse(String(event.data)) as Record<string, unknown>;
+        const msg = JSON.parse(eventText) as Record<string, unknown>;
+        traceNativeCliTerminal('websocket-message-parsed', {
+          sessionKey,
+          type: String(msg.type ?? ''),
+          keys: Object.keys(msg),
+        });
         if (msg.type === 'data' && typeof msg.data === 'string') {
+          traceNativeCliTerminal('websocket-data-payload-going-to-terminal-ui', {
+            sessionKey,
+            bytes: msg.data.length,
+            preview: previewNativeCliTerminalChunk(msg.data),
+          });
           mountRef_cb.current.handleTerminalData(msg.data);
         } else if (msg.type === 'assistant_turn_start') {
           const turnId = typeof msg.turnId === 'string' ? msg.turnId : '';
@@ -1209,10 +1417,24 @@ export function NativeCliTerminal({
           mountRef_cb.current.handleTerminalStreamMarker({ kind: 'turn_end', conversationId: String(msg.conversationId ?? ''), turnId: msg.turnId });
         } else if (msg.type === 'session_id' && typeof msg.sessionId === 'string') {
           mountRef_cb.current.bindNativeCliSessionId(msg.sessionId);
-        } else if (msg.type === 'exit' && userHasInteractedRef.current) {
-          termRef.current?.write(`\r\n\x1b[33m[process exited: ${String(msg.code ?? 0)}]\x1b[0m\r\n`);
+        } else if (msg.type === 'exit') {
+          suppressReconnectRef.current = true;
+          traceNativeCliTerminal('terminal-process-exit-suppressing-reconnect', {
+            sessionKey,
+            code: msg.code,
+            cliSessionId: cliSessionIdRef.current,
+          });
+          if (userHasInteractedRef.current) {
+            termRef.current?.write(`\r\n\x1b[33m[process exited: ${String(msg.code ?? 0)}]\x1b[0m\r\n`);
+          }
         }
-      } catch {
+      } catch (error) {
+        traceNativeCliTerminal('websocket-message-json-parse-failed-treat-as-terminal-data', {
+          sessionKey,
+          error: String(error),
+          bytes: eventText.length,
+          preview: previewNativeCliTerminalChunk(eventText),
+        });
         if (typeof event.data === 'string') mountRef_cb.current.handleTerminalData(event.data);
       }
     };
@@ -1225,6 +1447,13 @@ export function NativeCliTerminal({
       initialOutputPendingPaintRef.current = false;
       if (userHasInteractedRef.current) {
         termRef.current?.write('\r\n\x1b[31m[disconnected]\x1b[0m\r\n');
+      }
+      if (suppressReconnectRef.current) {
+        traceNativeCliTerminal('websocket-closed-reconnect-suppressed', {
+          sessionKey,
+          cliSessionId: cliSessionIdRef.current,
+        });
+        return;
       }
       if (openedAt > 0 && Date.now() - openedAt < 400) {
         reconnectDelayRef.current = Math.min(Math.max(reconnectDelayRef.current * 2, 2000), 60_000);
@@ -1377,6 +1606,9 @@ export function NativeCliTerminal({
     const mount = mountRef.current;
     if (!mount) return;
     disposedRef.current = false;
+    terminalDebugChunkCountRef.current = 0;
+    claudeStartupChromeStrippedRef.current = false;
+    suppressReconnectRef.current = false;
 
     const persisted = loadPersistedTerminalState(sessionKey);
     const initialCliSessionId = resolveStoredCliSessionId(sessionKey, cliSessionIdPropRef.current) || persisted.cliSessionId || '';
@@ -1401,6 +1633,13 @@ export function NativeCliTerminal({
     });
     term.open(mount);
     if (!initialCliSessionId && userHasInteractedRef.current && bufferRef.current) {
+      if (isNativeCliTerminalDebugEnabled()) {
+        console.debug('[native-cli-terminal] restoring persisted terminal buffer before first paint', {
+          sessionKey,
+          bytes: bufferRef.current.length,
+          preview: previewNativeCliTerminalChunk(bufferRef.current),
+        });
+      }
       term.write(bufferRef.current);
     }
     term.onData((data) => {
