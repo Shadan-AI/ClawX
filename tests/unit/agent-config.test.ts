@@ -965,4 +965,78 @@ describe('agent config lifecycle', () => {
 
     expect(agent?.runtime?.nativeCli?.command).toBe(claudeExe);
   });
+
+  it('wraps Windows Claude npm cmd shim with cmd.exe when no direct executable exists', async () => {
+    const originalPlatform = process.platform;
+    const originalPath = process.env.PATH;
+    const originalComSpec = process.env.ComSpec;
+    const npmBinDir = join(testHome, 'npm-cmd-only');
+    const cmdExe = join(testHome, 'Windows', 'System32', 'cmd.exe');
+
+    await mkdir(npmBinDir, { recursive: true });
+    await mkdir(join(testHome, 'Windows', 'System32'), { recursive: true });
+    await writeFile(cmdExe, '', 'utf8');
+    await writeFile(
+      join(npmBinDir, 'claude.cmd'),
+      '@ECHO off\r\nnode "%~dp0\\node_modules\\@anthropic-ai\\claude-code\\cli.js" %*\r\n',
+      'utf8',
+    );
+    await writeOpenClawJson({
+      agents: {
+        list: [
+          {
+            id: 'cmd-shim-coder',
+            name: 'Cmd Shim Coder',
+            runtime: {
+              type: 'native-cli',
+              nativeCli: {
+                provider: 'claude',
+                command: 'claude',
+                env: {
+                  ANTHROPIC_API_KEY: 'oneapi-key',
+                  ANTHROPIC_MODEL: 'deepseek-v4-flash',
+                },
+              },
+            },
+          },
+        ],
+      },
+    });
+
+    try {
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      process.env.PATH = npmBinDir;
+      process.env.ComSpec = cmdExe;
+      vi.resetModules();
+
+      const { ensureNativeCliRuntimeResumeArgs } = await import('@electron/utils/agent-config');
+      await expect(ensureNativeCliRuntimeResumeArgs()).resolves.toBe(true);
+    } finally {
+      Object.defineProperty(process, 'platform', { value: originalPlatform });
+      process.env.PATH = originalPath;
+      if (originalComSpec === undefined) {
+        delete process.env.ComSpec;
+      } else {
+        process.env.ComSpec = originalComSpec;
+      }
+    }
+
+    const config = await readOpenClawJson();
+    const agent = ((config.agents as { list: Array<{ id: string; runtime?: { nativeCli?: { command?: string; args?: string[]; resumeArgs?: string[] } } }> }).list)
+      .find((item) => item.id === 'cmd-shim-coder');
+
+    expect(agent?.runtime?.nativeCli?.command).toBe(cmdExe);
+    expect(agent?.runtime?.nativeCli?.args?.slice(0, 4)).toEqual([
+      '/d',
+      '/s',
+      '/c',
+      join(npmBinDir, 'claude.cmd'),
+    ]);
+    expect(agent?.runtime?.nativeCli?.resumeArgs?.slice(0, 4)).toEqual([
+      '/d',
+      '/s',
+      '/c',
+      join(npmBinDir, 'claude.cmd'),
+    ]);
+  });
 });

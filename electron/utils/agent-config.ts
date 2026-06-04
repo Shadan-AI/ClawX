@@ -7,6 +7,7 @@ import type { OpenClawConfig } from './channel-config';
 import { withConfigLock } from './config-mutex';
 import { expandPath, getOpenClawConfigDir, getOpenClawDir } from './paths';
 import { getPort } from './config';
+import { quoteForCmd } from './win-shell';
 import * as logger from './logger';
 import { toUiChannelType } from './channel-alias';
 import { getBoxImConfig } from './box-im-sync';
@@ -454,6 +455,33 @@ function readCmdShimExeTarget(cmdPath: string): string | undefined {
   return undefined;
 }
 
+type NativeCliCommandResolution = {
+  command: string;
+  argsPrefix?: string[];
+};
+
+function getWindowsCmdExePath(): string {
+  return process.env.ComSpec
+    || join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'cmd.exe');
+}
+
+function isWindowsCmdExe(command: string): boolean {
+  return process.platform === 'win32' && /(?:^|[\\/])cmd(?:\.exe)?$/i.test(stripOuterQuotes(command));
+}
+
+function unwrapWindowsCmdShimArgs(
+  command: string,
+  args: string[] | undefined,
+): { command: string; args: string[] } | null {
+  if (!args || args.length < 4 || !isWindowsCmdExe(command)) return null;
+  if (!/^\/d$/i.test(args[0] ?? '') || !/^\/s$/i.test(args[1] ?? '') || !/^\/c$/i.test(args[2] ?? '')) {
+    return null;
+  }
+  const shim = stripOuterQuotes(args[3] ?? '');
+  if (!/\.(?:cmd|bat)$/i.test(shim)) return null;
+  return { command: shim, args: args.slice(4) };
+}
+
 function windowsCommandCandidates(command: string): string[] {
   const trimmed = stripOuterQuotes(command);
   if (!trimmed) return [];
@@ -483,28 +511,32 @@ function windowsCommandCandidates(command: string): string[] {
   return candidates;
 }
 
-function resolveWindowsClaudeCommand(command: string): string {
-  if (process.platform !== 'win32') return command;
+function resolveWindowsClaudeCommand(command: string): NativeCliCommandResolution {
+  if (process.platform !== 'win32') return { command };
 
   for (const candidate of windowsCommandCandidates(command)) {
     if (!fileExistsSyncSafe(candidate)) continue;
 
     const extension = extname(candidate).toLowerCase();
     if (extension === '.exe') {
-      return normalize(candidate);
+      return { command: normalize(candidate) };
     }
     if (extension === '.cmd' || extension === '.bat') {
       const target = readCmdShimExeTarget(candidate);
-      if (target) return target;
+      if (target) return { command: target };
+      return {
+        command: getWindowsCmdExePath(),
+        argsPrefix: ['/d', '/s', '/c', quoteForCmd(normalize(candidate))],
+      };
     }
   }
 
-  return command;
+  return { command };
 }
 
 function normalizeNativeCliCommand(provider: string, command: string): string {
   if (provider === 'claude') {
-    return resolveWindowsClaudeCommand(command);
+    return resolveWindowsClaudeCommand(command).command;
   }
   return command;
 }
@@ -612,19 +644,40 @@ function normalizeAgentRuntime(
   if (!command) return runtime;
 
   const provider = normalizeNativeCliProvider(nativeCliRecord.provider, command);
-  const normalizedCommand = normalizeNativeCliCommand(provider, command);
+  let commandForResolution = command;
+  let rawArgs = asStringArray(nativeCliRecord.args);
+  let rawResumeArgs = asStringArray(nativeCliRecord.resumeArgs);
+  if (provider === 'claude') {
+    const unwrappedArgs = unwrapWindowsCmdShimArgs(command, rawArgs);
+    if (unwrappedArgs) {
+      commandForResolution = unwrappedArgs.command;
+      rawArgs = unwrappedArgs.args;
+    }
+    const unwrappedResumeArgs = unwrapWindowsCmdShimArgs(command, rawResumeArgs);
+    if (unwrappedResumeArgs) {
+      rawResumeArgs = unwrappedResumeArgs.args;
+    }
+  }
+  const commandResolution = provider === 'claude'
+    ? resolveWindowsClaudeCommand(commandForResolution)
+    : { command: normalizeNativeCliCommand(provider, commandForResolution) };
+  const normalizedCommand = commandResolution.command;
   const env = normalizeNativeCliEnv(provider, asStringRecord(nativeCliRecord.env), options);
   const modelId = provider === 'claude' ? env?.ANTHROPIC_MODEL : undefined;
   const pluginDir = provider === 'claude' && hasInstalledSelectedSkillSync(options?.skills ?? [])
     ? getClaudeAgentSkillsPluginDir(options?.agentId)
     : undefined;
   const managedPluginDir = provider === 'claude' ? getClaudeAgentSkillsPluginDir(options?.agentId) : undefined;
-  const rawArgs = asStringArray(nativeCliRecord.args);
-  const args = provider === 'claude' ? normalizeClaudeArgs(rawArgs, modelId, pluginDir, managedPluginDir) : rawArgs;
-  const rawResumeArgs = asStringArray(nativeCliRecord.resumeArgs);
-  const resumeArgs = provider === 'claude'
-    ? normalizeClaudeResumeArgs(rawResumeArgs ?? defaultNativeCliResumeArgs(provider, args, pluginDir), modelId, pluginDir, managedPluginDir)
+  const normalizedArgs = provider === 'claude' ? normalizeClaudeArgs(rawArgs, modelId, pluginDir, managedPluginDir) : rawArgs;
+  const args = commandResolution.argsPrefix
+    ? [...commandResolution.argsPrefix, ...(normalizedArgs ?? [])]
+    : normalizedArgs;
+  const normalizedResumeArgs = provider === 'claude'
+    ? normalizeClaudeResumeArgs(rawResumeArgs ?? defaultNativeCliResumeArgs(provider, normalizedArgs, pluginDir), modelId, pluginDir, managedPluginDir)
     : rawResumeArgs ?? defaultNativeCliResumeArgs(provider, args, pluginDir);
+  const resumeArgs = commandResolution.argsPrefix
+    ? [...commandResolution.argsPrefix, ...(normalizedResumeArgs ?? [])]
+    : normalizedResumeArgs;
 
   return {
     ...runtime,

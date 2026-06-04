@@ -61,6 +61,7 @@ const _historyPollTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const _errorRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const _pendingFinalTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const _stuckCheckTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const _gatewayHistoryRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 let _loadSessionsInFlight: Promise<void> | null = null;
 let _lastLoadSessionsAt = 0;
 const _historyLoadInFlight = new Map<string, Promise<void>>();
@@ -74,12 +75,18 @@ const HISTORY_POLL_SILENCE_WINDOW_MS = 2_500;
 const CHAT_EVENT_DEDUPE_TTL_MS = 30_000;
 const SESSION_SIDEBAR_META_CONCURRENCY = 2;
 const ACTIVE_HISTORY_RPC_TIMEOUT_MS = 60_000;
+const GATEWAY_HISTORY_RETRY_MS = 1_500;
 const NATIVE_CLI_SESSION_ID_REPAIR_RETRY_MS = 60_000;
 const RUNTIME_NATIVE_CLI_SESSION_PATH = '/api/runtime/sessions/native-cli';
 const RUNTIME_NATIVE_CLI_RESOLVE_PATH = '/api/runtime/sessions/native-cli/resolve';
 const DELETED_SESSION_KEYS_STORAGE_KEY = 'clawx-deleted-session-keys';
 const MAX_DELETED_SESSION_KEYS = 500;
 const _chatEventDedupe = new Map<string, number>();
+
+function isGatewayDisconnectedHistoryError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /Gateway not connected/i.test(message);
+}
 
 type SessionRuntimeSnapshot = Pick<
   ChatState,
@@ -2556,6 +2563,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     const loadPromise = (async () => {
       const isCurrentSession = () => get().currentSessionKey === currentSessionKey;
+      const scheduleGatewayHistoryRetry = () => {
+        if (_gatewayHistoryRetryTimers.has(currentSessionKey)) return;
+        const timer = setTimeout(() => {
+          _gatewayHistoryRetryTimers.delete(currentSessionKey);
+          if (!isCurrentSession()) return;
+          void get().loadHistory(true);
+        }, GATEWAY_HISTORY_RETRY_MS);
+        _gatewayHistoryRetryTimers.set(currentSessionKey, timer);
+      };
       const getPreviewMergeKey = (message: RawMessage): string => (
         `${message.id ?? ''}|${message.role}|${message.timestamp ?? ''}|${getMessageText(message.content)}`
       );
@@ -2787,6 +2803,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
           }
         }
       } catch (err) {
+        if (isGatewayDisconnectedHistoryError(err)) {
+          applyLoadFailure(null);
+          scheduleGatewayHistoryRetry();
+          return;
+        }
         console.warn('[loadHistory] Failed to load chat history:', err);
         let fallbackMessages: RawMessage[] = [];
         const directMessages = await loadTranscriptMessages();
