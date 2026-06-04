@@ -1193,11 +1193,25 @@ function AddAgentDialog({
         current = updateEnvStep(current, 'cli', { status: 'installing' });
         setEnvSteps([...current]);
         const pkg = RUNTIME_CLI_PACKAGES[runtimePreset];
-        const installRes = await invokeIpc<{ success: boolean; error?: string }>('env:installNpmGlobal', pkg);
+        const installRes = await invokeIpc<{ success: boolean; error?: string; path?: string; version?: string }>(
+          'env:installNpmGlobal',
+          pkg,
+          command,
+        );
         if (stale()) return;
         if (installRes.success) {
           const verifyRes = await invokeIpc<{ found: boolean; version?: string }>('env:checkTool', command);
-          current = updateEnvStep(current, 'cli', { status: 'success', version: verifyRes.version });
+          if (verifyRes.found) {
+            current = updateEnvStep(current, 'cli', { status: 'success', version: verifyRes.version || installRes.version });
+          } else {
+            current = updateEnvStep(current, 'cli', {
+              status: 'error',
+              error: `${command} installed but was not found. Restart ClawX or add the npm global bin directory to PATH.`,
+            });
+            setEnvSteps([...current]);
+            setEnvCheckRunning(false);
+            return;
+          }
         } else {
           current = updateEnvStep(current, 'cli', {
             status: 'error',

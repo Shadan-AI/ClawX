@@ -1,6 +1,7 @@
 import { access, copyFile, cp, mkdir, readFile, readdir, rm, writeFile } from 'fs/promises';
 import { constants, existsSync, readFileSync } from 'fs';
 import { delimiter, dirname, extname, isAbsolute, join, normalize, sep } from 'path';
+import { homedir } from 'os';
 import { deleteAgentChannelAccounts, listConfiguredChannels, readOpenClawConfig, writeOpenClawConfig } from './channel-config';
 import type { OpenClawConfig } from './channel-config';
 import { withConfigLock } from './config-mutex';
@@ -460,12 +461,18 @@ function windowsCommandCandidates(command: string): string[] {
   const extension = extname(trimmed).toLowerCase();
   const suffixes = extension ? [''] : ['.exe', '.cmd', '.bat', '.ps1', ''];
   const hasPathSeparator = /[\\/]/.test(trimmed);
+  const pathDirectories = (process.env.PATH || process.env.Path || '')
+    .split(delimiter)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  const npmGlobalDirectories = [
+    process.env.APPDATA ? join(process.env.APPDATA, 'npm') : '',
+    process.env.USERPROFILE ? join(process.env.USERPROFILE, 'AppData', 'Roaming', 'npm') : '',
+    join(homedir(), 'AppData', 'Roaming', 'npm'),
+  ].filter(Boolean);
   const directories = hasPathSeparator
     ? ['']
-    : (process.env.PATH || process.env.Path || '')
-      .split(delimiter)
-      .map((entry) => entry.trim())
-      .filter(Boolean);
+    : [...new Set([...pathDirectories, ...npmGlobalDirectories])];
 
   const candidates: string[] = [];
   for (const directory of directories) {

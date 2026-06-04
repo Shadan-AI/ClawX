@@ -904,4 +904,65 @@ describe('agent config lifecycle', () => {
 
     expect(agent?.runtime?.nativeCli?.command).toBe(claudeExe);
   });
+
+  it('repairs Windows Claude native cli command from npm shim when PATH is stale', async () => {
+    const originalPlatform = process.platform;
+    const originalPath = process.env.PATH;
+    const originalAppData = process.env.APPDATA;
+    const npmBinDir = join(testHome, 'AppData', 'Roaming', 'npm');
+    const claudeExe = join(npmBinDir, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
+
+    await mkdir(join(npmBinDir, 'node_modules', '@anthropic-ai', 'claude-code', 'bin'), { recursive: true });
+    await writeFile(claudeExe, '', 'utf8');
+    await writeFile(
+      join(npmBinDir, 'claude.cmd'),
+      '@ECHO off\r\n"%~dp0\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe" %*\r\n',
+      'utf8',
+    );
+    await writeOpenClawJson({
+      agents: {
+        list: [
+          {
+            id: 'stale-path-coder',
+            name: 'Stale PATH Coder',
+            runtime: {
+              type: 'native-cli',
+              nativeCli: {
+                provider: 'claude',
+                command: 'claude',
+                env: {
+                  ANTHROPIC_API_KEY: 'oneapi-key',
+                  ANTHROPIC_MODEL: 'deepseek-v4-flash',
+                },
+              },
+            },
+          },
+        ],
+      },
+    });
+
+    try {
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      process.env.PATH = join(testHome, 'not-npm-bin');
+      process.env.APPDATA = join(testHome, 'AppData', 'Roaming');
+      vi.resetModules();
+
+      const { ensureNativeCliRuntimeResumeArgs } = await import('@electron/utils/agent-config');
+      await expect(ensureNativeCliRuntimeResumeArgs()).resolves.toBe(true);
+    } finally {
+      Object.defineProperty(process, 'platform', { value: originalPlatform });
+      process.env.PATH = originalPath;
+      if (originalAppData === undefined) {
+        delete process.env.APPDATA;
+      } else {
+        process.env.APPDATA = originalAppData;
+      }
+    }
+
+    const config = await readOpenClawJson();
+    const agent = ((config.agents as { list: Array<{ id: string; runtime?: { nativeCli?: { command?: string } } }> }).list)
+      .find((item) => item.id === 'stale-path-coder');
+
+    expect(agent?.runtime?.nativeCli?.command).toBe(claudeExe);
+  });
 });

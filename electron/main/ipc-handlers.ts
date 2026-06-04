@@ -2967,7 +2967,7 @@ function registerRuntimeEnvHandlers(): void {
     return await installNode();
   });
 
-  ipcMain.handle('env:installNpmGlobal', async (_, packageName: string) => {
-    return await installNpmGlobal(packageName);
+  ipcMain.handle('env:installNpmGlobal', async (_, packageName: string, toolName?: string) => {
+    return await installNpmGlobal(packageName, toolName);
   });
 }

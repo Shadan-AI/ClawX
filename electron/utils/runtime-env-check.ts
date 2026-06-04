@@ -1,4 +1,6 @@
 import { execSync, spawn } from 'child_process';
+import { existsSync } from 'fs';
+import { delimiter, extname, join } from 'path';
 import { logger } from './logger';
 
 /**
@@ -8,12 +10,12 @@ export async function checkToolInPath(
   toolName: string,
 ): Promise<{ found: boolean; path?: string; version?: string }> {
   try {
-    const cmd = process.platform === 'win32' ? `where.exe ${toolName}` : `which ${toolName}`;
-    const path = execSync(cmd, { encoding: 'utf8', timeout: 5000, windowsHide: true }).trim();
+    const path = findToolPath(toolName);
+    if (!path) return { found: false };
 
     let version: string | undefined;
     try {
-      version = execSync(`${toolName} --version`, {
+      version = execSync(`${quoteForCommand(path)} --version`, {
         encoding: 'utf8',
         timeout: 5000,
         windowsHide: true,
@@ -22,10 +24,56 @@ export async function checkToolInPath(
       // version detection is optional
     }
 
-    return { found: true, path: path.split('\n')[0], version };
+    return { found: true, path, version };
   } catch {
     return { found: false };
   }
+}
+
+function quoteForCommand(value: string): string {
+  if (process.platform !== 'win32') return `'${value.replace(/'/g, "'\\''")}'`;
+  return `"${value.replace(/"/g, '\\"')}"`;
+}
+
+function windowsExtraBinDirs(): string[] {
+  const dirs = [
+    process.env.APPDATA ? join(process.env.APPDATA, 'npm') : '',
+    process.env.USERPROFILE ? join(process.env.USERPROFILE, 'AppData', 'Roaming', 'npm') : '',
+  ];
+  return [...new Set(dirs.filter(Boolean))];
+}
+
+function findToolPath(toolName: string): string | null {
+  const trimmed = toolName.trim();
+  if (!trimmed) return null;
+
+  if (process.platform !== 'win32') {
+    const path = execSync(`which ${trimmed}`, { encoding: 'utf8', timeout: 5000, windowsHide: true }).trim();
+    return path.split('\n')[0]?.trim() || null;
+  }
+
+  try {
+    const path = execSync(`where.exe ${trimmed}`, { encoding: 'utf8', timeout: 5000, windowsHide: true }).trim();
+    const first = path.split('\n')[0]?.trim();
+    if (first) return first;
+  } catch {
+    // Fall back to common npm global bin locations below.
+  }
+
+  const extension = extname(trimmed).toLowerCase();
+  const suffixes = extension ? [''] : ['.exe', '.cmd', '.bat', ''];
+  const dirs = [
+    ...(process.env.PATH || process.env.Path || '').split(delimiter),
+    ...windowsExtraBinDirs(),
+  ].map((entry) => entry.trim()).filter(Boolean);
+
+  for (const dir of dirs) {
+    for (const suffix of suffixes) {
+      const candidate = join(dir, `${trimmed}${suffix}`);
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return null;
 }
 
 /**
@@ -60,9 +108,20 @@ export async function installNode(): Promise<{ success: boolean; error?: string 
  */
 export async function installNpmGlobal(
   packageName: string,
-): Promise<{ success: boolean; error?: string }> {
+  toolName?: string,
+): Promise<{ success: boolean; error?: string; path?: string; version?: string }> {
   try {
-    return await runSpawn('npm', ['install', '-g', packageName], 120_000);
+    const result = await runSpawn('npm', ['install', '-g', packageName], 120_000);
+    if (!result.success || !toolName) return result;
+
+    const tool = await checkToolInPath(toolName);
+    if (tool.found) {
+      return { success: true, path: tool.path, version: tool.version };
+    }
+    return {
+      success: false,
+      error: `Installed ${packageName}, but ${toolName} was not found in PATH or the npm global bin directory. Restart ClawX or add the npm global bin directory to PATH.`,
+    };
   } catch (err) {
     const msg = String(err);
     logger.error(`[runtime-env] installNpmGlobal(${packageName}) failed: ${msg}`);
