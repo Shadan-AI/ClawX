@@ -1555,7 +1555,13 @@ export function NativeCliTerminal({
     let wsUrl: string;
     try {
       wsUrl = await createHostApiWebSocketUrl(`/api/gateway/terminal?${params.toString()}`);
-    } catch {
+    } catch (error) {
+      traceNativeCliTerminal('host-api-websocket-url-unavailable', {
+        sessionKey,
+        agentId,
+        normalizedProvider,
+        error: error instanceof Error ? error.message : String(error),
+      });
       // Host API token IPC not available yet - schedule reconnect.
       if (disposedRef.current) return;
       dispatchTerminalState({ type: 'gateway_unavailable' });

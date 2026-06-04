@@ -212,12 +212,14 @@ export function startHostApiServer(ctx: HostApiContext, port = getPort('CLAWX_HO
 
       const token = requestUrl.searchParams.get('token') || '';
       if (token !== hostApiToken) {
+        logger.warn('[host-api] Gateway terminal WebSocket rejected: invalid token');
         writeUpgradeError(socket, 401, 'Unauthorized');
         return;
       }
 
       const status = ctx.gatewayManager.getStatus();
       if (status.state !== 'running') {
+        logger.warn(`[host-api] Gateway terminal WebSocket rejected: gateway state=${status.state}`);
         writeUpgradeError(socket, 503, 'Gateway Unavailable');
         return;
       }
@@ -227,6 +229,7 @@ export function startHostApiServer(ctx: HostApiContext, port = getPort('CLAWX_HO
       requestUrl.searchParams.delete('token');
       const gatewayProtocol = tls ? 'wss' : 'ws';
       const upstreamUrl = `${gatewayProtocol}://127.0.0.1:${gatewayPort}/terminal?${requestUrl.searchParams.toString()}`;
+      logger.info(`[host-api] Gateway terminal WebSocket proxying to ${gatewayProtocol}://127.0.0.1:${gatewayPort}/terminal tls=${tls}`);
 
       wsServer.handleUpgrade(req, socket, head, (client) => {
         proxyGatewayTerminalWebSocket(client, upstreamUrl, tls);

@@ -21,18 +21,12 @@ async function getHostApiToken(): Promise<string> {
 
 async function getHostApiInfo(): Promise<{ port: number; token: string }> {
   if (cachedHostApiInfo) return cachedHostApiInfo;
-  try {
-    const info = await invokeIpc<{ port?: unknown; token?: unknown }>('hostapi:info');
-    const port = typeof info?.port === 'number' && info.port > 0 ? info.port : HOST_API_PORT;
-    const token = typeof info?.token === 'string' ? info.token : '';
-    cachedHostApiInfo = { port, token };
-    cachedHostApiToken = token;
-    return cachedHostApiInfo;
-  } catch {
-    const token = await getHostApiToken();
-    cachedHostApiInfo = { port: HOST_API_PORT, token };
-    return cachedHostApiInfo;
-  }
+  const info = await invokeIpc<{ port?: unknown; token?: unknown }>('hostapi:info');
+  const port = typeof info?.port === 'number' && info.port > 0 ? info.port : HOST_API_PORT;
+  const token = typeof info?.token === 'string' ? info.token : '';
+  cachedHostApiInfo = { port, token };
+  cachedHostApiToken = token;
+  return cachedHostApiInfo;
 }
 
 type HostApiProxyResponse = {
