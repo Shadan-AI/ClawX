@@ -54,6 +54,7 @@ type ChatLikeState = {
   sessionLastActivity: Record<string, number>;
   thinkingLevel: string | null;
   activeRunId: string | null;
+  loadHistory?: (quiet?: boolean) => Promise<void>;
 };
 
 function makeHarness(initial?: Partial<ChatLikeState>) {
@@ -82,6 +83,7 @@ function makeHarness(initial?: Partial<ChatLikeState>) {
 
 describe('chat history actions', () => {
   beforeEach(() => {
+    vi.useRealTimers();
     vi.resetAllMocks();
     invokeIpcMock.mockResolvedValue({ success: true, result: { messages: [] } });
     hostApiFetchMock.mockResolvedValue({ messages: [] });
@@ -158,6 +160,37 @@ describe('chat history actions', () => {
     expect(h.read().messages.map((message) => message.content)).toEqual(['still here']);
     expect(h.read().error).toBe('Error: Gateway unavailable');
     expect(h.read().loading).toBe(false);
+  });
+
+  it('does not surface gateway startup disconnects as history errors', async () => {
+    vi.useFakeTimers();
+    const { createHistoryActions } = await import('@/stores/chat/history-actions');
+    const h = makeHarness({
+      currentSessionKey: 'agent:main:main',
+      messages: [
+        {
+          role: 'assistant',
+          content: 'existing',
+          timestamp: 1773281732,
+        },
+      ],
+    });
+    const actions = createHistoryActions(h.set as never, h.get as never);
+    h.set({ loadHistory: actions.loadHistory });
+
+    invokeIpcMock
+      .mockRejectedValueOnce(new Error('Gateway not connected'))
+      .mockResolvedValueOnce({ success: true, result: { messages: [] } });
+
+    await actions.loadHistory();
+
+    expect(h.read().messages.map((message) => message.content)).toEqual(['existing']);
+    expect(h.read().error).toBeNull();
+    expect(h.read().loading).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1500);
+
+    expect(invokeIpcMock).toHaveBeenCalledTimes(2);
   });
 
   it('filters out system messages from loaded history', async () => {

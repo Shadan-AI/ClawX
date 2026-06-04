@@ -223,6 +223,11 @@ export function startHostApiServer(ctx: HostApiContext, port = getPort('CLAWX_HO
         writeUpgradeError(socket, 503, 'Gateway Unavailable');
         return;
       }
+      if (!ctx.gatewayManager.isConnected()) {
+        logger.warn('[host-api] Gateway terminal WebSocket rejected: gateway not connected');
+        writeUpgradeError(socket, 503, 'Gateway Unavailable');
+        return;
+      }
 
       const gatewayPort = status.port || getPort('OPENCLAW_GATEWAY');
       const tls = status.tls === true;

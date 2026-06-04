@@ -1541,6 +1541,31 @@ export function NativeCliTerminal({
       }
       return;
     }
+    let gatewayConnected = false;
+    try {
+      gatewayConnected = await invokeIpc<boolean>('gateway:isConnected', []);
+    } catch {
+      gatewayConnected = false;
+    }
+    if (disposedRef.current) return;
+    if (!gatewayConnected) {
+      traceNativeCliTerminal('gateway-not-connected-terminal-connect-deferred', {
+        sessionKey,
+        agentId,
+        normalizedProvider,
+        gatewayState: statusResult?.state,
+      });
+      dispatchTerminalState({ type: 'gateway_unavailable' });
+      initialOutputPendingPaintRef.current = false;
+      if (!reconnectTimerRef.current) {
+        reconnectTimerRef.current = setTimeout(() => {
+          reconnectTimerRef.current = null;
+          void mountRef_cb.current.connect();
+        }, reconnectDelayRef.current);
+        reconnectDelayRef.current = Math.min(reconnectDelayRef.current * 2, 30_000);
+      }
+      return;
+    }
     const port = typeof statusResult?.port === 'number' && statusResult.port > 0 ? statusResult.port : 18789;
     const knownCliSessionId = storedCliSessionId;
     cliSessionIdRef.current = knownCliSessionId;

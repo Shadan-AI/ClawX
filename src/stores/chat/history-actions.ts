@@ -15,6 +15,14 @@ import { buildCronSessionHistoryPath, isCronSessionKey } from './cron-session-ut
 import type { RawMessage } from './types';
 import type { ChatGet, ChatSet, SessionHistoryActions } from './store-api';
 
+const GATEWAY_HISTORY_RETRY_MS = 1500;
+let gatewayHistoryRetryTimer: ReturnType<typeof setTimeout> | null = null;
+
+function isGatewayDisconnectedError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /Gateway not connected/i.test(message);
+}
+
 async function loadCronFallbackMessages(sessionKey: string, limit = 200): Promise<RawMessage[]> {
   if (!isCronSessionKey(sessionKey)) return [];
   try {
@@ -38,6 +46,14 @@ export function createHistoryActions(
       if (!quiet) set({ loading: true, error: null });
 
       const isCurrentSession = () => get().currentSessionKey === currentSessionKey;
+      const scheduleGatewayHistoryRetry = () => {
+        if (gatewayHistoryRetryTimer) return;
+        gatewayHistoryRetryTimer = setTimeout(() => {
+          gatewayHistoryRetryTimer = null;
+          if (!isCurrentSession()) return;
+          void get().loadHistory(true);
+        }, GATEWAY_HISTORY_RETRY_MS);
+      };
       const getPreviewMergeKey = (message: RawMessage): string => (
         `${message.id ?? ''}|${message.role}|${message.timestamp ?? ''}|${getMessageText(message.content)}`
       );
@@ -192,6 +208,11 @@ export function createHistoryActions(
           }
           applyLoadedMessages(rawMessages, thinkingLevel);
         } else {
+          if (isGatewayDisconnectedError(result.error)) {
+            applyLoadFailure(null);
+            scheduleGatewayHistoryRetry();
+            return;
+          }
           const fallbackMessages = await loadCronFallbackMessages(currentSessionKey, 200);
           if (fallbackMessages.length > 0) {
             applyLoadedMessages(fallbackMessages, null);
@@ -200,6 +221,11 @@ export function createHistoryActions(
           }
         }
       } catch (err) {
+        if (isGatewayDisconnectedError(err)) {
+          applyLoadFailure(null);
+          scheduleGatewayHistoryRetry();
+          return;
+        }
         console.warn('Failed to load chat history:', err);
         const errorMsg = String(err);
         
