@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import claudeLogo from '@/assets/claude.png';
 import { invokeIpc } from '@/lib/api-client';
-import { hostApiFetch } from '@/lib/host-api';
+import { createHostApiWebSocketUrl, hostApiFetch } from '@/lib/host-api';
 import { useAgentsStore } from '@/stores/agents';
 import { useChatStore } from '@/stores/chat';
 import { useModelsStore } from '@/stores/models';
@@ -1524,7 +1524,6 @@ export function NativeCliTerminal({
     }
     if (disposedRef.current) return;
     const port = typeof statusResult?.port === 'number' && statusResult.port > 0 ? statusResult.port : 18789;
-    const wsProtocol = statusResult?.tls === true ? 'wss' : 'ws';
     const knownCliSessionId = storedCliSessionId;
     cliSessionIdRef.current = knownCliSessionId;
     if (knownCliSessionId) {
@@ -1553,7 +1552,23 @@ export function NativeCliTerminal({
       params.set('resume', '1');
       params.set('sessionId', knownCliSessionId);
     }
-    const wsUrl = `${wsProtocol}://127.0.0.1:${port}/terminal?${params.toString()}`;
+    let wsUrl: string;
+    try {
+      wsUrl = await createHostApiWebSocketUrl(`/api/gateway/terminal?${params.toString()}`);
+    } catch {
+      // Host API token IPC not available yet - schedule reconnect.
+      if (disposedRef.current) return;
+      dispatchTerminalState({ type: 'gateway_unavailable' });
+      initialOutputPendingPaintRef.current = false;
+      if (!reconnectTimerRef.current) {
+        reconnectTimerRef.current = setTimeout(() => {
+          reconnectTimerRef.current = null;
+          void mountRef_cb.current.connect();
+        }, reconnectDelayRef.current);
+        reconnectDelayRef.current = Math.min(reconnectDelayRef.current * 2, 30_000);
+      }
+      return;
+    }
     traceNativeCliTerminal('websocket-create-terminal-stream', {
       sessionKey,
       agentId,
@@ -1561,6 +1576,8 @@ export function NativeCliTerminal({
       normalizedProvider,
       initialTerminalSize,
       wsUrl,
+      gatewayPort: port,
+      gatewayTls: statusResult?.tls === true,
       phase: knownCliSessionId ? 'resume' : 'start',
     });
     suppressReconnectRef.current = false;

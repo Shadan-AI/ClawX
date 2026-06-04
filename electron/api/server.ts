@@ -1,5 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import type { Socket } from 'node:net';
+import WebSocket, { WebSocketServer } from 'ws';
+import type { RawData } from 'ws';
 import { getPort } from '../utils/config';
 import { logger } from '../utils/logger';
 import type { HostApiContext } from './context';
@@ -55,9 +58,92 @@ export function getHostApiToken(): string {
   return hostApiToken;
 }
 
+function writeUpgradeError(socket: Socket, statusCode: number, message: string): void {
+  try {
+    socket.write(`HTTP/1.1 ${statusCode} ${message}\r\nConnection: close\r\n\r\n`);
+  } catch {
+    // ignore socket write failure
+  } finally {
+    socket.destroy();
+  }
+}
+
+function proxyGatewayTerminalWebSocket(
+  client: WebSocket,
+  upstreamUrl: string,
+  tls: boolean,
+): void {
+  const upstream = tls
+    ? new WebSocket(upstreamUrl, { rejectUnauthorized: false })
+    : new WebSocket(upstreamUrl);
+  const pendingClientMessages: Array<{ data: RawData; isBinary: boolean }> = [];
+  let closed = false;
+
+  const normalizeCloseCode = (code: number) => {
+    if (code >= 3000 && code <= 4999) return code;
+    if (code >= 1000 && code <= 1014 && code !== 1004 && code !== 1005 && code !== 1006) return code;
+    return 1011;
+  };
+
+  const closeBoth = (code = 1000, reason = '') => {
+    if (closed) return;
+    closed = true;
+    const closeCode = normalizeCloseCode(code);
+    const closeReason = reason.length > 120 ? reason.slice(0, 120) : reason;
+    try {
+      if (client.readyState === WebSocket.OPEN || client.readyState === WebSocket.CONNECTING) {
+        client.close(closeCode, closeReason);
+      }
+    } catch {
+      // ignore
+    }
+    try {
+      if (upstream.readyState === WebSocket.OPEN || upstream.readyState === WebSocket.CONNECTING) {
+        upstream.close(closeCode, closeReason);
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  client.on('message', (data, isBinary) => {
+    if (upstream.readyState === WebSocket.OPEN) {
+      upstream.send(data, { binary: isBinary });
+      return;
+    }
+    if (upstream.readyState === WebSocket.CONNECTING && pendingClientMessages.length < 100) {
+      pendingClientMessages.push({ data, isBinary });
+    }
+  });
+
+  upstream.on('open', () => {
+    for (const message of pendingClientMessages.splice(0)) {
+      if (upstream.readyState !== WebSocket.OPEN) break;
+      upstream.send(message.data, { binary: message.isBinary });
+    }
+  });
+
+  upstream.on('message', (data, isBinary) => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(data, { binary: isBinary });
+    }
+  });
+
+  client.on('close', (code, reason) => closeBoth(code, reason.toString()));
+  upstream.on('close', (code, reason) => closeBoth(code, reason.toString()));
+
+  const onError = (source: 'client' | 'gateway', error: Error) => {
+    logger.warn(`[host-api] Gateway terminal WebSocket ${source} error: ${error.message}`);
+    closeBoth(1011, `${source} websocket error`);
+  };
+  client.on('error', (error) => onError('client', error));
+  upstream.on('error', (error) => onError('gateway', error));
+}
+
 export function startHostApiServer(ctx: HostApiContext, port = getPort('CLAWX_HOST_API')): Server {
   // Generate a cryptographically random token for this session.
   hostApiToken = randomBytes(32).toString('hex');
+  const wsServer = new WebSocketServer({ noServer: true });
 
   const server = createServer(async (req, res) => {
     try {
@@ -108,6 +194,41 @@ export function startHostApiServer(ctx: HostApiContext, port = getPort('CLAWX_HO
     }
   });
 
+  server.on('upgrade', (req, socket, head) => {
+    try {
+      const requestUrl = new URL(req.url || '/', `http://127.0.0.1:${port}`);
+      if (requestUrl.pathname !== '/api/gateway/terminal') {
+        writeUpgradeError(socket, 404, 'Not Found');
+        return;
+      }
+
+      const token = requestUrl.searchParams.get('token') || '';
+      if (token !== hostApiToken) {
+        writeUpgradeError(socket, 401, 'Unauthorized');
+        return;
+      }
+
+      const status = ctx.gatewayManager.getStatus();
+      if (status.state !== 'running') {
+        writeUpgradeError(socket, 503, 'Gateway Unavailable');
+        return;
+      }
+
+      const gatewayPort = status.port || getPort('OPENCLAW_GATEWAY');
+      const tls = status.tls === true;
+      requestUrl.searchParams.delete('token');
+      const gatewayProtocol = tls ? 'wss' : 'ws';
+      const upstreamUrl = `${gatewayProtocol}://127.0.0.1:${gatewayPort}/terminal?${requestUrl.searchParams.toString()}`;
+
+      wsServer.handleUpgrade(req, socket, head, (client) => {
+        proxyGatewayTerminalWebSocket(client, upstreamUrl, tls);
+      });
+    } catch (error) {
+      logger.warn('[host-api] Gateway terminal WebSocket upgrade failed:', error);
+      writeUpgradeError(socket, 500, 'Internal Server Error');
+    }
+  });
+
   server.on('error', (error: NodeJS.ErrnoException) => {
     if (error.code === 'EACCES' || error.code === 'EADDRINUSE') {
       logger.error(
@@ -118,6 +239,10 @@ export function startHostApiServer(ctx: HostApiContext, port = getPort('CLAWX_HO
     } else {
       logger.error('Host API server error:', error);
     }
+  });
+
+  server.on('close', () => {
+    wsServer.close();
   });
 
   server.listen(port, '127.0.0.1', () => {

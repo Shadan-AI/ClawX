@@ -226,6 +226,18 @@ export function createHostEventSource(path = '/api/events'): EventSource {
   return new EventSource(`${HOST_API_BASE}${path}${separator}${tokenParam}`);
 }
 
+export async function createHostApiWebSocketUrl(path: string): Promise<string> {
+  if (!path.startsWith('/')) {
+    throw new Error(`Invalid Host API WebSocket path: ${path}`);
+  }
+  const token = await getHostApiToken();
+  if (!token) {
+    throw new Error('Host API token is unavailable');
+  }
+  const separator = path.includes('?') ? '&' : '?';
+  return `${HOST_API_BASE.replace(/^http:/, 'ws:')}${path}${separator}token=${encodeURIComponent(token)}`;
+}
+
 export function getHostApiBase(): string {
   return HOST_API_BASE;
 }

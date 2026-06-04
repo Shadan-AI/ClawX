@@ -116,4 +116,19 @@ describe('host-api', () => {
     await expect(hostApiFetch('/api/test')).rejects.toThrow('Invalid IPC channel: hostapi:fetch');
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it('creates authenticated Host API WebSocket urls', async () => {
+    invokeIpcMock.mockResolvedValueOnce('session-token');
+
+    const { createHostApiWebSocketUrl } = await import('@/lib/host-api');
+    const url = await createHostApiWebSocketUrl('/api/gateway/terminal?agentId=a1');
+
+    expect(url).toBe('ws://127.0.0.1:13210/api/gateway/terminal?agentId=a1&token=session-token');
+    expect(invokeIpcMock).toHaveBeenCalledWith('hostapi:token');
+  });
+
+  it('rejects invalid Host API WebSocket paths', async () => {
+    const { createHostApiWebSocketUrl } = await import('@/lib/host-api');
+    await expect(createHostApiWebSocketUrl('api/gateway/terminal')).rejects.toThrow('Invalid Host API WebSocket path');
+  });
 });
