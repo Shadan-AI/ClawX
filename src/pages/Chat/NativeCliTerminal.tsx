@@ -161,30 +161,48 @@ function traceNativeCliTerminal(stage: string, payload: Record<string, unknown>)
   console.info(`[native-cli-terminal:trace] ${stage}`, payload);
 }
 
-// Blank Claude Code's startup-header printable characters in place, preserving
-// every ANSI control byte and `\r\n`. This only changes printable chars on
-// rows that contain a banner-unique signature, so Claude's cursor coordinates
-// (every absolute move, scroll region, line-clear) stay byte-for-byte
-// identical — no garbling, no blank-band desync, no row hacks.
+// Blank Claude Code's startup-header AND persistent footer printable
+// characters in place, preserving every ANSI control byte and `\r\n`. This
+// only changes printable chars on rows that contain a Claude-unique
+// signature, so Claude's cursor coordinates (every absolute move, scroll
+// region, line-clear) stay byte-for-byte identical — no garbling, no
+// blank-band desync, no row hacks.
 //
-// Trade-off: the rows the banner used to occupy stay visible but are blank.
-// Claude's own layout still anchors below the banner footprint, so the live
-// region behaves exactly as before; we simply hide the printable characters.
+// Trade-off: the rows the banner/footer used to occupy stay visible but are
+// blank. Claude's own layout still anchors around them so the live region
+// (user echo, spinner, response output) behaves exactly as before; we simply
+// hide the chrome characters.
 //
-// Banner-unique signatures (none ever appear in normal Claude conversation):
-//   - mascot glyphs: U+2580–U+259F box-drawing characters mixed into the
-//     three "▐▛███▜▌" / "▝▜█████▛▘" / "▘▘ ▝▝" rows.
-//   - "Claude Code v" — appears only in the title row of the minimal logo.
-//   - " · API Usage Billing" — appears only in the billing row.
+// Claude-unique signatures (none ever appear in normal conversation text):
+//   Banner rows:
+//     - mascot glyphs: U+2580–U+259F box-drawing characters mixed into the
+//       three "▐▛███▜▌" / "▝▜█████▛▘" / "▘▘ ▝▝" rows.
+//     - "Claude Code v" — appears only in the title row of the minimal logo.
+//     - " · API Usage Billing" / " · Subscription" — billing row only.
+//   Footer rows:
+//     - long runs of U+2500 / U+2501 — separator rows above and below the
+//       input prompt.
+//     - "⏵⏵ <permission>" status row.
+//     - "● <effort> · /effort" row tail.
+//     - the empty input-prompt row identified by its inverse-video cursor
+//       SGR sequence (matched on the raw line, not the cleaned one).
 const CLAUDE_BANNER_LINE_SIGNATURES: RegExp[] = [
-  /[▀-▟]{2,}/,          // mascot row (any banner row)
+  /[▀-▟]{2,}/,                    // mascot row (any banner row)
   /Claude Code v\d/,              // "Claude Code v2.1.162"
   /· API Usage Billing/,          // billing line
   /· Subscription/,               // alternate billing label seen in some plans
   /\\workspace-[A-Za-z0-9_-]+$/,  // cwd row tail (Windows path inside banner)
+  /^\s*[─━]{12,}\s*$/u,                                                  // separator rows
+  /⏵⏵\s+(?:bypass permissions|accept edits|plan mode|default mode|read[- ]only)/iu,
+  /●\s+(?:low|medium|high|max|none)\s*·\s*\/effort/iu,
+  /shift\+tab to cycle/iu,
+  /esc to interrupt/iu,
 ];
 
-function isClaudeBannerLine(rawLine: string): boolean {
+const CLAUDE_FOOTER_INPUT_PROMPT_RE = /^\s*❯\s+\x1b\[30m\x1b\[47m\s\x1b\[m/u;
+
+function isClaudeChromeLine(rawLine: string): boolean {
+  if (CLAUDE_FOOTER_INPUT_PROMPT_RE.test(rawLine)) return true;
   const cleaned = rawLine
     .replace(TERMINAL_OSC_PATTERN, '')
     .replace(TERMINAL_CSI_PATTERN, '')
@@ -240,7 +258,7 @@ function maskClaudeBannerInChunk(chunk: string): string {
   for (let p = 0; p < parts.length; p += 1) {
     const part = parts[p];
     if (part === '\r\n') continue;
-    if (isClaudeBannerLine(part)) {
+    if (isClaudeChromeLine(part)) {
       parts[p] = blankPrintableInLine(part);
       masked = true;
     }
