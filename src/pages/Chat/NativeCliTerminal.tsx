@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import {
   Loader2,
 } from 'lucide-react';
+import claudeLogo from '@/assets/claude.png';
 import { invokeIpc } from '@/lib/api-client';
 import { hostApiFetch } from '@/lib/host-api';
 import { useAgentsStore } from '@/stores/agents';
@@ -639,6 +641,103 @@ function NativeCliTerminalStyles() {
         animation: native-cli-spin .8s linear infinite;
         color: #2563eb;
       }
+      .native-cli-terminal__welcome {
+        position: absolute;
+        top: 20px;
+        right: 0;
+        bottom: 132px;
+        left: 0;
+        z-index: 15;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0 24px;
+        pointer-events: none;
+        animation: native-cli-welcome-fade-in .35s ease-out both;
+      }
+      .native-cli-terminal__welcome-inner {
+        display: flex;
+        align-items: center;
+        gap: 28px;
+        max-width: min(680px, calc(100% - 48px));
+        pointer-events: auto;
+      }
+      .native-cli-terminal__welcome-logo {
+        flex: 0 0 auto;
+        width: 96px;
+        height: 96px;
+        object-fit: contain;
+        user-select: none;
+        animation: native-cli-welcome-logo-in .6s cubic-bezier(.22,1,.36,1) both;
+      }
+      .native-cli-terminal__welcome-body {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 18px;
+        min-width: 0;
+      }
+      .native-cli-terminal__welcome-title {
+        margin: 0;
+        font-family: Georgia, Cambria, "Times New Roman", Times, serif;
+        font-size: clamp(22px, 3.4vw, 36px);
+        font-weight: 400;
+        line-height: 1.2;
+        color: hsl(var(--foreground) / .85);
+        letter-spacing: -.01em;
+      }
+      .native-cli-terminal__welcome-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+      .native-cli-terminal__welcome-chip {
+        padding: 6px 14px;
+        border-radius: 9999px;
+        border: 1px solid hsl(var(--foreground) / .12);
+        background: hsl(var(--foreground) / .03);
+        color: hsl(var(--foreground) / .72);
+        font-size: 13px;
+        font-weight: 500;
+        line-height: 1.4;
+        cursor: pointer;
+        transition: transform .18s ease, background-color .18s ease, color .18s ease, border-color .18s ease;
+      }
+      .native-cli-terminal__welcome-chip:hover {
+        background: hsl(var(--foreground) / .07);
+        color: hsl(var(--foreground) / .9);
+        border-color: hsl(var(--foreground) / .18);
+        transform: translateY(-1px);
+      }
+      .native-cli-terminal__welcome-chip:active {
+        transform: translateY(0);
+      }
+      @keyframes native-cli-welcome-fade-in {
+        from { opacity: 0; transform: translateY(6px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+      @keyframes native-cli-welcome-logo-in {
+        from { opacity: 0; transform: scale(.86); }
+        to { opacity: 1; transform: scale(1); }
+      }
+      @media (max-width: 520px) {
+        .native-cli-terminal__welcome-inner {
+          flex-direction: column;
+          align-items: center;
+          text-align: center;
+          gap: 16px;
+        }
+        .native-cli-terminal__welcome-body {
+          align-items: center;
+        }
+        .native-cli-terminal__welcome-actions {
+          justify-content: center;
+        }
+        .native-cli-terminal__welcome-logo {
+          width: 72px;
+          height: 72px;
+        }
+      }
       .native-cli-terminal__composer {
         position: absolute;
         left: 0;
@@ -750,6 +849,11 @@ export function NativeCliTerminal({
   const [loadingExiting, setLoadingExiting] = useState(false);
   const [inputShellState, setInputShellState] = useState<InputShellState>('auto');
   const inputShellStateRef = useRef<InputShellState>(inputShellState);
+  // Welcome overlay shown on top of xterm before the user's first message.
+  // Initial value is set in the mount-effect once we know whether the session
+  // is being resumed (resumed sessions skip the overlay entirely).
+  const [welcomeOverlayVisible, setWelcomeOverlayVisible] = useState(true);
+  const { t } = useTranslation('chat');
 
   const normalizedProvider = useMemo(() => normalizeProvider(cliSessionProvider), [cliSessionProvider]);
   const agent = useAgentsStore((state) => state.agents.find((entry) => entry.id === agentId));
@@ -1340,6 +1444,7 @@ export function NativeCliTerminal({
     const isFirstUserInput = !userHasInteractedRef.current;
     if (isFirstUserInput) {
       userHasInteractedRef.current = true;
+      setWelcomeOverlayVisible(false);
       traceNativeCliTerminal('first-user-input-no-local-terminal-reset', {
         sessionKey,
         source: 'shell-compose',
@@ -1374,6 +1479,7 @@ export function NativeCliTerminal({
     if (ws?.readyState !== WebSocket.OPEN) return;
     if (!userHasInteractedRef.current) {
       userHasInteractedRef.current = true;
+      setWelcomeOverlayVisible(false);
       traceNativeCliTerminal('first-user-input-no-local-terminal-reset', {
         sessionKey,
         source: 'user-text',
@@ -1472,6 +1578,10 @@ export function NativeCliTerminal({
     cliSessionIdRef.current = initialCliSessionId;
     userHasInteractedRef.current = Boolean(cliSessionIdRef.current || persisted.userHasInteracted);
     bufferRef.current = initialCliSessionId ? '' : persisted.buffer ?? '';
+    // Hide the welcome overlay immediately for resumed sessions (the user has
+    // history and doesn't need a greeting). Fresh sessions show it until the
+    // first send.
+    setWelcomeOverlayVisible(!userHasInteractedRef.current);
     dispatchTerminalState({
       type: 'connect_requested',
       phase: initialCliSessionId ? 'resuming' : 'starting',
@@ -1614,6 +1724,40 @@ export function NativeCliTerminal({
       <NativeCliTerminalStyles />
       <div ref={areaRef} className="native-cli-terminal__area">
         <div ref={mountRef} className="native-cli-terminal__mount" />
+        {welcomeOverlayVisible && nativeCliTerminalCanSend(terminalState) ? (
+          <div className="native-cli-terminal__welcome" role="presentation">
+            <div className="native-cli-terminal__welcome-inner">
+              <img
+                src={claudeLogo}
+                alt=""
+                aria-hidden="true"
+                className="native-cli-terminal__welcome-logo"
+                draggable={false}
+              />
+              <div className="native-cli-terminal__welcome-body">
+                <h1 className="native-cli-terminal__welcome-title">
+                  {t('welcome.subtitle')}
+                </h1>
+                <div className="native-cli-terminal__welcome-actions">
+                  {[
+                    { key: 'askQuestions', label: t('welcome.askQuestions') },
+                    { key: 'creativeTasks', label: t('welcome.creativeTasks') },
+                    { key: 'brainstorming', label: t('welcome.brainstorming') },
+                  ].map(({ key, label }) => (
+                    <button
+                      key={key}
+                      type="button"
+                      className="native-cli-terminal__welcome-chip"
+                      onClick={() => sendText(label)}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
         {displayedLoadingLabel ? (
           <div
             className={`native-cli-terminal__loading${loadingExiting ? ' native-cli-terminal__loading--exiting' : ''}`}
