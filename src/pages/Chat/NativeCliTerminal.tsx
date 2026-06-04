@@ -1652,9 +1652,18 @@ export function NativeCliTerminal({
       }
     };
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       if (disposedRef.current) return;
       if (wsRef.current !== ws) return;
+      traceNativeCliTerminal('websocket-closed-terminal-stream', {
+        sessionKey,
+        wsUrl,
+        code: event.code,
+        reason: event.reason,
+        wasClean: event.wasClean,
+        opened: openedAt > 0,
+        openDurationMs: openedAt > 0 ? Date.now() - openedAt : 0,
+      });
       if (wsRef.current === ws) wsRef.current = null;
       mountRef_cb.current.setCliRespondingState(false);
       dispatchTerminalState({ type: 'websocket_closed' });
@@ -1681,9 +1690,16 @@ export function NativeCliTerminal({
       }
     };
 
-    ws.onerror = () => {
+    ws.onerror = (event) => {
       if (disposedRef.current) return;
       if (wsRef.current !== ws) return;
+      traceNativeCliTerminal('websocket-error-terminal-stream', {
+        sessionKey,
+        wsUrl,
+        eventType: event.type,
+        readyState: ws.readyState,
+        opened: openedAt > 0,
+      });
       mountRef_cb.current.setCliRespondingState(false);
       dispatchTerminalState({ type: 'websocket_error' });
       initialOutputPendingPaintRef.current = false;

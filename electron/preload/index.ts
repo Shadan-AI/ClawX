@@ -23,6 +23,7 @@ const electronAPI = {
         'gateway:rpc',
         'gateway:httpProxy',
         'hostapi:fetch',
+        'hostapi:info',
         'hostapi:token',
         'gateway:health',
         'gateway:getControlUiUrl',

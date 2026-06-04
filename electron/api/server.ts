@@ -52,10 +52,16 @@ const routeHandlers: RouteHandler[] = [
  * sufficient because browsers attach the Origin header but not a secret).
  */
 let hostApiToken: string = '';
+let hostApiPort = getPort('CLAWX_HOST_API');
 
 /** Retrieve the current Host API auth token (for use by IPC proxy). */
 export function getHostApiToken(): string {
   return hostApiToken;
+}
+
+/** Retrieve the actual Host API listening port. */
+export function getHostApiPort(): number {
+  return hostApiPort;
 }
 
 function writeUpgradeError(socket: Socket, statusCode: number, message: string): void {
@@ -143,7 +149,9 @@ function proxyGatewayTerminalWebSocket(
 export function startHostApiServer(ctx: HostApiContext, port = getPort('CLAWX_HOST_API')): Server {
   // Generate a cryptographically random token for this session.
   hostApiToken = randomBytes(32).toString('hex');
+  hostApiPort = port;
   const wsServer = new WebSocketServer({ noServer: true });
+  let retriedEphemeralPort = false;
 
   const server = createServer(async (req, res) => {
     try {
@@ -231,8 +239,23 @@ export function startHostApiServer(ctx: HostApiContext, port = getPort('CLAWX_HO
 
   server.on('error', (error: NodeJS.ErrnoException) => {
     if (error.code === 'EACCES' || error.code === 'EADDRINUSE') {
+      if (!retriedEphemeralPort) {
+        retriedEphemeralPort = true;
+        logger.warn(
+          `Host API server failed to bind port ${hostApiPort}: ${error.message}. ` +
+          'Retrying on an available localhost port.',
+        );
+        setImmediate(() => {
+          try {
+            server.listen(0, '127.0.0.1');
+          } catch (retryError) {
+            logger.error('Host API server retry failed:', retryError);
+          }
+        });
+        return;
+      }
       logger.error(
-        `Host API server failed to bind port ${port}: ${error.message}. ` +
+        `Host API server failed to bind port ${hostApiPort}: ${error.message}. ` +
         'On Windows this is often caused by Hyper-V reserving the port range. ' +
         `Set CLAWX_PORT_CLAWX_HOST_API env var to override the default port.`,
       );
@@ -245,9 +268,15 @@ export function startHostApiServer(ctx: HostApiContext, port = getPort('CLAWX_HO
     wsServer.close();
   });
 
-  server.listen(port, '127.0.0.1', () => {
-    logger.info(`Host API server listening on http://127.0.0.1:${port}`);
+  server.on('listening', () => {
+    const address = server.address();
+    if (address && typeof address === 'object') {
+      hostApiPort = address.port;
+    }
+    logger.info(`Host API server listening on http://127.0.0.1:${hostApiPort}`);
   });
+
+  server.listen(port, '127.0.0.1');
 
   return server;
 }

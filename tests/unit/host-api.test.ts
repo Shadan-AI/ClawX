@@ -118,13 +118,13 @@ describe('host-api', () => {
   });
 
   it('creates authenticated Host API WebSocket urls', async () => {
-    invokeIpcMock.mockResolvedValueOnce('session-token');
+    invokeIpcMock.mockResolvedValueOnce({ port: 14321, token: 'session-token' });
 
     const { createHostApiWebSocketUrl } = await import('@/lib/host-api');
     const url = await createHostApiWebSocketUrl('/api/gateway/terminal?agentId=a1');
 
-    expect(url).toBe('ws://127.0.0.1:13210/api/gateway/terminal?agentId=a1&token=session-token');
-    expect(invokeIpcMock).toHaveBeenCalledWith('hostapi:token');
+    expect(url).toBe('ws://127.0.0.1:14321/api/gateway/terminal?agentId=a1&token=session-token');
+    expect(invokeIpcMock).toHaveBeenCalledWith('hostapi:info');
   });
 
   it('rejects invalid Host API WebSocket paths', async () => {

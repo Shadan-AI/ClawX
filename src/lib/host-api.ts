@@ -7,6 +7,7 @@ const HOST_API_BASE = `http://127.0.0.1:${HOST_API_PORT}`;
 
 /** Cached Host API auth token, fetched once from the main process via IPC. */
 let cachedHostApiToken: string | null = null;
+let cachedHostApiInfo: { port: number; token: string } | null = null;
 
 async function getHostApiToken(): Promise<string> {
   if (cachedHostApiToken) return cachedHostApiToken;
@@ -16,6 +17,22 @@ async function getHostApiToken(): Promise<string> {
     cachedHostApiToken = '';
   }
   return cachedHostApiToken ?? '';
+}
+
+async function getHostApiInfo(): Promise<{ port: number; token: string }> {
+  if (cachedHostApiInfo) return cachedHostApiInfo;
+  try {
+    const info = await invokeIpc<{ port?: unknown; token?: unknown }>('hostapi:info');
+    const port = typeof info?.port === 'number' && info.port > 0 ? info.port : HOST_API_PORT;
+    const token = typeof info?.token === 'string' ? info.token : '';
+    cachedHostApiInfo = { port, token };
+    cachedHostApiToken = token;
+    return cachedHostApiInfo;
+  } catch {
+    const token = await getHostApiToken();
+    cachedHostApiInfo = { port: HOST_API_PORT, token };
+    return cachedHostApiInfo;
+  }
 }
 
 type HostApiProxyResponse = {
@@ -222,20 +239,21 @@ export function createHostEventSource(path = '/api/events'): EventSource {
   // EventSource does not support custom headers, so pass the auth token
   // as a query parameter. The server accepts both mechanisms.
   const separator = path.includes('?') ? '&' : '?';
-  const tokenParam = `token=${encodeURIComponent(cachedHostApiToken ?? '')}`;
-  return new EventSource(`${HOST_API_BASE}${path}${separator}${tokenParam}`);
+  const tokenParam = `token=${encodeURIComponent(cachedHostApiInfo?.token ?? cachedHostApiToken ?? '')}`;
+  const port = cachedHostApiInfo?.port ?? HOST_API_PORT;
+  return new EventSource(`http://127.0.0.1:${port}${path}${separator}${tokenParam}`);
 }
 
 export async function createHostApiWebSocketUrl(path: string): Promise<string> {
   if (!path.startsWith('/')) {
     throw new Error(`Invalid Host API WebSocket path: ${path}`);
   }
-  const token = await getHostApiToken();
+  const { port, token } = await getHostApiInfo();
   if (!token) {
     throw new Error('Host API token is unavailable');
   }
   const separator = path.includes('?') ? '&' : '?';
-  return `${HOST_API_BASE.replace(/^http:/, 'ws:')}${path}${separator}token=${encodeURIComponent(token)}`;
+  return `ws://127.0.0.1:${port}${path}${separator}token=${encodeURIComponent(token)}`;
 }
 
 export function getHostApiBase(): string {
