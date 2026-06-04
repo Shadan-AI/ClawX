@@ -1123,8 +1123,19 @@ async function batchSyncGatewayConfig(appSettings: Awaited<ReturnType<typeof get
       const allowedOrigins = Array.isArray(controlUi.allowedOrigins)
         ? (controlUi.allowedOrigins as unknown[]).filter((value): value is string => typeof value === 'string')
         : [];
-      if (!allowedOrigins.includes('file://')) {
-        controlUi.allowedOrigins = [...allowedOrigins, 'file://'];
+      const requiredOrigins = [
+        'file://',
+        'null',
+        'http://127.0.0.1:5173',
+        'http://localhost:5173',
+        'http://127.0.0.1:18789',
+        'http://localhost:18789',
+        'https://127.0.0.1:18789',
+        'https://localhost:18789',
+      ];
+      const missingOrigins = requiredOrigins.filter((origin) => !allowedOrigins.includes(origin));
+      if (missingOrigins.length > 0) {
+        controlUi.allowedOrigins = [...allowedOrigins, ...missingOrigins];
         modified = true;
       }
       if (gateway.controlUi !== controlUi) {
@@ -1231,6 +1242,14 @@ async function batchSyncGatewayConfig(appSettings: Awaited<ReturnType<typeof get
           ? (cui.allowedOrigins as unknown[]).filter((x): x is string => typeof x === 'string')
           : [];
         const staticOrigins = [
+          'file://',
+          'null',
+          'http://127.0.0.1:5173',
+          'http://localhost:5173',
+          'http://127.0.0.1:18789',
+          'http://localhost:18789',
+          'https://127.0.0.1:18789',
+          'https://localhost:18789',
           'https://im.shadanai.com',
           'https://shadanai.com',
         ];

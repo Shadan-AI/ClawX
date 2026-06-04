@@ -1228,6 +1228,14 @@ export async function ensureStaticOriginsInConfig(): Promise<void> {
       ? (cui.allowedOrigins as unknown[]).filter((x): x is string => typeof x === 'string')
       : [];
     const staticOrigins = [
+      'file://',
+      'null',
+      'http://127.0.0.1:5173',
+      'http://localhost:5173',
+      'http://127.0.0.1:18789',
+      'http://localhost:18789',
+      'https://127.0.0.1:18789',
+      'https://localhost:18789',
       'https://im.shadanai.com',
       'https://shadanai.com',
     ];
@@ -1369,8 +1377,8 @@ export async function syncGatewayTokenToConfig(token: string): Promise<void> {
     auth.token = token;
     gateway.auth = auth;
 
-    // Packaged ClawX loads the renderer from file://, so the gateway must allow
-    // that origin for the chat WebSocket handshake.
+    // Packaged ClawX loads the renderer from file://, which Chromium may send
+    // as Origin: null. Dev builds and direct control UI pages use localhost.
     const controlUi = (
       gateway.controlUi && typeof gateway.controlUi === 'object'
         ? { ...(gateway.controlUi as Record<string, unknown>) }
@@ -1379,8 +1387,19 @@ export async function syncGatewayTokenToConfig(token: string): Promise<void> {
     const allowedOrigins = Array.isArray(controlUi.allowedOrigins)
       ? (controlUi.allowedOrigins as unknown[]).filter((value): value is string => typeof value === 'string')
       : [];
-    if (!allowedOrigins.includes('file://')) {
-      controlUi.allowedOrigins = [...allowedOrigins, 'file://'];
+    const requiredOrigins = [
+      'file://',
+      'null',
+      'http://127.0.0.1:5173',
+      'http://localhost:5173',
+      'http://127.0.0.1:18789',
+      'http://localhost:18789',
+      'https://127.0.0.1:18789',
+      'https://localhost:18789',
+    ];
+    const missingOrigins = requiredOrigins.filter((origin) => !allowedOrigins.includes(origin));
+    if (missingOrigins.length > 0) {
+      controlUi.allowedOrigins = [...allowedOrigins, ...missingOrigins];
     }
     gateway.controlUi = controlUi;
 
