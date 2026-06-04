@@ -336,6 +336,22 @@ async function ensureClaudeCodeProjectTrust(claudeConfigDir: string, workspacePa
     config.lastOnboardingVersion = 'clawx-managed';
   }
 
+  // Suppress Claude Code's startup welcome box (the "Welcome back" + tips card).
+  // Claude renders the minimal one-line logo instead of the full box only when it
+  // believes there are no unseen release notes AND it is past the startup-tips
+  // window. The full box is load-bearing in Claude's inline layout: it anchors
+  // every later conversation redraw at an absolute row (banner height + 1), so it
+  // cannot be stripped downstream without leaving a blank band. We instead make
+  // Claude take its own minimal-logo branch:
+  //   - lastReleaseNotesSeen: a high sentinel version means no changelog entry is
+  //     ever "newer", so hasReleaseNotes stays false across Claude updates.
+  //   - numStartups: pushed past the tips threshold so the getting-started tips
+  //     are not appended to the header.
+  config.lastReleaseNotesSeen = '9999.0.0';
+  config.numStartups = typeof config.numStartups === 'number'
+    ? Math.max(config.numStartups, 1000)
+    : 1000;
+
   const projects = config.projects && typeof config.projects === 'object' && !Array.isArray(config.projects)
     ? { ...config.projects as Record<string, unknown> }
     : {};

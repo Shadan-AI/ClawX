@@ -36,18 +36,6 @@ interface GatewayStatus {
 
 type InputShellState = 'collapsed' | 'auto' | 'focused';
 
-type TerminalStreamMarker =
-  | { kind: 'turn_start'; conversationId: string; turnId: string; userText: string }
-  | { kind: 'turn_idle'; conversationId: string; turnId: string }
-  | { kind: 'turn_end'; conversationId: string; turnId: string };
-
-type TerminalTurn = {
-  id: string;
-  conversationId: string;
-  userText: string;
-  state: 'active' | 'idle' | 'closed';
-};
-
 type PersistedNativeCliSession = {
   key: string;
   cliSessionId?: string;
@@ -71,7 +59,6 @@ const RUNTIME_NATIVE_CLI_SESSION_PATH = '/api/runtime/sessions/native-cli';
 const RUNTIME_NATIVE_CLI_RESOLVE_PATH = '/api/runtime/sessions/native-cli/resolve';
 const TERMINAL_STREAM_MARKER_PREFIX = '\x1b]777;OPENCLAW;';
 const TERMINAL_STREAM_MARKER_SUFFIX = '\x07';
-const TERMINAL_STREAM_OSC_PREFIX = 'OPENCLAW;';
 const TERMINAL_SHELL_PASSTHROUGH_BUFFER_CHARS = 12_000;
 const TERMINAL_SHELL_PASSTHROUGH_SIGNATURES = [
   '? for shortcuts',
@@ -107,7 +94,6 @@ const TERMINAL_SHELL_PASSTHROUGH_WRAPPERS = new Set(['bun', 'bunx', 'corepack', 
 const TERMINAL_SHELL_PASSTHROUGH_WRAPPER_SUBCOMMANDS = new Set(['dlx', 'exec', 'run', 'x']);
 const TERMINAL_MIN_COLS = 40;
 const TERMINAL_MAX_REASONABLE_CELL_WIDTH = 32;
-const TERMINAL_USER_ECHO_DEBOUNCE_MS = 96;
 const TERMINAL_ESCAPE = String.fromCharCode(27);
 const TERMINAL_BELL = String.fromCharCode(7);
 const TERMINAL_OSC_PATTERN = new RegExp(`${TERMINAL_ESCAPE}\\][^${TERMINAL_BELL}]*(?:${TERMINAL_BELL}|${TERMINAL_ESCAPE}\\\\)`, 'g');
@@ -142,65 +128,124 @@ function previewNativeCliTerminalChunk(text: string, limit = NATIVE_CLI_TERMINAL
   return preview.length > limit ? `${preview.slice(0, limit)}…` : preview;
 }
 
+function previewNativeCliTerminalChunkWithAnsi(text: string, limit = NATIVE_CLI_TERMINAL_DEBUG_PREVIEW_LIMIT): string {
+  const preview = text
+    .replace(new RegExp(TERMINAL_ESCAPE, 'g'), '\\x1b')
+    .replace(new RegExp(TERMINAL_BELL, 'g'), '\\x07')
+    .replace(/\r/g, '\\r')
+    .replace(/\n/g, '\\n')
+    .replace(/\t/g, '\\t');
+  return preview.length > limit ? `${preview.slice(0, limit)}…` : preview;
+}
+
+function terminalControlSummary(text: string) {
+  const csi = [...text.matchAll(/\x1b\[[0-?]*[ -/]*[@-~]/g)]
+    .map((match) => match[0].replace(/\x1b/g, '\\x1b'));
+  const osc = [...text.matchAll(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g)]
+    .map((match) => match[0].replace(/\x1b/g, '\\x1b').replace(/\x07/g, '\\x07'));
+  return {
+    csiCount: csi.length,
+    csiFirst: csi.slice(0, 24),
+    oscCount: osc.length,
+    oscFirst: osc.slice(0, 8),
+    carriageReturns: (text.match(/\r/g) ?? []).length,
+    newlines: (text.match(/\n/g) ?? []).length,
+    backspaces: (text.match(/\x08/g) ?? []).length,
+    cursorAddressing: csi.filter((entry) => /\\x1b\[[0-9;?]*[HfGdABCDJK]/.test(entry)).slice(0, 24),
+  };
+}
+
 function traceNativeCliTerminal(stage: string, payload: Record<string, unknown>): void {
   // Temporary deep trace: shows exactly which data reaches the xterm UI and from where.
   // Keep this as console.info (not console.debug) so it is visible with default DevTools filters.
   console.info(`[native-cli-terminal:trace] ${stage}`, payload);
 }
 
-type StripClaudeStartupChromeResult = {
-  text: string;
-  stripped: boolean;
-  reason?: string;
-};
+// Blank Claude Code's startup-header printable characters in place, preserving
+// every ANSI control byte and `\r\n`. This only changes printable chars on
+// rows that contain a banner-unique signature, so Claude's cursor coordinates
+// (every absolute move, scroll region, line-clear) stay byte-for-byte
+// identical — no garbling, no blank-band desync, no row hacks.
+//
+// Trade-off: the rows the banner used to occupy stay visible but are blank.
+// Claude's own layout still anchors below the banner footprint, so the live
+// region behaves exactly as before; we simply hide the printable characters.
+//
+// Banner-unique signatures (none ever appear in normal Claude conversation):
+//   - mascot glyphs: U+2580–U+259F box-drawing characters mixed into the
+//     three "▐▛███▜▌" / "▝▜█████▛▘" / "▘▘ ▝▝" rows.
+//   - "Claude Code v" — appears only in the title row of the minimal logo.
+//   - " · API Usage Billing" — appears only in the billing row.
+const CLAUDE_BANNER_LINE_SIGNATURES: RegExp[] = [
+  /[▀-▟]{2,}/,          // mascot row (any banner row)
+  /Claude Code v\d/,              // "Claude Code v2.1.162"
+  /· API Usage Billing/,          // billing line
+  /· Subscription/,               // alternate billing label seen in some plans
+  /\\workspace-[A-Za-z0-9_-]+$/,  // cwd row tail (Windows path inside banner)
+];
 
-function cleanTerminalLineForDetection(line: string): string {
-  return line
+function isClaudeBannerLine(rawLine: string): boolean {
+  const cleaned = rawLine
     .replace(TERMINAL_OSC_PATTERN, '')
     .replace(TERMINAL_CSI_PATTERN, '')
-    .replace(TERMINAL_CHARSET_PATTERN, '')
-    .replace(/[\u0000-\u001f\u007f]/g, '')
-    .trim();
+    .replace(TERMINAL_CHARSET_PATTERN, '');
+  return CLAUDE_BANNER_LINE_SIGNATURES.some((re) => re.test(cleaned));
 }
 
-function stripClaudeStartupChromeFromVisibleText(text: string): StripClaudeStartupChromeResult {
-  const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-  const lines = normalized.split('\n');
-  const cleanedLines = lines.map(cleanTerminalLineForDetection);
-  const headerIndex = cleanedLines.findIndex((line) => (
-    /Claude\s+Code/i.test(line) && /[╭┌┏─━]/.test(line)
-  ));
-
-  if (headerIndex < 0) return { text, stripped: false };
-
-  const conversationIndex = cleanedLines.findIndex((line, index) => (
-    index > headerIndex && /^\s*(?:❯\s*\S|>\s+\S|●\s+(?!high\b)\S|✻\s+\S)/i.test(line)
-  ));
-
-  let removeEndExclusive = lines.length;
-  let reason = 'header-to-end';
-  if (conversationIndex >= 0) {
-    removeEndExclusive = conversationIndex;
-    reason = 'conversation-boundary';
+function blankPrintableInLine(rawLine: string): string {
+  // Walk the line, skipping ANSI sequences verbatim, and replace every
+  // printable codepoint with a space. Width-preserving: one input char (in
+  // logical "columns") -> one space. Wide-character handling is unnecessary
+  // here because the banner uses only single-cell glyphs.
+  let i = 0;
+  let out = '';
+  while (i < rawLine.length) {
+    const ch = rawLine[i];
+    const code = ch.charCodeAt(0);
+    // ESC: copy the whole CSI/OSC/charset sequence as-is.
+    if (code === 27) {
+      // Try CSI ESC [ ... letter
+      const csi = rawLine.slice(i).match(/^\x1b\[[0-?]*[ -/]*[@-~]/);
+      if (csi) { out += csi[0]; i += csi[0].length; continue; }
+      // OSC ESC ] ... BEL or ESC \
+      const osc = rawLine.slice(i).match(/^\x1b\][^\x07]*(?:\x07|\x1b\\)/);
+      if (osc) { out += osc[0]; i += osc[0].length; continue; }
+      // Charset ESC ( X / ESC ) X
+      const charset = rawLine.slice(i).match(/^\x1b[()][A-Za-z0-9]/);
+      if (charset) { out += charset[0]; i += charset[0].length; continue; }
+      // Lone ESC: keep it.
+      out += ch; i += 1; continue;
+    }
+    // Other C0/C1 controls (BS, BEL, etc.): keep verbatim.
+    if (code < 32 || code === 127) { out += ch; i += 1; continue; }
+    // Printable: replace with a space (preserves cell width for the banner's
+    // single-cell glyphs).
+    out += ' '; i += 1;
   }
+  return out;
+}
 
-  while (removeEndExclusive < lines.length && lines[removeEndExclusive].trim() === '') {
-    removeEndExclusive += 1;
+function maskClaudeBannerInChunk(chunk: string): string {
+  // Split on `\r\n` while keeping the separators so reassembly is exact.
+  const parts: string[] = [];
+  let i = 0;
+  while (i < chunk.length) {
+    const next = chunk.indexOf('\r\n', i);
+    if (next < 0) { parts.push(chunk.slice(i)); break; }
+    parts.push(chunk.slice(i, next));
+    parts.push('\r\n');
+    i = next + 2;
   }
-
-  const nextLines = [
-    ...lines.slice(0, headerIndex),
-    ...lines.slice(removeEndExclusive),
-  ];
-  if (headerIndex === 0) {
-    while (nextLines.length > 0 && nextLines[0].trim() === '') nextLines.shift();
+  let masked = false;
+  for (let p = 0; p < parts.length; p += 1) {
+    const part = parts[p];
+    if (part === '\r\n') continue;
+    if (isClaudeBannerLine(part)) {
+      parts[p] = blankPrintableInLine(part);
+      masked = true;
+    }
   }
-
-  return {
-    text: nextLines.join('\r\n'),
-    stripped: true,
-    reason,
-  };
+  return masked ? parts.join('') : chunk;
 }
 
 function storageKey(sessionKey: string) {
@@ -235,6 +280,51 @@ function terminalHasVisibleContent(term: Terminal | null, mount: HTMLElement | n
     if (buffer.getLine(lineIndex)?.translateToString(true).trim()) return true;
   }
   return Boolean(mount.querySelector<HTMLElement>('.xterm-rows')?.textContent?.trim());
+}
+
+function terminalCursorSnapshot(term: Terminal | null) {
+  if (!term) return null;
+  try {
+    const buffer = term.buffer.active;
+    return {
+      cols: term.cols,
+      rows: term.rows,
+      cursorX: buffer.cursorX,
+      cursorY: buffer.cursorY,
+      baseY: buffer.baseY,
+      viewportY: buffer.viewportY,
+      bufferLength: buffer.length,
+    };
+  } catch {
+    return {
+      cols: term.cols,
+      rows: term.rows,
+    };
+  }
+}
+
+function terminalRowsSnapshot(term: Terminal | null, mount: HTMLElement | null) {
+  const domRows = [...(mount?.querySelectorAll<HTMLElement>('.xterm-rows > div') ?? [])];
+  const domTexts = domRows.map((row) => row.textContent ?? '');
+  const firstNonEmptyDomRow = domTexts.findIndex((text) => text.trim().length > 0);
+  const buffer = term?.buffer.active;
+  const viewportY = buffer?.viewportY ?? 0;
+  const bufferTexts = term && buffer
+    ? Array.from({ length: Math.min(term.rows, 18) }, (_, index) => (
+      buffer.getLine(viewportY + index)?.translateToString(true) ?? ''
+    ))
+    : [];
+  const firstNonEmptyBufferRow = bufferTexts.findIndex((text) => text.trim().length > 0);
+  return {
+    domRowCount: domRows.length,
+    firstNonEmptyDomRow,
+    emptyDomRowsBeforeFirstText: firstNonEmptyDomRow < 0 ? domRows.length : firstNonEmptyDomRow,
+    topDomRows: domTexts.slice(0, 18).map((text, index) => ({ index, text })),
+    firstNonEmptyBufferRow,
+    emptyBufferRowsBeforeFirstText: firstNonEmptyBufferRow < 0 ? bufferTexts.length : firstNonEmptyBufferRow,
+    topBufferRows: bufferTexts.map((text, index) => ({ index, text })),
+    cursor: terminalCursorSnapshot(term),
+  };
 }
 
 function isTerminalNearBottom(term: Terminal | null) {
@@ -412,70 +502,12 @@ function createTerminalInstance() {
   });
 }
 
-function encodeTerminalStreamMarker(marker: TerminalStreamMarker) {
-  const bytes = new TextEncoder().encode(JSON.stringify(marker));
-  let binary = '';
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return `${TERMINAL_STREAM_MARKER_PREFIX}${btoa(binary)}${TERMINAL_STREAM_MARKER_SUFFIX}`;
-}
-
-function decodeTerminalStreamMarker(payload: string): TerminalStreamMarker | null {
-  try {
-    const binary = atob(payload);
-    const bytes = new Uint8Array(binary.length);
-    for (let index = 0; index < binary.length; index += 1) {
-      bytes[index] = binary.charCodeAt(index);
-    }
-    const parsed = JSON.parse(new TextDecoder().decode(bytes)) as Partial<TerminalStreamMarker>;
-    if (
-      parsed.kind === 'turn_start' &&
-      typeof parsed.conversationId === 'string' &&
-      typeof parsed.turnId === 'string' &&
-      typeof parsed.userText === 'string'
-    ) {
-      return parsed as TerminalStreamMarker;
-    }
-    if (
-      (parsed.kind === 'turn_idle' || parsed.kind === 'turn_end') &&
-      typeof parsed.conversationId === 'string' &&
-      typeof parsed.turnId === 'string'
-    ) {
-      return parsed as TerminalStreamMarker;
-    }
-  } catch {
-    // Malformed private markers are ignored and never rendered.
-  }
-  return null;
-}
-
-function decodeTerminalOscMarker(data: string): TerminalStreamMarker | null {
-  if (!data.startsWith(TERMINAL_STREAM_OSC_PREFIX)) return null;
-  return decodeTerminalStreamMarker(data.slice(TERMINAL_STREAM_OSC_PREFIX.length));
-}
-
 function terminalMarkerPartialSuffixLength(data: string) {
   const max = Math.min(TERMINAL_STREAM_MARKER_PREFIX.length - 1, data.length);
   for (let length = max; length > 0; length -= 1) {
     if (TERMINAL_STREAM_MARKER_PREFIX.startsWith(data.slice(-length))) return length;
   }
   return 0;
-}
-
-function normalizeTerminalLineText(text: string) {
-  return text.replace(/\s+/g, ' ').trim();
-}
-
-function compactTerminalLineText(text: string) {
-  return text.replace(/\s+/g, '').trim();
-}
-
-function terminalLineContainsUserText(lineText: string, userText: string) {
-  const normalizedLine = normalizeTerminalLineText(lineText);
-  const normalizedUser = normalizeTerminalLineText(userText);
-  if (normalizedUser && normalizedLine.includes(normalizedUser)) return true;
-  const compactLine = compactTerminalLineText(lineText);
-  const compactUser = compactTerminalLineText(userText);
-  return Boolean(compactUser && compactLine.includes(compactUser));
 }
 
 function normalizeShellCommandToken(token: string) {
@@ -650,35 +682,6 @@ function NativeCliTerminalStyles() {
       .native-cli-terminal__mount .xterm-viewport::-webkit-scrollbar-thumb:hover {
         background: hsl(var(--foreground) / 0.2);
       }
-      .native-cli-terminal__mount .xterm-rows div.openclaw-user-echo-row {
-        display: flex !important;
-        justify-content: flex-end;
-        align-items: center;
-        width: min(var(--terminal-content-width), calc(100% - 48px)) !important;
-        min-height: 2.2em;
-        padding: 8px 0;
-        pointer-events: auto;
-        color: transparent !important;
-      }
-      .native-cli-terminal__mount .xterm-rows div.openclaw-user-echo-row * {
-        visibility: hidden !important;
-      }
-      .native-cli-terminal__mount .xterm-rows div.openclaw-user-echo-row::after {
-        content: attr(data-openclaw-user-text);
-        display: block;
-        max-width: min(72%, 680px);
-        padding: 10px 16px;
-        border-radius: 18px 18px 6px 18px;
-        background: #f3f3f3;
-        color: #1a1a1a;
-        font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-        font-size: 15px;
-        font-weight: 400;
-        line-height: 1.6;
-        visibility: visible !important;
-        white-space: pre-wrap;
-        overflow-wrap: anywhere;
-      }
     `}</style>
   );
 }
@@ -700,18 +703,13 @@ export function NativeCliTerminal({
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
   const resizeRafRef = useRef<number>(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const userEchoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const userEchoRafRef = useRef<number>(0);
-  const rowsObserverRef = useRef<MutationObserver | null>(null);
-  const terminalTurnsRef = useRef<TerminalTurn[]>([]);
-  const activeTerminalTurnIdRef = useRef<string | null>(null);
   const terminalDebugChunkCountRef = useRef(0);
-  const claudeStartupChromeStrippedRef = useRef(false);
   const markerBufferRef = useRef('');
   const bufferRef = useRef('');
   const recentOutputRef = useRef('');
   const userHasInteractedRef = useRef(false);
   const shellPassthroughRef = useRef(false);
+  const ignoredManagedPassthroughSignatureLoggedRef = useRef(false);
   const cliSessionIdRef = useRef('');
   const activeSessionResolveRef = useRef('');
   const initialOutputRafRef = useRef<number>(0);
@@ -804,87 +802,16 @@ export function NativeCliTerminal({
     setInputShellState(getScrollDrivenInputState());
   }, [getScrollDrivenInputState]);
 
-  const clearTerminalUserEchoRow = useCallback((row: HTMLElement) => {
-    row.classList.remove('openclaw-user-echo-row');
-    row.removeAttribute('data-openclaw-user-text');
-  }, []);
-
   const resetVisibleTerminalForResume = useCallback(() => {
     termRef.current?.clear();
+    termRef.current?.write('\x1b[H');
     bufferRef.current = '';
     markerBufferRef.current = '';
     recentOutputRef.current = '';
-    terminalTurnsRef.current = [];
-    activeTerminalTurnIdRef.current = null;
+    shellPassthroughRef.current = false;
     userHasInteractedRef.current = true;
     persistState();
   }, [persistState]);
-
-  const decorateTerminalUserEchoRow = useCallback((row: HTMLElement, userText: string) => {
-    const trimmed = userText.trim();
-    if (row.classList.contains('openclaw-user-echo-row') && row.dataset.openclawUserText === trimmed) return;
-    row.classList.add('openclaw-user-echo-row');
-    row.dataset.openclawUserText = trimmed;
-  }, []);
-
-  const matchingUserEchoTurn = useCallback((...lineTexts: string[]) => {
-    if (lineTexts.map(normalizeTerminalLineText).filter(Boolean).length === 0) return null;
-    for (const turn of [...terminalTurnsRef.current].reverse()) {
-      if (lineTexts.some((lineText) => terminalLineContainsUserText(lineText, turn.userText))) return turn;
-    }
-    return null;
-  }, []);
-
-  const styleVisibleTerminalUserEchoes = useCallback(() => {
-    if (shellPassthroughRef.current) return;
-    const term = termRef.current;
-    const rowsContainer = mountRef.current?.querySelector<HTMLElement>('.xterm-rows');
-    if (!term || !rowsContainer) return;
-
-    const observer = rowsObserverRef.current;
-    observer?.disconnect();
-    try {
-      const rows = [...rowsContainer.querySelectorAll<HTMLElement>(':scope > div')];
-      const buffer = term.buffer.active;
-      const viewportY = buffer.viewportY;
-      for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
-        const row = rows[rowIndex];
-        const line = buffer.getLine(viewportY + rowIndex);
-        if (!line) {
-          clearTerminalUserEchoRow(row);
-          continue;
-        }
-        const turn = matchingUserEchoTurn(line.translateToString(true), row.textContent ?? '');
-        if (turn) {
-          decorateTerminalUserEchoRow(row, turn.userText);
-        } else {
-          clearTerminalUserEchoRow(row);
-        }
-      }
-    } finally {
-      observer?.observe(rowsContainer, { childList: true, subtree: true, characterData: true });
-    }
-  }, [clearTerminalUserEchoRow, decorateTerminalUserEchoRow, matchingUserEchoTurn]);
-
-  const scheduleTerminalUserEchoStyle = useCallback((immediate = false) => {
-    if (shellPassthroughRef.current) return;
-    if (userEchoTimerRef.current) {
-      clearTimeout(userEchoTimerRef.current);
-      userEchoTimerRef.current = null;
-    }
-    const run = () => {
-      if (userEchoRafRef.current) return;
-      userEchoRafRef.current = requestAnimationFrame(() => {
-        userEchoRafRef.current = 0;
-        styleVisibleTerminalUserEchoes();
-      });
-    };
-    if (immediate) {
-      run();
-    } else {
-      userEchoTimerRef.current = setTimeout(run, TERMINAL_USER_ECHO_DEBOUNCE_MS);
-    }
-  }, [styleVisibleTerminalUserEchoes]);
 
   const bindNativeCliSessionId = useCallback((sessionId: string) => {
     const trimmed = sessionId.trim();
@@ -916,70 +843,6 @@ export function NativeCliTerminal({
       }),
     }));
   }, [normalizedProvider, persistState, sessionKey]);
-
-  const ensureRowsObserver = useCallback(() => {
-    if (rowsObserverRef.current) return;
-    const rows = mountRef.current?.querySelector<HTMLElement>('.xterm-rows');
-    if (!rows) return;
-    rowsObserverRef.current = new MutationObserver(() => scheduleTerminalUserEchoStyle());
-    rowsObserverRef.current.observe(rows, { childList: true, subtree: true, characterData: true });
-  }, [scheduleTerminalUserEchoStyle]);
-
-  const upsertTerminalTurn = useCallback((marker: Extract<TerminalStreamMarker, { kind: 'turn_start' }>) => {
-    const existing = terminalTurnsRef.current.find((turn) => turn.id === marker.turnId);
-    if (existing) {
-      existing.conversationId = marker.conversationId;
-      existing.userText = marker.userText;
-      existing.state = 'active';
-      activeTerminalTurnIdRef.current = existing.id;
-      scheduleTerminalUserEchoStyle(true);
-      return;
-    }
-
-    const localTurn = terminalTurnsRef.current.find((turn) => (
-      turn.id.startsWith('local-') &&
-      turn.state === 'active' &&
-      normalizeTerminalLineText(turn.userText) === normalizeTerminalLineText(marker.userText)
-    ));
-    if (localTurn && !marker.turnId.startsWith('local-')) {
-      localTurn.id = marker.turnId;
-      localTurn.conversationId = marker.conversationId;
-      localTurn.userText = marker.userText;
-      activeTerminalTurnIdRef.current = localTurn.id;
-      scheduleTerminalUserEchoStyle(true);
-      return;
-    }
-
-    for (const turn of terminalTurnsRef.current) {
-      if (turn.state === 'active') turn.state = 'idle';
-    }
-    const nextTurns = [
-      ...terminalTurnsRef.current,
-      {
-        id: marker.turnId,
-        conversationId: marker.conversationId,
-        userText: marker.userText,
-        state: 'active' as const,
-      },
-    ];
-    terminalTurnsRef.current = nextTurns.slice(-25);
-    activeTerminalTurnIdRef.current = marker.turnId;
-    scheduleTerminalUserEchoStyle(true);
-  }, [scheduleTerminalUserEchoStyle]);
-
-  const handleTerminalStreamMarker = useCallback((marker: TerminalStreamMarker) => {
-    if (marker.kind === 'turn_start') {
-      upsertTerminalTurn(marker);
-      return;
-    }
-    const turn = terminalTurnsRef.current.find((candidate) => candidate.id === marker.turnId);
-    if (!turn) return;
-    turn.state = marker.kind === 'turn_idle' ? 'idle' : 'closed';
-    if (activeTerminalTurnIdRef.current === marker.turnId && marker.kind === 'turn_end') {
-      activeTerminalTurnIdRef.current = null;
-    }
-    scheduleTerminalUserEchoStyle(true);
-  }, [scheduleTerminalUserEchoStyle, upsertTerminalTurn]);
 
   const stripTerminalStreamMarkers = useCallback((chunk: string) => {
     let data = `${markerBufferRef.current}${chunk}`;
@@ -1014,10 +877,21 @@ export function NativeCliTerminal({
 
   const updateShellPassthroughState = useCallback((chunk: string) => {
     const before = shellPassthroughRef.current;
-    const matchedSignature = TERMINAL_SHELL_PASSTHROUGH_SIGNATURES.find((signature) => (
-      `${recentOutputRef.current}${chunk}`.includes(signature)
+    const combinedOutput = `${recentOutputRef.current}${chunk}`;
+    const outputSignature = TERMINAL_SHELL_PASSTHROUGH_SIGNATURES.find((signature) => (
+      combinedOutput.includes(signature)
     ));
-    recentOutputRef.current = `${recentOutputRef.current}${chunk}`.slice(-TERMINAL_SHELL_PASSTHROUGH_BUFFER_CHARS);
+    const managedClaudeSignature = effectiveProvider === 'claude' ? outputSignature : undefined;
+    const matchedSignature = managedClaudeSignature ? undefined : outputSignature;
+    recentOutputRef.current = combinedOutput.slice(-TERMINAL_SHELL_PASSTHROUGH_BUFFER_CHARS);
+    if (managedClaudeSignature && !ignoredManagedPassthroughSignatureLoggedRef.current) {
+      ignoredManagedPassthroughSignatureLoggedRef.current = true;
+      traceNativeCliTerminal('shell-passthrough-managed-claude-signature-ignored', {
+        sessionKey,
+        signature: managedClaudeSignature,
+        recentPreview: previewNativeCliTerminalChunk(recentOutputRef.current),
+      });
+    }
     if (matchedSignature) {
       shellPassthroughRef.current = true;
     } else if (shellPassthroughRef.current && /\n[^\n]*[$%#] $/.test(recentOutputRef.current.slice(-240))) {
@@ -1032,7 +906,7 @@ export function NativeCliTerminal({
         recentPreview: previewNativeCliTerminalChunk(recentOutputRef.current),
       });
     }
-  }, [sessionKey]);
+  }, [effectiveProvider, sessionKey]);
 
   const settleInitialOutputAfterPaint = useCallback(() => {
     if (initialOutputRafRef.current) {
@@ -1088,83 +962,45 @@ export function NativeCliTerminal({
   }, []);
 
   const handleTerminalData = useCallback((raw: string) => {
+    // Strip-in-place: ANSI control bytes pass through untouched; only the
+    // printable characters of Claude Code's startup-header rows are blanked.
+    // Same byte length, same cursor coordinates, no row hacks. Resize-redraws
+    // are masked too because each redraw chunk re-emits the same banner bytes.
     const visibleRaw = stripTerminalStreamMarkers(raw);
     updateShellPassthroughState(visibleRaw);
+
+    const renderRaw = effectiveProvider === 'claude'
+      ? maskClaudeBannerInChunk(visibleRaw)
+      : visibleRaw;
 
     const chunkIndex = terminalDebugChunkCountRef.current + 1;
     terminalDebugChunkCountRef.current = chunkIndex;
 
-    let renderRaw = raw;
-    let visibleRender = visibleRaw;
-    if (effectiveProvider === 'claude') {
-      const stripped = stripClaudeStartupChromeFromVisibleText(raw);
-      if (stripped.stripped) {
-        claudeStartupChromeStrippedRef.current = true;
-        renderRaw = stripped.text;
-        visibleRender = renderRaw;
-        traceNativeCliTerminal('claude-startup-chrome-stripped-before-ui', {
-          sessionKey,
-          chunkIndex,
-          reason: stripped.reason,
-          beforeBytes: raw.length,
-          afterBytes: renderRaw.length,
-          beforePreview: previewNativeCliTerminalChunk(raw),
-          afterPreview: previewNativeCliTerminalChunk(renderRaw),
-        });
-      }
-    }
+    if (renderRaw.length === 0) return;
 
-    const renderHasPrintable = hasPrintableTerminalContent(visibleRender);
-    if (effectiveProvider === 'claude' && !claudeStartupChromeStrippedRef.current && !renderHasPrintable) {
-      traceNativeCliTerminal('claude-startup-pre-banner-control-chunk-suppressed-before-ui', {
-        sessionKey,
-        chunkIndex,
-        rawBytes: raw.length,
-        renderBytes: renderRaw.length,
-        preview: previewNativeCliTerminalChunk(raw),
-      });
-      return;
-    }
-    if (effectiveProvider === 'claude' && claudeStartupChromeStrippedRef.current && renderRaw.length === 0) {
-      traceNativeCliTerminal('claude-startup-banner-empty-chunk-suppressed-before-ui', {
-        sessionKey,
-        chunkIndex,
-        rawBytes: raw.length,
-        renderBytes: renderRaw.length,
-        hasPrintable: renderHasPrintable,
-        preview: previewNativeCliTerminalChunk(raw),
-      });
-      return;
-    }
-
+    const renderHasPrintable = hasPrintableTerminalContent(renderRaw);
     bufferRef.current = `${bufferRef.current}${renderRaw}`.slice(-100_000);
 
-    traceNativeCliTerminal('handle-terminal-data-before-render', {
-      sessionKey,
-      chunkIndex,
-      rawBytes: raw.length,
-      renderBytes: renderRaw.length,
-      visibleBytes: visibleRender.length,
-      hasPrintable: renderHasPrintable,
-      shellPassthrough: shellPassthroughRef.current,
-      bufferBytes: bufferRef.current.length,
-      rawPreview: previewNativeCliTerminalChunk(raw),
-      renderPreview: previewNativeCliTerminalChunk(renderRaw),
-      visiblePreview: previewNativeCliTerminalChunk(visibleRender),
-    });
+    if (terminalDebugChunkCountRef.current <= NATIVE_CLI_TERMINAL_DEBUG_CHUNK_LIMIT) {
+      traceNativeCliTerminal('handle-terminal-data-before-render', {
+        sessionKey,
+        chunkIndex,
+        rawBytes: raw.length,
+        renderBytes: renderRaw.length,
+        bannerMasked: renderRaw !== visibleRaw,
+        hasPrintable: renderHasPrintable,
+        shellPassthrough: shellPassthroughRef.current,
+        bufferBytes: bufferRef.current.length,
+        renderAnsiPreview: previewNativeCliTerminalChunkWithAnsi(renderRaw),
+        renderControls: terminalControlSummary(renderRaw),
+        rowsBeforeWrite: terminalRowsSnapshot(termRef.current, mountRef.current),
+      });
+    }
 
     persistState();
     const term = termRef.current;
     if (term) {
       term.write(renderRaw, () => {
-        traceNativeCliTerminal('xterm-write-committed-to-ui', {
-          sessionKey,
-          chunkIndex,
-          termCols: term.cols,
-          termRows: term.rows,
-          hasPrintable: renderHasPrintable,
-          visiblePreview: previewNativeCliTerminalChunk(visibleRender),
-        });
         if (renderHasPrintable) requestInitialOutputSettle();
       });
     } else {
@@ -1174,8 +1010,7 @@ export function NativeCliTerminal({
         rawPreview: previewNativeCliTerminalChunk(raw),
       });
     }
-    scheduleTerminalUserEchoStyle();
-  }, [effectiveProvider, persistState, requestInitialOutputSettle, scheduleTerminalUserEchoStyle, sessionKey, stripTerminalStreamMarkers, updateShellPassthroughState]);
+  }, [effectiveProvider, persistState, requestInitialOutputSettle, sessionKey, stripTerminalStreamMarkers, updateShellPassthroughState]);
 
   const sendTerminalData = useCallback((data: string) => {
     const ws = wsRef.current;
@@ -1245,14 +1080,13 @@ export function NativeCliTerminal({
       resizeRafRef.current = 0;
       if (disposedRef.current) return;
       fitTerminalToContent();
-      scheduleTerminalUserEchoStyle();
       updateInputShellStateFromTerminalScroll();
       requestAnimationFrame(() => {
         if (disposedRef.current) return;
         fitTerminalToContent();
       });
     });
-  }, [fitTerminalToContent, scheduleTerminalUserEchoStyle, updateInputShellStateFromTerminalScroll]);
+  }, [fitTerminalToContent, updateInputShellStateFromTerminalScroll]);
 
   const connect = useCallback(async () => {
     if (disposedRef.current) return;
@@ -1343,10 +1177,19 @@ export function NativeCliTerminal({
       dispatchTerminalState({ type: 'connect_requested', phase: 'starting' });
     }
 
+    mountRef_cb.current.fitTerminalToContent();
+    const initialTerm = termRef.current;
+    const initialTerminalSize = initialTerm
+      ? { cols: initialTerm.cols, rows: initialTerm.rows }
+      : null;
     const params = new URLSearchParams({
       agentId,
       sessionKey,
     });
+    if (initialTerminalSize) {
+      params.set('cols', String(initialTerminalSize.cols));
+      params.set('rows', String(initialTerminalSize.rows));
+    }
     if (knownCliSessionId) {
       params.set('resume', '1');
       params.set('sessionId', knownCliSessionId);
@@ -1357,6 +1200,7 @@ export function NativeCliTerminal({
       agentId,
       knownCliSessionId,
       normalizedProvider,
+      initialTerminalSize,
       wsUrl,
       phase: knownCliSessionId ? 'resume' : 'start',
     });
@@ -1406,15 +1250,6 @@ export function NativeCliTerminal({
             preview: previewNativeCliTerminalChunk(msg.data),
           });
           mountRef_cb.current.handleTerminalData(msg.data);
-        } else if (msg.type === 'assistant_turn_start') {
-          const turnId = typeof msg.turnId === 'string' ? msg.turnId : '';
-          const conversationId = typeof msg.conversationId === 'string' ? msg.conversationId : '';
-          const userText = typeof msg.userText === 'string' ? msg.userText : '';
-          if (turnId) mountRef_cb.current.upsertTerminalTurn({ kind: 'turn_start', conversationId, turnId, userText });
-        } else if (msg.type === 'assistant_idle' && typeof msg.turnId === 'string') {
-          mountRef_cb.current.handleTerminalStreamMarker({ kind: 'turn_idle', conversationId: String(msg.conversationId ?? ''), turnId: msg.turnId });
-        } else if (msg.type === 'assistant_turn_end' && typeof msg.turnId === 'string') {
-          mountRef_cb.current.handleTerminalStreamMarker({ kind: 'turn_end', conversationId: String(msg.conversationId ?? ''), turnId: msg.turnId });
         } else if (msg.type === 'session_id' && typeof msg.sessionId === 'string') {
           mountRef_cb.current.bindNativeCliSessionId(msg.sessionId);
         } else if (msg.type === 'exit') {
@@ -1482,31 +1317,23 @@ export function NativeCliTerminal({
     sessionKey,
   ]);
 
-  const decorateLocalTerminalTurn = useCallback((userText: string) => {
-    const marker: Extract<TerminalStreamMarker, { kind: 'turn_start' }> = {
-      kind: 'turn_start',
-      conversationId: 'local',
-      turnId: `local-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-      userText,
-    };
-    upsertTerminalTurn(marker);
-    const markerRaw = encodeTerminalStreamMarker(marker);
-    termRef.current?.write(markerRaw);
-    bufferRef.current = `${bufferRef.current}${markerRaw}`.slice(-100_000);
-    persistState();
-  }, [persistState, upsertTerminalTurn]);
-
   const sendShellCompose = useCallback((text: string, notifyUserText = true) => {
     if (notifyUserText) onUserText?.(text);
-    if (!userHasInteractedRef.current) {
+    const isFirstUserInput = !userHasInteractedRef.current;
+    if (isFirstUserInput) {
       userHasInteractedRef.current = true;
-      termRef.current?.clear();
+      traceNativeCliTerminal('first-user-input-no-local-terminal-reset', {
+        sessionKey,
+        source: 'shell-compose',
+        cursor: terminalCursorSnapshot(termRef.current),
+        rowsBeforeInput: terminalRowsSnapshot(termRef.current, mountRef.current),
+      });
     }
     for (const payload of shellComposeToPtyInput(text)) {
       sendTerminalData(payload);
     }
     persistState();
-  }, [onUserText, persistState, sendTerminalData]);
+  }, [onUserText, persistState, sendTerminalData, sessionKey]);
 
   const sendText = useCallback((text: string) => {
     if (!text.trim()) return;
@@ -1515,7 +1342,13 @@ export function NativeCliTerminal({
     const launchPassthrough = shouldLaunchShellPassthrough(text);
     if (shellPassthroughRef.current || launchPassthrough) {
       sendShellCompose(text, false);
-      if (launchPassthrough) shellPassthroughRef.current = true;
+      if (launchPassthrough) {
+        shellPassthroughRef.current = true;
+        traceNativeCliTerminal('shell-passthrough-launched-by-user-command', {
+          sessionKey,
+          command: shellPassthroughCommandFromText(text),
+        });
+      }
       startCliSessionIdFallbackResolver(text, startedAt);
       return;
     }
@@ -1523,14 +1356,19 @@ export function NativeCliTerminal({
     if (ws?.readyState !== WebSocket.OPEN) return;
     if (!userHasInteractedRef.current) {
       userHasInteractedRef.current = true;
-      termRef.current?.clear();
+      traceNativeCliTerminal('first-user-input-no-local-terminal-reset', {
+        sessionKey,
+        source: 'user-text',
+        cursor: terminalCursorSnapshot(termRef.current),
+        rowsBeforeInput: terminalRowsSnapshot(termRef.current, mountRef.current),
+      });
     }
-    decorateLocalTerminalTurn(text);
-    ws.send(JSON.stringify({ type: 'user_text', text }));
+    for (const payload of shellComposeToPtyInput(text)) {
+      ws.send(JSON.stringify({ type: 'data', data: payload }));
+    }
     startCliSessionIdFallbackResolver(text, startedAt);
-    scheduleTerminalUserEchoStyle(true);
     persistState();
-  }, [decorateLocalTerminalTurn, onUserText, persistState, scheduleTerminalUserEchoStyle, sendShellCompose, startCliSessionIdFallbackResolver]);
+  }, [onUserText, persistState, sendShellCompose, sessionKey, startCliSessionIdFallbackResolver]);
 
   const handleChatInputSend = useCallback((text: string) => {
     const trimmed = text.trim();
@@ -1587,17 +1425,15 @@ export function NativeCliTerminal({
   // callback identity changes (e.g. normalizedProvider undefined → 'claude').
   const mountRef_cb = useRef({
     connect, sendTerminalData, fitTerminalToContent, scheduleTerminalResize,
-    scheduleTerminalUserEchoStyle, ensureRowsObserver,
-    maybeSettleInitialOutput, handleTerminalStreamMarker, persistState,
-    handleTerminalData, upsertTerminalTurn, bindNativeCliSessionId,
+    maybeSettleInitialOutput, persistState,
+    handleTerminalData, bindNativeCliSessionId,
     settleReadyWithoutInitialOutput, resetVisibleTerminalForResume,
     updateInputShellStateFromTerminalScroll,
   });
   mountRef_cb.current = {
     connect, sendTerminalData, fitTerminalToContent, scheduleTerminalResize,
-    scheduleTerminalUserEchoStyle, ensureRowsObserver,
-    maybeSettleInitialOutput, handleTerminalStreamMarker, persistState,
-    handleTerminalData, upsertTerminalTurn, bindNativeCliSessionId,
+    maybeSettleInitialOutput, persistState,
+    handleTerminalData, bindNativeCliSessionId,
     settleReadyWithoutInitialOutput, resetVisibleTerminalForResume,
     updateInputShellStateFromTerminalScroll,
   };
@@ -1607,7 +1443,10 @@ export function NativeCliTerminal({
     if (!mount) return;
     disposedRef.current = false;
     terminalDebugChunkCountRef.current = 0;
-    claudeStartupChromeStrippedRef.current = false;
+    ignoredManagedPassthroughSignatureLoggedRef.current = false;
+    markerBufferRef.current = '';
+    recentOutputRef.current = '';
+    shellPassthroughRef.current = false;
     suppressReconnectRef.current = false;
 
     const persisted = loadPersistedTerminalState(sessionKey);
@@ -1624,13 +1463,6 @@ export function NativeCliTerminal({
     const term = createTerminalInstance();
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
-    term.parser.registerOscHandler(777, (data: string) => {
-      if (shellPassthroughRef.current) return false;
-      const marker = decodeTerminalOscMarker(data);
-      if (!marker) return false;
-      mountRef_cb.current.handleTerminalStreamMarker(marker);
-      return true;
-    });
     term.open(mount);
     if (!initialCliSessionId && userHasInteractedRef.current && bufferRef.current) {
       if (isNativeCliTerminalDebugEnabled()) {
@@ -1648,16 +1480,12 @@ export function NativeCliTerminal({
     term.onResize(({ cols, rows }) => {
       const ws = wsRef.current;
       if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'resize', cols, rows }));
-      mountRef_cb.current.scheduleTerminalUserEchoStyle();
     });
     term.onScroll(() => {
-      mountRef_cb.current.scheduleTerminalUserEchoStyle();
       mountRef_cb.current.updateInputShellStateFromTerminalScroll();
     });
     term.onWriteParsed(() => {
-      mountRef_cb.current.ensureRowsObserver();
       mountRef_cb.current.maybeSettleInitialOutput();
-      mountRef_cb.current.scheduleTerminalUserEchoStyle();
       mountRef_cb.current.updateInputShellStateFromTerminalScroll();
     });
     term.onRender(() => {
@@ -1700,13 +1528,10 @@ export function NativeCliTerminal({
       dispatchTerminalState({ type: 'disposed' });
       mountRef_cb.current.persistState();
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
-      if (userEchoTimerRef.current) clearTimeout(userEchoTimerRef.current);
-      if (userEchoRafRef.current) cancelAnimationFrame(userEchoRafRef.current);
       if (resizeRafRef.current) cancelAnimationFrame(resizeRafRef.current);
       if (initialOutputRafRef.current) cancelAnimationFrame(initialOutputRafRef.current);
       if (loadingExitTimerRef.current) clearTimeout(loadingExitTimerRef.current);
       initialOutputPendingPaintRef.current = false;
-      rowsObserverRef.current?.disconnect();
       resizeObserverRef.current?.disconnect();
       window.removeEventListener('resize', handleWindowResize);
       window.visualViewport?.removeEventListener('resize', handleWindowResize);

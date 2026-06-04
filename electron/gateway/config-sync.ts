@@ -321,6 +321,40 @@ function patchOpenClawBoxImModelValidation(openclawDir: string): number {
   return patched;
 }
 
+function patchOpenClawTerminalInitialSize(openclawDir: string): number {
+  const gatewayTargets = findFilesByName(join(openclawDir, 'dist'), /^gateway-cli-.*\.js$/, 2);
+  const parseSearch = `\tconst sessionKey = url.searchParams.get("sessionKey")?.trim() || void 0;
+\treturn {`;
+  const parseReplace = `\tconst sessionKey = url.searchParams.get("sessionKey")?.trim() || void 0;
+\tconst queryCols = Number.parseInt(url.searchParams.get("cols") ?? "", 10);
+\tconst queryRows = Number.parseInt(url.searchParams.get("rows") ?? "", 10);
+\tconst initialCols = Number.isFinite(queryCols) && queryCols > 0 ? Math.min(300, queryCols) : void 0;
+\tconst initialRows = Number.isFinite(queryRows) && queryRows > 0 ? Math.min(120, queryRows) : void 0;
+\treturn {`;
+  const configSearch = `\t\t\targs: nativeCli.args?.filter((arg) => typeof arg === "string"),
+\t\t\tresumeArgs: nativeCli.resumeArgs?.filter((arg) => typeof arg === "string")
+\t\t},`;
+  const configReplace = `\t\t\targs: nativeCli.args?.filter((arg) => typeof arg === "string"),
+\t\t\tresumeArgs: nativeCli.resumeArgs?.filter((arg) => typeof arg === "string"),
+\t\t\tcols: initialCols ?? nativeCli.cols,
+\t\t\trows: initialRows ?? nativeCli.rows
+\t\t},`;
+
+  let patched = 0;
+  for (const target of gatewayTargets) {
+    let current = '';
+    try {
+      current = readFileSync(fsPath(target), 'utf-8');
+    } catch {
+      continue;
+    }
+    if (current.includes('const initialCols = Number.isFinite(queryCols)')) continue;
+    if (replaceSnippetInFile(target, parseSearch, parseReplace)) patched++;
+    if (replaceSnippetInFile(target, configSearch, configReplace)) patched++;
+  }
+  return patched;
+}
+
 function patchOpenClawTerminalDiagnostics(openclawDir: string): number {
   const gatewayTargets = findFilesByName(join(openclawDir, 'dist'), /^gateway-cli-.*\.js$/, 2);
   const helperSearch = `function userTextToPtyInput(text) {
@@ -730,6 +764,7 @@ function patchNodePtyWindowsCleanup(openclawDir: string): number {
 
 function repairOpenClawRuntimeBeforeLaunch(openclawDir: string): void {
   const boxImPatchCount = patchOpenClawBoxImModelValidation(openclawDir);
+  const terminalInitialSizePatchCount = patchOpenClawTerminalInitialSize(openclawDir);
   const terminalDiagnosticsEnabled = process.env.CLAWX_OPENCLAW_TERMINAL_DIAGNOSTICS === '1';
   const terminalDiagnosticPatchCount = terminalDiagnosticsEnabled
     ? patchOpenClawTerminalDiagnostics(openclawDir)
@@ -738,8 +773,8 @@ function repairOpenClawRuntimeBeforeLaunch(openclawDir: string): void {
     ? 0
     : removeOpenClawTerminalDiagnostics(openclawDir);
   const nodePtyPatchCount = process.platform === 'win32' ? patchNodePtyWindowsCleanup(openclawDir) : 0;
-  if (boxImPatchCount > 0 || terminalDiagnosticPatchCount > 0 || terminalDiagnosticCleanupCount > 0 || nodePtyPatchCount > 0) {
-    logger.info(`[gateway-prep] Patched OpenClaw runtime before launch (boxIm=${boxImPatchCount}, terminalDiagnostics=${terminalDiagnosticPatchCount}, terminalDiagnosticsRemoved=${terminalDiagnosticCleanupCount}, nodePty=${nodePtyPatchCount})`);
+  if (boxImPatchCount > 0 || terminalInitialSizePatchCount > 0 || terminalDiagnosticPatchCount > 0 || terminalDiagnosticCleanupCount > 0 || nodePtyPatchCount > 0) {
+    logger.info(`[gateway-prep] Patched OpenClaw runtime before launch (boxIm=${boxImPatchCount}, terminalInitialSize=${terminalInitialSizePatchCount}, terminalDiagnostics=${terminalDiagnosticPatchCount}, terminalDiagnosticsRemoved=${terminalDiagnosticCleanupCount}, nodePty=${nodePtyPatchCount})`);
   }
 }
 
