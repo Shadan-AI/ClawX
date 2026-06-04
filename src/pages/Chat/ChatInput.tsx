@@ -8,7 +8,7 @@
  */
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { SendHorizontal, Square, X, Paperclip, FileText, Film, Music, FileArchive, File, Loader2, AtSign, ChevronDown, Check, RefreshCw, Brain, Bot, Puzzle } from 'lucide-react';
+import { SendHorizontal, Square, Pause, X, Paperclip, FileText, Film, Music, FileArchive, File, Loader2, AtSign, ChevronDown, Check, RefreshCw, Brain, Bot, Puzzle } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -48,6 +48,7 @@ interface ChatInputProps {
   onStop?: () => void;
   disabled?: boolean;
   sending?: boolean;
+  stopIcon?: 'square' | 'pause';
   isEmpty?: boolean;
   isExpanded?: boolean;
   onFocusChange?: (focused: boolean) => void;
@@ -201,7 +202,7 @@ interface MurmurBubble {
   duration: number;
 }
 
-export function ChatInput({ onSend, onModelChange, onStop, disabled = false, sending = false, isExpanded = true, onFocusChange, quickUseSkill, onSkillUsed, disabledPlaceholder }: ChatInputProps) {
+export function ChatInput({ onSend, onModelChange, onStop, disabled = false, sending = false, stopIcon = 'square', isExpanded = true, onFocusChange, quickUseSkill, onSkillUsed, disabledPlaceholder }: ChatInputProps) {
   const { t } = useTranslation('chat');
   const navigate = useNavigate();
   const [input, setInput] = useState('');
@@ -1132,7 +1133,11 @@ export function ChatInput({ onSend, onModelChange, onStop, disabled = false, sen
                   title={sending ? t('composer.stop') : t('composer.send')}
                 >
                   {sending ? (
-                    <Square className="h-4 w-4" fill="currentColor" />
+                    stopIcon === 'pause' ? (
+                      <Pause className="h-4 w-4" fill="currentColor" />
+                    ) : (
+                      <Square className="h-4 w-4" fill="currentColor" />
+                    )
                   ) : (
                     <SendHorizontal className="h-4 w-4" strokeWidth={2} />
                   )}
@@ -1475,7 +1480,11 @@ export function ChatInput({ onSend, onModelChange, onStop, disabled = false, sen
                     title={sending ? t('composer.stop') : t('composer.send')}
                   >
                     {sending ? (
-                      <Square className="h-4 w-4" fill="currentColor" />
+                      stopIcon === 'pause' ? (
+                        <Pause className="h-4 w-4" fill="currentColor" />
+                      ) : (
+                        <Square className="h-4 w-4" fill="currentColor" />
+                      )
                     ) : (
                       <SendHorizontal className="h-4 w-4" strokeWidth={2} />
                     )}

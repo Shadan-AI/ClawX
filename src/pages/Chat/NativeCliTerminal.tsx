@@ -100,6 +100,7 @@ const TERMINAL_DEFAULT_ROWS = 24;
 const TERMINAL_MAX_REASONABLE_CELL_WIDTH = 32;
 const CLAUDE_TOP_CHROME_COMPACT_MAX_ROWS = 18;
 const TERMINAL_ESCAPE = String.fromCharCode(27);
+const TERMINAL_CTRL_U = String.fromCharCode(21);
 const TERMINAL_BELL = String.fromCharCode(7);
 const TERMINAL_OSC_PATTERN = new RegExp(`${TERMINAL_ESCAPE}\\][^${TERMINAL_BELL}]*(?:${TERMINAL_BELL}|${TERMINAL_ESCAPE}\\\\)`, 'g');
 const TERMINAL_CSI_PATTERN = new RegExp(`${TERMINAL_ESCAPE}\\[[0-?]*[ -/]*[@-~]`, 'g');
@@ -112,6 +113,11 @@ const CLAUDE_NATIVE_HAIKU_ALIAS = 'claude-haiku-4-5';
 const NATIVE_CLI_TERMINAL_DEBUG_STORAGE_KEY = 'openclaw-debug-native-cli';
 const NATIVE_CLI_TERMINAL_DEBUG_CHUNK_LIMIT = 80;
 const NATIVE_CLI_TERMINAL_DEBUG_PREVIEW_LIMIT = 1200;
+const NATIVE_CLI_RESPONDING_MIN_CLEAR_MS = 600;
+const NATIVE_CLI_RESPONDING_IDLE_CLEAR_MS = 2500;
+const NATIVE_CLI_PROMPT_READY_BUFFER_CHARS = 4000;
+const CLAUDE_INTERRUPT_PRESERVE_MS = 2500;
+const CLAUDE_PROMPT_GLYPH = String.fromCodePoint(0x276f);
 
 function isNativeCliTerminalDebugEnabled(): boolean {
   if (import.meta.env.DEV) return true;
@@ -247,10 +253,40 @@ function cleanTerminalControlText(text: string): string {
     .replace(TERMINAL_CHARSET_PATTERN, '');
 }
 
+export function isClaudePromptReadyChunk(chunk: string): boolean {
+  const cleaned = cleanTerminalControlText(chunk)
+    .replace(/\x08/g, '')
+    .replace(/\u00a0/g, ' ');
+  return new RegExp(`(?:^|[\\r\\n])\\s*${CLAUDE_PROMPT_GLYPH}\\s*(?:$|[\\r\\n])`, 'u').test(cleaned);
+}
+
 function isClaudeChromeLine(rawLine: string): boolean {
   if (CLAUDE_FOOTER_INPUT_PROMPT_RE.test(rawLine)) return true;
   const cleaned = cleanTerminalControlText(rawLine);
   return CLAUDE_BANNER_LINE_SIGNATURES.some((re) => re.test(cleaned));
+}
+
+function hasClaudeResponseActivityChunk(chunk: string): boolean {
+  return chunk.split(/\r?\n/).some((rawLine) => {
+    if (isClaudeChromeLine(rawLine)) return false;
+    const cleaned = cleanTerminalControlText(rawLine)
+      .replace(/\x08/g, '')
+      .replace(/\u00a0/g, ' ')
+      .trim();
+    if (!cleaned) return false;
+    if (new RegExp(`^${CLAUDE_PROMPT_GLYPH}\\s*$`, 'u').test(cleaned)) return false;
+    return true;
+  });
+}
+
+function preserveClaudeInterruptChunk(chunk: string): string {
+  const cleaned = cleanTerminalControlText(chunk);
+  const destructiveRedraw = /\x1b\[[0-?]*[ -/]*[JKHfGABCD]/.test(chunk) || /\r(?!\n)/.test(chunk);
+  if (!destructiveRedraw) return chunk;
+  if (hasClaudeResponseActivityChunk(chunk) && !/(?:esc to interrupt|shift\+tab to cycle|← for agents|bypass permissions)/iu.test(cleaned)) {
+    return chunk;
+  }
+  return '';
 }
 
 function blankPrintableInLine(rawLine: string): string {
@@ -399,6 +435,10 @@ function isTerminalNearBottom(term: Terminal | null) {
 
 function normalizeProvider(provider?: string) {
   return provider?.trim().toLowerCase() || undefined;
+}
+
+function isClaudeNativeCliProvider(provider?: string) {
+  return (normalizeProvider(provider) || 'claude').startsWith('claude');
 }
 
 function normalizeOneApiModelId(modelRef: string | null | undefined): string {
@@ -871,8 +911,14 @@ export function NativeCliTerminal({
   const markerBufferRef = useRef('');
   const bufferRef = useRef('');
   const recentOutputRef = useRef('');
+  const promptReadyBufferRef = useRef('');
   const userHasInteractedRef = useRef(false);
   const shellPassthroughRef = useRef(false);
+  const cliRespondingRef = useRef(false);
+  const lastCliInputAtRef = useRef(0);
+  const cliRespondingClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const interruptPreserveUntilRef = useRef(0);
+  const clearInterruptedInputBeforeNextSendRef = useRef(false);
   const ignoredManagedPassthroughSignatureLoggedRef = useRef(false);
   const cliSessionIdRef = useRef('');
   const activeSessionResolveRef = useRef('');
@@ -895,6 +941,7 @@ export function NativeCliTerminal({
   const [displayedLoadingLabel, setDisplayedLoadingLabel] = useState('');
   const [loadingExiting, setLoadingExiting] = useState(false);
   const [inputShellState, setInputShellState] = useState<InputShellState>('auto');
+  const [cliResponding, setCliResponding] = useState(false);
   const inputShellStateRef = useRef<InputShellState>(inputShellState);
   // Welcome overlay shown on top of xterm before the user's first message.
   // Initial value is set in the mount-effect once we know whether the session
@@ -953,6 +1000,64 @@ export function NativeCliTerminal({
     });
   }, [sessionKey]);
 
+  const setCliRespondingState = useCallback((next: boolean) => {
+    if (!next && cliRespondingClearTimerRef.current) {
+      clearTimeout(cliRespondingClearTimerRef.current);
+      cliRespondingClearTimerRef.current = null;
+    }
+    cliRespondingRef.current = next;
+    setCliResponding(next);
+  }, []);
+
+  const markCliRespondingStarted = useCallback(() => {
+    if (!isClaudeNativeCliProvider(effectiveProvider)) return;
+    if (cliRespondingClearTimerRef.current) {
+      clearTimeout(cliRespondingClearTimerRef.current);
+      cliRespondingClearTimerRef.current = null;
+    }
+    promptReadyBufferRef.current = '';
+    lastCliInputAtRef.current = Date.now();
+    setCliRespondingState(true);
+  }, [effectiveProvider, setCliRespondingState]);
+
+  const updateCliRespondingFromTerminalData = useCallback((visibleRaw: string) => {
+    if (!isClaudeNativeCliProvider(effectiveProvider) || !cliRespondingRef.current) return;
+    promptReadyBufferRef.current = `${promptReadyBufferRef.current}${visibleRaw}`.slice(-NATIVE_CLI_PROMPT_READY_BUFFER_CHARS);
+    if (cliRespondingClearTimerRef.current) {
+      clearTimeout(cliRespondingClearTimerRef.current);
+      cliRespondingClearTimerRef.current = null;
+    }
+    const currentPromptReady = isClaudePromptReadyChunk(visibleRaw);
+    const promptReady = currentPromptReady || isClaudePromptReadyChunk(promptReadyBufferRef.current);
+    if (hasClaudeResponseActivityChunk(visibleRaw) && !currentPromptReady) {
+      promptReadyBufferRef.current = '';
+      return;
+    }
+    if (!promptReady) return;
+
+    const elapsedMs = Date.now() - lastCliInputAtRef.current;
+    const minRemainingMs = Math.max(0, NATIVE_CLI_RESPONDING_MIN_CLEAR_MS - elapsedMs);
+    const clearDelayMs = Math.max(minRemainingMs, NATIVE_CLI_RESPONDING_IDLE_CLEAR_MS);
+
+    if (clearDelayMs <= 0) {
+      promptReadyBufferRef.current = '';
+      setCliRespondingState(false);
+      return;
+    }
+    cliRespondingClearTimerRef.current = setTimeout(() => {
+      cliRespondingClearTimerRef.current = null;
+      if (!cliRespondingRef.current) return;
+      promptReadyBufferRef.current = '';
+      setCliRespondingState(false);
+    }, clearDelayMs);
+  }, [effectiveProvider, setCliRespondingState]);
+
+  useEffect(() => {
+    if (isClaudeNativeCliProvider(effectiveProvider)) return;
+    promptReadyBufferRef.current = '';
+    setCliRespondingState(false);
+  }, [effectiveProvider, setCliRespondingState]);
+
   const getScrollDrivenInputState = useCallback((): InputShellState => (
     isTerminalNearBottom(termRef.current) ? 'auto' : 'collapsed'
   ), []);
@@ -977,10 +1082,14 @@ export function NativeCliTerminal({
     bufferRef.current = '';
     markerBufferRef.current = '';
     recentOutputRef.current = '';
+    promptReadyBufferRef.current = '';
+    interruptPreserveUntilRef.current = 0;
+    clearInterruptedInputBeforeNextSendRef.current = false;
     shellPassthroughRef.current = false;
+    setCliRespondingState(false);
     userHasInteractedRef.current = true;
     persistState();
-  }, [persistState]);
+  }, [persistState, setCliRespondingState]);
 
   const bindNativeCliSessionId = useCallback((sessionId: string) => {
     const trimmed = sessionId.trim();
@@ -1158,9 +1267,14 @@ export function NativeCliTerminal({
     // are masked too because each redraw chunk re-emits the same banner bytes.
     const visibleRaw = stripTerminalStreamMarkers(raw);
     updateShellPassthroughState(visibleRaw);
+    updateCliRespondingFromTerminalData(visibleRaw);
 
     const renderRaw = effectiveProvider === 'claude'
-      ? maskClaudeBannerInChunk(visibleRaw)
+      ? maskClaudeBannerInChunk(
+        Date.now() < interruptPreserveUntilRef.current
+          ? preserveClaudeInterruptChunk(visibleRaw)
+          : visibleRaw,
+      )
       : visibleRaw;
 
     const chunkIndex = terminalDebugChunkCountRef.current + 1;
@@ -1201,7 +1315,7 @@ export function NativeCliTerminal({
         rawPreview: previewNativeCliTerminalChunk(raw),
       });
     }
-  }, [effectiveProvider, persistState, requestInitialOutputSettle, sessionKey, stripTerminalStreamMarkers, updateClaudeTopCompaction, updateShellPassthroughState]);
+  }, [effectiveProvider, persistState, requestInitialOutputSettle, sessionKey, stripTerminalStreamMarkers, updateClaudeTopCompaction, updateCliRespondingFromTerminalData, updateShellPassthroughState]);
 
   const sendTerminalData = useCallback((data: string) => {
     const ws = wsRef.current;
@@ -1209,6 +1323,13 @@ export function NativeCliTerminal({
     ws.send(JSON.stringify({ type: 'data', data }));
     return true;
   }, []);
+
+  const clearInterruptedInputBeforeSend = useCallback(() => {
+    if (!clearInterruptedInputBeforeNextSendRef.current) return;
+    clearInterruptedInputBeforeNextSendRef.current = false;
+    interruptPreserveUntilRef.current = 0;
+    sendTerminalData(TERMINAL_CTRL_U);
+  }, [sendTerminalData]);
 
   const startCliSessionIdFallbackResolver = useCallback((userText: string, startedAt: number) => {
     if (cliSessionIdRef.current) return;
@@ -1486,6 +1607,7 @@ export function NativeCliTerminal({
       if (disposedRef.current) return;
       if (wsRef.current !== ws) return;
       if (wsRef.current === ws) wsRef.current = null;
+      mountRef_cb.current.setCliRespondingState(false);
       dispatchTerminalState({ type: 'websocket_closed' });
       initialOutputPendingPaintRef.current = false;
       if (userHasInteractedRef.current) {
@@ -1513,6 +1635,7 @@ export function NativeCliTerminal({
     ws.onerror = () => {
       if (disposedRef.current) return;
       if (wsRef.current !== ws) return;
+      mountRef_cb.current.setCliRespondingState(false);
       dispatchTerminalState({ type: 'websocket_error' });
       initialOutputPendingPaintRef.current = false;
     };
@@ -1523,6 +1646,7 @@ export function NativeCliTerminal({
     persistState,
     resetVisibleTerminalForResume,
     sessionKey,
+    setCliRespondingState,
   ]);
 
   const sendShellCompose = useCallback((text: string, notifyUserText = true) => {
@@ -1538,11 +1662,15 @@ export function NativeCliTerminal({
         rowsBeforeInput: terminalRowsSnapshot(termRef.current, mountRef.current),
       });
     }
+    clearInterruptedInputBeforeSend();
+    let sent = false;
     for (const payload of shellComposeToPtyInput(text)) {
-      sendTerminalData(payload);
+      sent = sendTerminalData(payload) || sent;
     }
+    if (sent) markCliRespondingStarted();
     persistState();
-  }, [onUserText, persistState, sendTerminalData, sessionKey]);
+    return sent;
+  }, [clearInterruptedInputBeforeSend, markCliRespondingStarted, onUserText, persistState, sendTerminalData, sessionKey]);
 
   const sendText = useCallback((text: string) => {
     if (!text.trim()) return;
@@ -1563,6 +1691,7 @@ export function NativeCliTerminal({
     }
     const ws = wsRef.current;
     if (ws?.readyState !== WebSocket.OPEN) return;
+    clearInterruptedInputBeforeSend();
     if (!userHasInteractedRef.current) {
       userHasInteractedRef.current = true;
       setWelcomeOverlayVisible(false);
@@ -1573,12 +1702,15 @@ export function NativeCliTerminal({
         rowsBeforeInput: terminalRowsSnapshot(termRef.current, mountRef.current),
       });
     }
+    let sent = false;
     for (const payload of shellComposeToPtyInput(text)) {
       ws.send(JSON.stringify({ type: 'data', data: payload }));
+      sent = true;
     }
+    if (sent) markCliRespondingStarted();
     startCliSessionIdFallbackResolver(text, startedAt);
     persistState();
-  }, [onUserText, persistState, sendShellCompose, sessionKey, startCliSessionIdFallbackResolver]);
+  }, [clearInterruptedInputBeforeSend, markCliRespondingStarted, onUserText, persistState, sendShellCompose, sessionKey, startCliSessionIdFallbackResolver]);
 
   const handleChatInputSend = useCallback((text: string, attachments?: FileAttachment[]) => {
     const trimmed = formatNativeCliTextWithAttachments(text, attachments);
@@ -1589,6 +1721,17 @@ export function NativeCliTerminal({
     }
     sendText(trimmed);
   }, [sendShellCompose, sendText]);
+
+  const handleChatInputStop = useCallback(() => {
+    interruptPreserveUntilRef.current = Date.now() + CLAUDE_INTERRUPT_PRESERVE_MS;
+    if (sendTerminalData(TERMINAL_ESCAPE)) {
+      promptReadyBufferRef.current = '';
+      clearInterruptedInputBeforeNextSendRef.current = true;
+      setCliRespondingState(false);
+    } else {
+      interruptPreserveUntilRef.current = 0;
+    }
+  }, [sendTerminalData, setCliRespondingState]);
 
   const handleModelChange = useCallback(async (modelId: string) => {
     const upstreamModel = normalizeOneApiModelId(modelId);
@@ -1639,6 +1782,7 @@ export function NativeCliTerminal({
     handleTerminalData, bindNativeCliSessionId,
     settleReadyWithoutInitialOutput, resetVisibleTerminalForResume,
     updateClaudeTopCompaction, updateInputShellStateFromTerminalScroll,
+    setCliRespondingState,
   });
   mountRef_cb.current = {
     connect, sendTerminalData, fitTerminalToContent, scheduleTerminalResize,
@@ -1646,6 +1790,7 @@ export function NativeCliTerminal({
     handleTerminalData, bindNativeCliSessionId,
     settleReadyWithoutInitialOutput, resetVisibleTerminalForResume,
     updateClaudeTopCompaction, updateInputShellStateFromTerminalScroll,
+    setCliRespondingState,
   };
 
   useEffect(() => {
@@ -1656,7 +1801,11 @@ export function NativeCliTerminal({
     ignoredManagedPassthroughSignatureLoggedRef.current = false;
     markerBufferRef.current = '';
     recentOutputRef.current = '';
+    promptReadyBufferRef.current = '';
+    interruptPreserveUntilRef.current = 0;
+    clearInterruptedInputBeforeNextSendRef.current = false;
     shellPassthroughRef.current = false;
+    setCliRespondingState(false);
     suppressReconnectRef.current = false;
 
     const persisted = loadPersistedTerminalState(sessionKey);
@@ -1747,6 +1896,9 @@ export function NativeCliTerminal({
       if (resizeRafRef.current) cancelAnimationFrame(resizeRafRef.current);
       if (initialOutputRafRef.current) cancelAnimationFrame(initialOutputRafRef.current);
       if (loadingExitTimerRef.current) clearTimeout(loadingExitTimerRef.current);
+      if (cliRespondingClearTimerRef.current) clearTimeout(cliRespondingClearTimerRef.current);
+      cliRespondingClearTimerRef.current = null;
+      setCliRespondingState(false);
       initialOutputPendingPaintRef.current = false;
       resizeObserverRef.current?.disconnect();
       window.removeEventListener('resize', handleWindowResize);
@@ -1759,7 +1911,7 @@ export function NativeCliTerminal({
       termRef.current = null;
       fitAddonRef.current = null;
     };
-  }, [sessionKey]);
+  }, [sessionKey, setCliRespondingState]);
 
   useEffect(() => {
     const nextCliSessionId = cliSessionId?.trim() || '';
@@ -1864,10 +2016,12 @@ export function NativeCliTerminal({
         <div className="native-cli-terminal__composer-inner pointer-events-auto">
           <ChatInput
             onSend={handleChatInputSend}
+            onStop={handleChatInputStop}
             onModelChange={handleModelChange}
             disabled={!nativeCliTerminalCanSend(terminalState)}
             disabledPlaceholder={desiredLoadingLabel || '正在连接会话'}
-            sending={false}
+            sending={cliResponding}
+            stopIcon="pause"
             isExpanded={inputShellState !== 'collapsed'}
             onFocusChange={handleInputFocusChange}
           />

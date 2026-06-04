@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { maskClaudeBannerInChunk } from '@/pages/Chat/NativeCliTerminal';
+import { isClaudePromptReadyChunk, maskClaudeBannerInChunk } from '@/pages/Chat/NativeCliTerminal';
 
 describe('maskClaudeBannerInChunk', () => {
   it('masks full Claude welcome box chunks, including rows without direct signatures', () => {
@@ -44,5 +44,17 @@ describe('maskClaudeBannerInChunk', () => {
     expect(masked.length).toBe(chunk.length);
     expect(masked).not.toContain('Opus 4.8 is now available');
     expect(masked).toContain('normal output');
+  });
+});
+
+describe('isClaudePromptReadyChunk', () => {
+  const prompt = String.fromCodePoint(0x276f);
+
+  it('detects Claude empty prompt rows after ANSI controls are stripped', () => {
+    expect(isClaudePromptReadyChunk(`\x1b[9;3H${prompt} \x1b[30m\x1b[47m \x1b[m`)).toBe(true);
+  });
+
+  it('does not treat the echoed user prompt as ready', () => {
+    expect(isClaudePromptReadyChunk(`${prompt} explain this bug\r\n`)).toBe(false);
   });
 });

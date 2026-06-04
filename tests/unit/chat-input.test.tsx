@@ -1,13 +1,25 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
+import type { ComponentProps } from 'react';
+import { MemoryRouter } from 'react-router-dom';
+import { TooltipProvider } from '@/components/ui/tooltip';
 import { ChatInput } from '@/pages/Chat/ChatInput';
 
 const { agentsState, chatState, gatewayState } = vi.hoisted(() => ({
   agentsState: {
     agents: [] as Array<Record<string, unknown>>,
+    agentSkills: {} as Record<string, string[]>,
   },
   chatState: {
+    currentSessionKey: 'agent:main:main',
     currentAgentId: 'main',
+    sessions: [{ key: 'agent:main:main' }] as Array<Record<string, unknown>>,
+    channelBindings: {} as Record<string, string>,
+    sessionModels: {} as Record<string, string>,
+    refresh: vi.fn(),
+    loading: false,
+    showThinking: false,
+    toggleThinking: vi.fn(),
   },
   gatewayState: {
     status: { state: 'running', port: 18789 },
@@ -15,7 +27,10 @@ const { agentsState, chatState, gatewayState } = vi.hoisted(() => ({
 }));
 
 vi.mock('@/stores/agents', () => ({
-  useAgentsStore: (selector: (state: typeof agentsState) => unknown) => selector(agentsState),
+  useAgentsStore: Object.assign(
+    (selector: (state: typeof agentsState) => unknown) => selector(agentsState),
+    { getState: () => agentsState },
+  ),
 }));
 
 vi.mock('@/stores/chat', () => ({
@@ -69,10 +84,29 @@ vi.mock('react-i18next', () => ({
   }),
 }));
 
+function renderChatInput(props: ComponentProps<typeof ChatInput>) {
+  return render(
+    <MemoryRouter>
+      <TooltipProvider>
+        <ChatInput {...props} />
+      </TooltipProvider>
+    </MemoryRouter>,
+  );
+}
+
 describe('ChatInput agent targeting', () => {
   beforeEach(() => {
     agentsState.agents = [];
+    agentsState.agentSkills = {};
+    chatState.currentSessionKey = 'agent:main:main';
     chatState.currentAgentId = 'main';
+    chatState.sessions = [{ key: 'agent:main:main' }];
+    chatState.channelBindings = {};
+    chatState.sessionModels = {};
+    chatState.refresh = vi.fn();
+    chatState.loading = false;
+    chatState.showThinking = false;
+    chatState.toggleThinking = vi.fn();
     gatewayState.status = { state: 'running', port: 18789 };
   });
 
@@ -91,7 +125,7 @@ describe('ChatInput agent targeting', () => {
       },
     ];
 
-    render(<ChatInput onSend={vi.fn()} />);
+    renderChatInput({ onSend: vi.fn() });
 
     expect(screen.queryByTitle('Choose agent')).not.toBeInTheDocument();
   });
@@ -123,7 +157,7 @@ describe('ChatInput agent targeting', () => {
       },
     ];
 
-    render(<ChatInput onSend={onSend} />);
+    renderChatInput({ onSend });
 
     fireEvent.click(screen.getByTitle('Choose agent'));
     fireEvent.click(screen.getByText('Research'));
@@ -131,8 +165,22 @@ describe('ChatInput agent targeting', () => {
     expect(screen.getByText('@Research')).toBeInTheDocument();
 
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Hello direct agent' } });
-    fireEvent.click(screen.getByTitle('Send'));
+    const sendButton = screen.getAllByTitle('Send').find((button) => !button.hasAttribute('disabled'));
+    expect(sendButton).toBeTruthy();
+    fireEvent.click(sendButton as HTMLElement);
 
     expect(onSend).toHaveBeenCalledWith('Hello direct agent', undefined, 'research');
+  });
+
+  it('calls onStop from the sending button state', () => {
+    const onStop = vi.fn();
+
+    renderChatInput({ onSend: vi.fn(), onStop, sending: true, stopIcon: 'pause' });
+
+    const stopButton = screen.getAllByTitle('Stop').find((button) => !button.hasAttribute('disabled'));
+    expect(stopButton).toBeTruthy();
+    fireEvent.click(stopButton as HTMLElement);
+
+    expect(onStop).toHaveBeenCalledTimes(1);
   });
 });
