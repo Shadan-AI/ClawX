@@ -19,6 +19,21 @@ describe('maskClaudeBannerInChunk', () => {
     expect(masked).not.toContain('workspace-bot');
   });
 
+  it('masks minimal Claude version banner chunks even without tips text', () => {
+    const chunk = [
+      '╭─── Claude Code v2.1.162 ───╮',
+      '│                            │',
+      '│        /help for help       │',
+      '╰────────────────────────────╯',
+    ].join('\r\n');
+
+    const masked = maskClaudeBannerInChunk(chunk);
+
+    expect(masked.length).toBe(chunk.length);
+    expect(masked).not.toContain('Claude Code v2.1.162');
+    expect(masked).not.toContain('/help for help');
+  });
+
   it('masks Claude VS Code onboarding prompt chunks without deleting ANSI bytes', () => {
     const chunk = [
       '\x1b[?2026h  ✻ Welcome to Claude Code for VS Code\x1b[K',

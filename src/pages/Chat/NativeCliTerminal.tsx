@@ -115,6 +115,7 @@ const NATIVE_CLI_TERMINAL_DEBUG_CHUNK_LIMIT = 80;
 const NATIVE_CLI_TERMINAL_DEBUG_PREVIEW_LIMIT = 1200;
 const NATIVE_CLI_RESPONDING_MIN_CLEAR_MS = 600;
 const NATIVE_CLI_RESPONDING_IDLE_CLEAR_MS = 2500;
+const NATIVE_CLI_RESPONDING_FALLBACK_IDLE_CLEAR_MS = 5000;
 const NATIVE_CLI_PROMPT_READY_BUFFER_CHARS = 4000;
 const CLAUDE_INTERRUPT_PRESERVE_MS = 2500;
 const CLAUDE_PROMPT_GLYPH = String.fromCodePoint(0x276f);
@@ -240,6 +241,7 @@ const CLAUDE_BANNER_LINE_SIGNATURES: RegExp[] = [
 ];
 
 const CLAUDE_CHROME_CHUNK_SIGNATURES: RegExp[] = [
+  /Claude Code v\d/iu,
   /Claude Code v\d[\s\S]*(?:Welcome back!|Tips for getting started|Run \/init|What's new)/iu,
   /Welcome to Claude Code for VS Code/iu,
 ];
@@ -264,6 +266,11 @@ function isClaudeChromeLine(rawLine: string): boolean {
   if (CLAUDE_FOOTER_INPUT_PROMPT_RE.test(rawLine)) return true;
   const cleaned = cleanTerminalControlText(rawLine);
   return CLAUDE_BANNER_LINE_SIGNATURES.some((re) => re.test(cleaned));
+}
+
+function isClaudeVsCodeOnboardingPrompt(chunk: string): boolean {
+  const cleaned = cleanTerminalControlText(chunk);
+  return /Welcome to Claude Code for VS Code|Press Enter to continue/iu.test(cleaned);
 }
 
 function hasClaudeResponseActivityChunk(chunk: string): boolean {
@@ -919,6 +926,7 @@ export function NativeCliTerminal({
   const cliRespondingClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const interruptPreserveUntilRef = useRef(0);
   const clearInterruptedInputBeforeNextSendRef = useRef(false);
+  const claudeOnboardingContinueSentRef = useRef(false);
   const ignoredManagedPassthroughSignatureLoggedRef = useRef(false);
   const cliSessionIdRef = useRef('');
   const activeSessionResolveRef = useRef('');
@@ -1031,13 +1039,14 @@ export function NativeCliTerminal({
     const promptReady = currentPromptReady || isClaudePromptReadyChunk(promptReadyBufferRef.current);
     if (hasClaudeResponseActivityChunk(visibleRaw) && !currentPromptReady) {
       promptReadyBufferRef.current = '';
-      return;
     }
-    if (!promptReady) return;
 
     const elapsedMs = Date.now() - lastCliInputAtRef.current;
     const minRemainingMs = Math.max(0, NATIVE_CLI_RESPONDING_MIN_CLEAR_MS - elapsedMs);
-    const clearDelayMs = Math.max(minRemainingMs, NATIVE_CLI_RESPONDING_IDLE_CLEAR_MS);
+    const clearDelayMs = Math.max(
+      minRemainingMs,
+      promptReady ? NATIVE_CLI_RESPONDING_IDLE_CLEAR_MS : NATIVE_CLI_RESPONDING_FALLBACK_IDLE_CLEAR_MS,
+    );
 
     if (clearDelayMs <= 0) {
       promptReadyBufferRef.current = '';
@@ -1085,6 +1094,7 @@ export function NativeCliTerminal({
     promptReadyBufferRef.current = '';
     interruptPreserveUntilRef.current = 0;
     clearInterruptedInputBeforeNextSendRef.current = false;
+    claudeOnboardingContinueSentRef.current = false;
     shellPassthroughRef.current = false;
     setCliRespondingState(false);
     userHasInteractedRef.current = true;
@@ -1239,6 +1249,14 @@ export function NativeCliTerminal({
     });
   }, []);
 
+  const settleClaudeReadyFromTerminalData = useCallback((visibleRaw: string) => {
+    if (!awaitingInitialOutput) return;
+    if (!isClaudeNativeCliProvider(effectiveProvider)) return;
+    if (!isClaudePromptReadyChunk(visibleRaw)) return;
+    initialOutputPendingPaintRef.current = false;
+    settleReadyWithoutInitialOutput();
+  }, [awaitingInitialOutput, effectiveProvider, settleReadyWithoutInitialOutput]);
+
   const updateClaudeTopCompaction = useCallback(() => {
     const mount = mountRef.current;
     if (!mount) return;
@@ -1268,6 +1286,18 @@ export function NativeCliTerminal({
     const visibleRaw = stripTerminalStreamMarkers(raw);
     updateShellPassthroughState(visibleRaw);
     updateCliRespondingFromTerminalData(visibleRaw);
+    settleClaudeReadyFromTerminalData(visibleRaw);
+    if (
+      isClaudeNativeCliProvider(effectiveProvider)
+      && !claudeOnboardingContinueSentRef.current
+      && isClaudeVsCodeOnboardingPrompt(visibleRaw)
+    ) {
+      const ws = wsRef.current;
+      if (ws?.readyState === WebSocket.OPEN) {
+        claudeOnboardingContinueSentRef.current = true;
+        ws.send(JSON.stringify({ type: 'data', data: '\r' }));
+      }
+    }
 
     const renderRaw = effectiveProvider === 'claude'
       ? maskClaudeBannerInChunk(
@@ -1315,7 +1345,7 @@ export function NativeCliTerminal({
         rawPreview: previewNativeCliTerminalChunk(raw),
       });
     }
-  }, [effectiveProvider, persistState, requestInitialOutputSettle, sessionKey, stripTerminalStreamMarkers, updateClaudeTopCompaction, updateCliRespondingFromTerminalData, updateShellPassthroughState]);
+  }, [effectiveProvider, persistState, requestInitialOutputSettle, sessionKey, settleClaudeReadyFromTerminalData, stripTerminalStreamMarkers, updateClaudeTopCompaction, updateCliRespondingFromTerminalData, updateShellPassthroughState]);
 
   const sendTerminalData = useCallback((data: string) => {
     const ws = wsRef.current;
@@ -1553,7 +1583,9 @@ export function NativeCliTerminal({
       mountRef_cb.current.fitTerminalToContent();
       const term = termRef.current;
       if (term) ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
-      if (!knownCliSessionId) mountRef_cb.current.settleReadyWithoutInitialOutput();
+      if (!knownCliSessionId && !isClaudeNativeCliProvider(normalizedProvider)) {
+        mountRef_cb.current.settleReadyWithoutInitialOutput();
+      }
     };
 
     ws.onmessage = (event) => {
@@ -1804,6 +1836,7 @@ export function NativeCliTerminal({
     promptReadyBufferRef.current = '';
     interruptPreserveUntilRef.current = 0;
     clearInterruptedInputBeforeNextSendRef.current = false;
+    claudeOnboardingContinueSentRef.current = false;
     shellPassthroughRef.current = false;
     setCliRespondingState(false);
     suppressReconnectRef.current = false;
