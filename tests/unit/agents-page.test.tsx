@@ -1,6 +1,7 @@
 import React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { Agents } from '../../src/pages/Agents/index';
 
 const hostApiFetchMock = vi.fn();
@@ -33,23 +34,41 @@ vi.mock('@/stores/gateway', () => ({
 }));
 
 vi.mock('@/stores/agents', () => ({
-  useAgentsStore: (selector?: (state: typeof agentsState & {
-    fetchAgents: typeof fetchAgentsMock;
-    updateAgent: typeof updateAgentMock;
-    updateAgentModel: typeof updateAgentModelMock;
-    createAgent: ReturnType<typeof vi.fn>;
-    deleteAgent: ReturnType<typeof vi.fn>;
-  }) => unknown) => {
-    const state = {
-      ...agentsState,
-      fetchAgents: fetchAgentsMock,
-      updateAgent: updateAgentMock,
-      updateAgentModel: updateAgentModelMock,
-      createAgent: vi.fn(),
-      deleteAgent: vi.fn(),
-    };
-    return typeof selector === 'function' ? selector(state) : state;
-  },
+  useAgentsStore: Object.assign(
+    (selector?: (state: typeof agentsState & {
+      agentSkills: Record<string, unknown>;
+      agentTemplates: Record<string, unknown>;
+      fetchAgents: typeof fetchAgentsMock;
+      updateAgent: typeof updateAgentMock;
+      updateAgentModel: typeof updateAgentModelMock;
+      createAgent: ReturnType<typeof vi.fn>;
+      deleteAgent: ReturnType<typeof vi.fn>;
+    }) => unknown) => {
+      const state = {
+        ...agentsState,
+        agentSkills: {},
+        agentTemplates: {},
+        fetchAgents: fetchAgentsMock,
+        updateAgent: updateAgentMock,
+        updateAgentModel: updateAgentModelMock,
+        createAgent: vi.fn(),
+        deleteAgent: vi.fn(),
+      };
+      return typeof selector === 'function' ? selector(state) : state;
+    },
+    {
+      getState: () => ({
+        ...agentsState,
+        agentSkills: {},
+        agentTemplates: {},
+        fetchAgents: fetchAgentsMock,
+        updateAgent: updateAgentMock,
+        updateAgentModel: updateAgentModelMock,
+        createAgent: vi.fn(),
+        deleteAgent: vi.fn(),
+      }),
+    },
+  ),
 }));
 
 vi.mock('@/stores/providers', () => ({
@@ -86,6 +105,10 @@ vi.mock('sonner', () => ({
   },
 }));
 
+function renderAgents() {
+  return render(<Agents />, { wrapper: MemoryRouter });
+}
+
 describe('Agents page status refresh', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -115,7 +138,7 @@ describe('Agents page status refresh', () => {
       return vi.fn();
     });
 
-    render(<Agents />);
+    renderAgents();
 
     await waitFor(() => {
       expect(fetchAgentsMock).toHaveBeenCalledTimes(1);
@@ -136,7 +159,7 @@ describe('Agents page status refresh', () => {
   it('refetches channel accounts when the gateway transitions to running after mount', async () => {
     gatewayState.status = { state: 'starting', port: 18789 };
 
-    const { rerender } = render(<Agents />);
+    const { rerender } = renderAgents();
 
     await waitFor(() => {
       expect(fetchAgentsMock).toHaveBeenCalledTimes(1);
@@ -178,6 +201,7 @@ describe('Agents page status refresh', () => {
         vendorId: 'openrouter',
         authMode: 'api_key',
         model: 'openrouter/anthropic/claude-opus-4.6',
+        fallbackModels: ['anthropic/claude-sonnet-4.5'],
         enabled: true,
         createdAt: '2026-03-24T00:00:00.000Z',
         updatedAt: '2026-03-24T00:00:00.000Z',
@@ -189,29 +213,30 @@ describe('Agents page status refresh', () => {
     ];
     providersState.defaultAccountId = 'openrouter-default';
 
-    render(<Agents />);
+    renderAgents();
 
     await waitFor(() => {
       expect(fetchAgentsMock).toHaveBeenCalledTimes(1);
     });
 
-    fireEvent.click(screen.getByTitle('settings'));
+    fireEvent.click(screen.getByRole('button', { name: 'settings' }));
     fireEvent.click(screen.getByText('settingsDialog.modelLabel').closest('button') as HTMLButtonElement);
 
     const useDefaultButton = await screen.findByRole('button', { name: 'settingsDialog.useDefaultModel' });
-    const modelIdInput = screen.getByLabelText('settingsDialog.modelIdLabel');
     const saveButton = screen.getByRole('button', { name: 'common:actions.save' });
 
     expect(useDefaultButton).toBeDisabled();
 
-    fireEvent.change(modelIdInput, { target: { value: 'anthropic/claude-sonnet-4.5' } });
+    fireEvent.change(screen.getByLabelText('settingsDialog.modelIdLabel'), {
+      target: { value: 'anthropic/claude-sonnet-4.5' },
+    });
     expect(useDefaultButton).toBeEnabled();
     expect(saveButton).toBeEnabled();
 
     fireEvent.click(useDefaultButton);
 
     expect(updateAgentModelMock).not.toHaveBeenCalled();
-    expect((modelIdInput as HTMLInputElement).value).toBe('anthropic/claude-opus-4.6');
+    expect((screen.getByLabelText('settingsDialog.modelIdLabel') as HTMLSelectElement).value).toBe('anthropic/claude-opus-4.6');
     expect(useDefaultButton).toBeDisabled();
   });
 
@@ -232,7 +257,7 @@ describe('Agents page status refresh', () => {
       },
     ];
 
-    const { rerender } = render(<Agents />);
+    const { rerender } = renderAgents();
 
     expect(await screen.findByText('Main')).toBeInTheDocument();
 
@@ -251,7 +276,7 @@ describe('Agents page status refresh', () => {
     refreshProviderSnapshotMock.mockImplementation(() => new Promise(() => {}));
     hostApiFetchMock.mockImplementation(() => new Promise(() => {}));
 
-    const { container } = render(<Agents />);
+    const { container } = renderAgents();
 
     expect(container.querySelector('svg.animate-spin')).toBeTruthy();
     expect(screen.queryByText('title')).not.toBeInTheDocument();

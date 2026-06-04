@@ -975,6 +975,7 @@ const ONEAPI_NATIVE_BASE_URL = 'https://one-api.shadanai.com/v1';
 const ONEAPI_MODEL_PROVIDER_PREFIX = 'shadan/';
 const NATIVE_CLAUDE_PROXY_PORT = 13211;
 const NATIVE_CLAUDE_SONNET_ALIAS = 'claude-sonnet-4-6';
+const FALLBACK_AGENT_MODEL_ID = 'glm-5';
 
 function normalizeOneApiModelId(modelRef: string | null | undefined): string {
   const trimmed = (modelRef || '').trim();
@@ -1012,7 +1013,7 @@ function formatNativeCliArgs(args: string[] | undefined, modelId: string): strin
   return args.map((arg) => arg === '{modelId}' ? cliModelId : arg);
 }
 
-async function verifyOneApiToken(tokenKey: string): Promise<{ ok: boolean; error?: string }> {
+async function verifyOneApiToken(tokenKey: string): Promise<{ ok: boolean; error?: string; skipped?: boolean }> {
   try {
     const response = await fetch(`${ONEAPI_NATIVE_BASE_URL}/models`, {
       headers: { Authorization: `Bearer ${tokenKey.trim()}` },
@@ -1024,7 +1025,9 @@ async function verifyOneApiToken(tokenKey: string): Promise<{ ok: boolean; error
       : `OneAPI 验证失败: ${response.status}`;
     return { ok: false, error: message };
   } catch (error) {
-    return { ok: false, error: `OneAPI 验证失败: ${String(error)}` };
+    const message = `OneAPI verification skipped: ${String(error)}`;
+    console.warn('[AddAgentDialog] OneAPI token verification skipped after network error:', error);
+    return { ok: true, error: message, skipped: true };
   }
 }
 
@@ -1088,7 +1091,7 @@ function AddAgentDialog({
     (envSteps.length > 0 && envSteps.every(s => s.status === 'success'));
   
   const { models, fetchModels, createDigitalEmployee, fetchDigitalEmployees, getTokenKey } = useModelsStore();
-  const { fetchAgents } = useAgentsStore();
+  const { fetchAgents, createAgent } = useAgentsStore();
   const { templates, fetchTemplates, loading: templatesLoading } = useAgentTemplatesStore();
   
   // 加载模板列表（只加载一次，避免无限循环）
@@ -1232,7 +1235,7 @@ function AddAgentDialog({
         }
         current = updateEnvStep(current, 'env', {
           status: 'success',
-          version: modelId,
+          version: tokenVerification.skipped ? `${modelId} (verify skipped)` : modelId,
         });
         setEnvSteps([...current]);
       }
@@ -1245,7 +1248,10 @@ function AddAgentDialog({
 
   const handleSubmit = async () => {
     if (!name.trim()) return;
-    if (!selectedModel) {
+    const submitModel = normalizeOneApiModelId(selectedModel) || (
+      runtimePreset === 'embedded' ? FALLBACK_AGENT_MODEL_ID : ''
+    );
+    if (!submitModel) {
       toast.error('请选择模型');
       return;
     }
@@ -1259,6 +1265,9 @@ function AddAgentDialog({
           return;
         }
         const tokenVerification = await verifyOneApiToken(tokenKey);
+        if (tokenVerification.skipped) {
+          toast.warning(tokenVerification.error || 'OneAPI verification skipped.');
+        }
         if (!tokenVerification.ok) {
           toast.error(tokenVerification.error || 'OneAPI Token 验证失败');
           setSaving(false);
@@ -1270,11 +1279,11 @@ function AddAgentDialog({
         // 编辑模式：更新已有数字员工
         const { updateAgent, updateAgentModel } = useAgentsStore.getState();
         await updateAgent(editAgent.id, name.trim());
-        await updateAgentModel(editAgent.id, buildOneApiModelRef(selectedModel));
+        await updateAgentModel(editAgent.id, buildOneApiModelRef(submitModel));
 
         // 更新 runtime 配置
         if (runtimePreset !== 'embedded') {
-          const runtime = await buildNativeCliRuntimeConfig(runtimePreset, selectedModel);
+          const runtime = await buildNativeCliRuntimeConfig(runtimePreset, submitModel);
           await hostApiFetch(`/api/agents/${encodeURIComponent(editAgent.id)}/runtime`, {
             method: 'PUT',
             body: JSON.stringify({ runtime, reloadGateway: false }),
@@ -1295,7 +1304,33 @@ function AddAgentDialog({
       }
 
       // 创建模式
-      const employee = await createDigitalEmployee(name.trim(), headImage, selectedModel);
+      let employee: {
+        id: number;
+        openclawAgentId: string;
+      };
+      let remoteEmployeeCreated = true;
+
+      try {
+        employee = await createDigitalEmployee(name.trim(), headImage, submitModel);
+      } catch (cloudErr) {
+        remoteEmployeeCreated = false;
+        console.warn('[AddAgentDialog] Cloud digital employee creation failed; creating local agent only:', cloudErr);
+        const existingAgentIds = new Set(useAgentsStore.getState().agents.map((agent) => agent.id));
+        await createAgent(name.trim(), { inheritWorkspace: true });
+        await fetchAgents();
+        const createdAgent = useAgentsStore.getState().agents.find((candidate) => (
+          !existingAgentIds.has(candidate.id) && candidate.name === name.trim()
+        ));
+        if (!createdAgent) {
+          throw cloudErr;
+        }
+        employee = {
+          id: 0,
+          openclawAgentId: createdAgent.id,
+        };
+        await useAgentsStore.getState().updateAgentModel(createdAgent.id, buildOneApiModelRef(submitModel));
+        toast.warning('Cloud employee creation failed. Created a local Agent instead; channel sync is unavailable.');
+      }
 
       // 如果选择了模板，应用模板的技能和profile文件
       if (selectedTemplateId) {
@@ -1313,8 +1348,10 @@ function AddAgentDialog({
             .filter((id): id is string => id !== undefined);
 
           if (skillIds.length > 0) {
-            const { updateEmployeeSkills } = useModelsStore.getState();
-            await updateEmployeeSkills(employee.id, skillIds);
+            if (remoteEmployeeCreated) {
+              const { updateEmployeeSkills } = useModelsStore.getState();
+              await updateEmployeeSkills(employee.id, skillIds);
+            }
 
             // 保存模板关联
             const { useAgentsStore } = await import('@/stores/agents');
@@ -1359,17 +1396,22 @@ function AddAgentDialog({
         }
       }
 
-      toast.success('数字员工创建成功');
+      toast.success(remoteEmployeeCreated ? '数字员工创建成功' : '本地 Agent 创建成功');
 
       // 等待一小段时间，确保 IM 平台已经完全创建了 bot
       await new Promise(resolve => setTimeout(resolve, 500));
 
       // 刷新列表（包括频道）
-      await Promise.all([fetchDigitalEmployees(), fetchAgents()]);
+      await Promise.all([
+        remoteEmployeeCreated ? fetchDigitalEmployees() : Promise.resolve(),
+        fetchAgents(),
+      ]);
 
       // 同步 bots 到配置文件（创建频道绑定）
       try {
-        await invokeIpc('box-im:syncBots');
+        if (remoteEmployeeCreated) {
+          await invokeIpc('box-im:syncBots');
+        }
 
         // 再次刷新以显示新的频道和模板
         await Promise.all([onRefresh(), fetchAgents()]);
@@ -1377,7 +1419,7 @@ function AddAgentDialog({
         // 写入 runtime 配置（如果选择了 native-cli）
         if (runtimePreset !== 'embedded') {
           try {
-            const runtime = await buildNativeCliRuntimeConfig(runtimePreset, selectedModel);
+            const runtime = await buildNativeCliRuntimeConfig(runtimePreset, submitModel);
             await hostApiFetch(`/api/agents/${encodeURIComponent(employee.openclawAgentId)}/runtime`, {
               method: 'PUT',
               body: JSON.stringify({ runtime, reloadGateway: false }),
@@ -1390,7 +1432,7 @@ function AddAgentDialog({
         }
       } catch (syncErr) {
         console.error('[AddAgentDialog] Failed to sync bots:', syncErr);
-        toast.error('频道同步失败: ' + String(syncErr));
+        toast.warning('Channel sync failed after agent creation: ' + String(syncErr));
       }
 
       onClose();
