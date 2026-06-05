@@ -34,6 +34,43 @@ describe('maskClaudeBannerInChunk', () => {
     expect(masked).not.toContain('/help for help');
   });
 
+  it('masks Claude startup chrome rows when the banner arrives split across chunks', () => {
+    const chunks = [
+      '│                Welcome back!               │ Tips for getting started │',
+      '│                                            │ Run /init to create a CLAUDE.md file │',
+      '│     Sonnet 4.6 · API Usage Billing         │',
+      '│   ~\\.openclaw\\workspace-bot-mq09e9lv857i   │',
+    ];
+
+    for (const chunk of chunks) {
+      const masked = maskClaudeBannerInChunk(chunk);
+      expect(masked.length).toBe(chunk.length);
+      expect(masked.trim()).toBe('');
+    }
+  });
+
+  it('masks the recurring Claude control footer row by itself', () => {
+    const footer = '⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents\n                                                             ⧉';
+    const masked = maskClaudeBannerInChunk(footer);
+
+    expect(masked.length).toBe(footer.length);
+    expect(masked.trim()).toBe('');
+  });
+
+  it('does not mask the Claude effort footer row by itself', () => {
+    const footer = '● high · /effort';
+
+    expect(maskClaudeBannerInChunk(footer)).toBe(footer);
+  });
+
+  it('masks standalone Claude footer separator rows', () => {
+    const separator = '───────────────────────────────────────────────────────────────────────────';
+    const masked = maskClaudeBannerInChunk(separator);
+
+    expect(masked.length).toBe(separator.length);
+    expect(masked.trim()).toBe('');
+  });
+
   it('masks Claude VS Code onboarding prompt chunks without deleting ANSI bytes', () => {
     const chunk = [
       '\x1b[?2026h  ✻ Welcome to Claude Code for VS Code\x1b[K',

@@ -227,23 +227,29 @@ function traceNativeCliTerminal(stage: string, payload: Record<string, unknown>)
 //     - the empty input-prompt row identified by its inverse-video cursor
 //       SGR sequence (matched on the raw line, not the cleaned one).
 const CLAUDE_BANNER_LINE_SIGNATURES: RegExp[] = [
+  /[\u2580-\u259f]{2,}/u,       // mascot row (any banner row)
   /[▀-▟]{2,}/,                    // mascot row (any banner row)
   /Claude Code v\d/,              // "Claude Code v2.1.162"
+  /Welcome back!/iu,
+  /Tips for getting started/iu,
+  /Run \/init to create/i,
+  /CLAUDE\.md file/i,
+  /API Usage Billing/iu,
+  /Subscription/iu,
   /· API Usage Billing/,          // billing line
   /· Subscription/,               // alternate billing label seen in some plans
   /\\workspace-[A-Za-z0-9_-]+$/,  // cwd row tail (Windows path inside banner)
-  /^\s*[─━]{12,}\s*$/u,                                                  // separator rows
-  /⏵⏵\s+(?:bypass permissions|accept edits|plan mode|default mode|read[- ]only)/iu,
-  /●\s+(?:low|medium|high|max|none)\s*·\s*\/effort/iu,
+  /(?:^|[~.\\\/])\.openclaw[\\\/]workspace-[A-Za-z0-9_-]+/i,
+  /^\s*[\u2500\u2501]{12,}\s*$/u,
+  /^\s*(?:\u23f5\u23f5|\u25b8\u25b8)\s+(?:bypass permissions|accept edits|plan mode|default mode|read[- ]only)\b[\s\S]*shift\+tab to cycle[\s\S]*for agents[\s\S]*$/iu,
   /^\s*▎\s+.+\bis now available!\s*·\s*\/model to switch/iu,
-  /shift\+tab to cycle/iu,
-  /esc to interrupt/iu,
 ];
 
 const CLAUDE_CHROME_CHUNK_SIGNATURES: RegExp[] = [
   /Claude Code v\d/iu,
   /Claude Code v\d[\s\S]*(?:Welcome back!|Tips for getting started|Run \/init|What's new)/iu,
   /Welcome to Claude Code for VS Code/iu,
+  /Tips for getting started[\s\S]*Run \/init to create/iu,
 ];
 
 const CLAUDE_FOOTER_INPUT_PROMPT_RE = /^\s*❯\s+\x1b\[30m\x1b\[47m\s\x1b\[m/u;
@@ -966,6 +972,7 @@ export function NativeCliTerminal({
     ? agent.runtime.nativeCli.env
     : undefined;
   const effectiveProvider = normalizedProvider || normalizeProvider(agent?.runtime?.nativeCli?.provider) || 'claude';
+  const isClaudeProvider = isClaudeNativeCliProvider(effectiveProvider);
   const configuredClaudeProxyRouteModel = useMemo(
     () => extractClaudeProxyRouteModel(claudeRuntimeEnv?.ANTHROPIC_BASE_URL),
     [claudeRuntimeEnv?.ANTHROPIC_BASE_URL],
@@ -1169,7 +1176,7 @@ export function NativeCliTerminal({
     const outputSignature = TERMINAL_SHELL_PASSTHROUGH_SIGNATURES.find((signature) => (
       combinedOutput.includes(signature)
     ));
-    const managedClaudeSignature = effectiveProvider === 'claude' ? outputSignature : undefined;
+    const managedClaudeSignature = isClaudeProvider ? outputSignature : undefined;
     const matchedSignature = managedClaudeSignature ? undefined : outputSignature;
     recentOutputRef.current = combinedOutput.slice(-TERMINAL_SHELL_PASSTHROUGH_BUFFER_CHARS);
     if (managedClaudeSignature && !ignoredManagedPassthroughSignatureLoggedRef.current) {
@@ -1194,7 +1201,7 @@ export function NativeCliTerminal({
         recentPreview: previewNativeCliTerminalChunk(recentOutputRef.current),
       });
     }
-  }, [effectiveProvider, sessionKey]);
+  }, [isClaudeProvider, sessionKey]);
 
   const settleInitialOutputAfterPaint = useCallback(() => {
     if (initialOutputRafRef.current) {
@@ -1260,7 +1267,7 @@ export function NativeCliTerminal({
   const updateClaudeTopCompaction = useCallback(() => {
     const mount = mountRef.current;
     if (!mount) return;
-    if (effectiveProvider !== 'claude') {
+    if (!isClaudeProvider) {
       mount.style.setProperty('--terminal-top-compaction', '0px');
       return;
     }
@@ -1276,7 +1283,7 @@ export function NativeCliTerminal({
       ? Math.round(blankRows * measureTerminalLineHeight(term, mount))
       : 0;
     mount.style.setProperty('--terminal-top-compaction', offsetPx > 0 ? `-${offsetPx}px` : '0px');
-  }, [effectiveProvider]);
+  }, [isClaudeProvider]);
 
   const handleTerminalData = useCallback((raw: string) => {
     // Strip-in-place: ANSI control bytes pass through untouched; only the
@@ -1299,7 +1306,7 @@ export function NativeCliTerminal({
       }
     }
 
-    const renderRaw = effectiveProvider === 'claude'
+    const renderRaw = isClaudeProvider
       ? maskClaudeBannerInChunk(
         Date.now() < interruptPreserveUntilRef.current
           ? preserveClaudeInterruptChunk(visibleRaw)
@@ -1345,7 +1352,7 @@ export function NativeCliTerminal({
         rawPreview: previewNativeCliTerminalChunk(raw),
       });
     }
-  }, [effectiveProvider, persistState, requestInitialOutputSettle, sessionKey, settleClaudeReadyFromTerminalData, stripTerminalStreamMarkers, updateClaudeTopCompaction, updateCliRespondingFromTerminalData, updateShellPassthroughState]);
+  }, [effectiveProvider, isClaudeProvider, persistState, requestInitialOutputSettle, sessionKey, settleClaudeReadyFromTerminalData, stripTerminalStreamMarkers, updateClaudeTopCompaction, updateCliRespondingFromTerminalData, updateShellPassthroughState]);
 
   const sendTerminalData = useCallback((data: string) => {
     const ws = wsRef.current;
@@ -1853,7 +1860,7 @@ export function NativeCliTerminal({
 
     await useModelsStore.getState().setCurrentModel(upstreamModel);
 
-    if (effectiveProvider !== 'claude' || !agent?.runtime?.nativeCli) return;
+    if (!isClaudeProvider || !agent?.runtime?.nativeCli) return;
 
     const routeModel = activeClaudeProxyRouteModelRef.current || configuredClaudeProxyRouteModel || upstreamModel;
     activeClaudeProxyRouteModelRef.current = routeModel;
@@ -1886,7 +1893,7 @@ export function NativeCliTerminal({
     void refreshAgents().catch((error) => console.warn('[native-cli-terminal] Failed to refresh agents after model switch:', error));
 
     sendText(`/model ${CLAUDE_NATIVE_SONNET_ALIAS}`);
-  }, [agent, agentId, configuredClaudeProxyRouteModel, effectiveProvider, refreshAgents, sendText]);
+  }, [agent, agentId, configuredClaudeProxyRouteModel, isClaudeProvider, refreshAgents, sendText]);
 
   // Stable ref for mount-effect callbacks so the terminal instance survives
   // callback identity changes (e.g. normalizedProvider undefined → 'claude').
@@ -1927,7 +1934,12 @@ export function NativeCliTerminal({
     const initialCliSessionId = resolveStoredCliSessionId(sessionKey, cliSessionIdPropRef.current) || persisted.cliSessionId || '';
     cliSessionIdRef.current = initialCliSessionId;
     userHasInteractedRef.current = Boolean(cliSessionIdRef.current || persisted.userHasInteracted);
-    bufferRef.current = initialCliSessionId ? '' : persisted.buffer ?? '';
+    const persistedBuffer = persisted.buffer ?? '';
+    bufferRef.current = initialCliSessionId
+      ? ''
+      : isClaudeProvider
+        ? maskClaudeBannerInChunk(persistedBuffer)
+        : persistedBuffer;
     // Hide the welcome overlay immediately for resumed sessions (the user has
     // history and doesn't need a greeting). Fresh sessions show it until the
     // first send.

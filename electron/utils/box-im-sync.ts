@@ -863,7 +863,10 @@ function buildAccountsFromBots(
     logger.debug(`[box-im-sync] Building account for ${agentId}: bot.model="${bot.model}", final model="${modelValue}"`);
     
     accounts[agentId] = {
-      enabled: true,
+      // Keep synced Box IM bots configured for routing/model metadata, but do
+      // not let the gateway auto-connect every bot account during desktop
+      // startup. Users can still enable a specific account explicitly.
+      enabled: false,
       accessToken: bot.accessToken || existing[agentId]?.accessToken || '',
       userId: bot.id,
       botName: bot.nickName,
@@ -873,6 +876,42 @@ function buildAccountsFromBots(
     };
   }
   return accounts;
+}
+
+export async function disableBoxImBotAccountAutoStart(): Promise<boolean> {
+  const cfg = await readOpenClawConfig() as Record<string, unknown> & OpenClawConfig;
+  const boxIm = cfg.channels?.[CHANNEL_ID] as (Record<string, unknown> & { accounts?: Record<string, BoxImAccount> }) | undefined;
+  const accounts = boxIm?.accounts;
+  if (!accounts || typeof accounts !== 'object') return false;
+
+  let changed = false;
+  let disabledCount = 0;
+  const nextAccounts: Record<string, BoxImAccount> = {};
+
+  for (const [accountId, account] of Object.entries(accounts)) {
+    if (!account || typeof account !== 'object') {
+      nextAccounts[accountId] = account;
+      continue;
+    }
+    if (account.enabled !== false) {
+      nextAccounts[accountId] = { ...account, enabled: false };
+      changed = true;
+      disabledCount += 1;
+    } else {
+      nextAccounts[accountId] = account;
+    }
+  }
+
+  if (!changed) return false;
+  if (!cfg.channels) cfg.channels = {};
+  cfg.channels[CHANNEL_ID] = {
+    ...boxIm,
+    accounts: nextAccounts,
+    enabled: boxIm?.enabled ?? true,
+  };
+  await writeOpenClawConfig(cfg);
+  logger.info(`[box-im] Disabled gateway auto-start for ${disabledCount} bot account(s)`);
+  return true;
 }
 
 async function reconcileAgents(

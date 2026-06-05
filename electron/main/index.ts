@@ -577,6 +577,13 @@ async function initialize(): Promise<void> {
           return null;
         });
 
+      try {
+        const { disableBoxImBotAccountAutoStart } = await import('../utils/box-im-sync');
+        await disableBoxImBotAccountAutoStart();
+      } catch (error) {
+        logger.warn('[box-im] Failed to disable bot account auto-start before Gateway launch:', error);
+      }
+
       logger.debug('Auto-starting Gateway...');
       await gatewayManager.start();
       gatewayReadyAt = Date.now();
@@ -626,14 +633,14 @@ async function initialize(): Promise<void> {
           await ensureLoggedInWireGuard('startup');
           logger.info('[box-im] WireGuard VPN startup ensure completed');
 
-          logger.debug('[box-im] User is logged in, auto-syncing bot agents...');
+          logger.debug('[box-im] User is logged in, background-syncing bot agents...');
           await syncBots();
-          logger.info('[box-im] Bot agents auto-sync completed');
+          logger.info('[box-im] Bot agents background sync completed');
         }
       } catch (error) {
-        logger.warn('[box-im] Bot agents auto-sync failed (non-fatal):', error);
+        logger.warn('[box-im] Bot agents background sync failed (non-fatal):', error);
       }
-    }, 3000);
+    }, 60_000);
   }
 
   // Merge ClawX context snippets into the workspace bootstrap files.

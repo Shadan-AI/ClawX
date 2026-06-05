@@ -123,4 +123,39 @@ describe('box-im sync config writes', () => {
     expect(written.plugins.allow).toEqual(['box-im']);
     expect(written.plugins.entries['box-im']).toEqual({ enabled: true });
   });
+
+  it('disables box-im bot account auto-start before gateway launch', async () => {
+    const config = {
+      channels: {
+        'box-im': {
+          enabled: true,
+          ownerAuth: { tokenKey: 'owner-token' },
+          accounts: {
+            'bot-one': { enabled: true, accessToken: 'one', userId: 1, botName: 'One' },
+            'bot-two': { accessToken: 'two', userId: 2, botName: 'Two' },
+            'bot-three': { enabled: false, accessToken: 'three', userId: 3, botName: 'Three' },
+          },
+        },
+      },
+      plugins: {
+        entries: {
+          'box-im': { enabled: true },
+        },
+      },
+      agents: { list: [] },
+      bindings: [],
+    };
+    readOpenClawConfigMock.mockResolvedValue(config);
+
+    const { disableBoxImBotAccountAutoStart } = await import('@electron/utils/box-im-sync');
+
+    await expect(disableBoxImBotAccountAutoStart()).resolves.toBe(true);
+
+    const written = writeOpenClawConfigMock.mock.calls[0][0] as Record<string, any>;
+    expect(written.channels['box-im'].enabled).toBe(true);
+    expect(written.channels['box-im'].ownerAuth).toEqual({ tokenKey: 'owner-token' });
+    expect(written.channels['box-im'].accounts['bot-one'].enabled).toBe(false);
+    expect(written.channels['box-im'].accounts['bot-two'].enabled).toBe(false);
+    expect(written.channels['box-im'].accounts['bot-three'].enabled).toBe(false);
+  });
 });
