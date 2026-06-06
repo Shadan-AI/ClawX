@@ -202,6 +202,37 @@ export interface BoxImSyncResult {
   error?: string;
 }
 
+export interface SyncBotsOptions {
+  syncProfiles?: boolean;
+  syncFriends?: boolean;
+  fetchMissingTokens?: boolean;
+  validateModels?: boolean;
+  /** Force full sync even if bot fingerprint hasn't changed. */
+  forceSync?: boolean;
+  /** Skip migrateAgentModels() — use when syncBotsInternal will run and
+   *  handle model assignment itself, avoiding a duplicate API fetch. */
+  skipMigration?: boolean;
+}
+
+/** Compute a stable fingerprint from a bot list to detect changes. */
+function computeBotFingerprint(bots: BotInfo[]): string {
+  const parts = bots
+    .map((b) => {
+      const agentId = b.openclawAgentId || b.userName || `bot-${b.id}`;
+      return `${agentId}:${b.model ?? ''}:${b.nickName ?? ''}`;
+    })
+    .sort();
+  // Simple fast hash — we just need a change detector, not crypto security.
+  let hash = 0;
+  const joined = parts.join('|');
+  for (let i = 0; i < joined.length; i++) {
+    const ch = joined.charCodeAt(i);
+    hash = ((hash << 5) - hash) + ch;
+    hash |= 0; // Convert to 32-bit int
+  }
+  return `v1:${bots.length}:${hash.toString(36)}`;
+}
+
 async function fetchAvailableOneApiModelIds(tokenKey: string): Promise<Set<string> | null> {
   try {
     const resp = await fetch(`${DEFAULT_ONEAPI_BASE_URL}/v1/models`, {
@@ -983,17 +1014,37 @@ function reconcileBindings(
   oldBindings: Binding[],
   accountIds: string[],
 ): Binding[] {
+  // Keep non-box-im bindings, and only box-im bindings for accounts that
+  // still exist.  This avoids recreating identical bindings for all 32
+  // agents when only one new agent was added.
+  const existingBoxImBindings = new Map<string, Binding>();
+  for (const b of oldBindings) {
+    if (b.match?.channel === CHANNEL_ID && b.match.accountId) {
+      existingBoxImBindings.set(String(b.match.accountId), b);
+    }
+  }
+
   const result = oldBindings.filter(b => b.match?.channel !== CHANNEL_ID);
-  logger.debug(`[box-im] reconcileBindings: creating bindings for ${accountIds.length} accounts`);
+  let created = 0;
   for (const agentId of accountIds) {
-    logger.debug(`[box-im] Creating binding for agent: ${agentId}`);
-    result.push({ agentId, match: { channel: CHANNEL_ID, accountId: agentId } });
+    const existing = existingBoxImBindings.get(agentId);
+    if (existing) {
+      // Reuse the existing binding — no need to recreate.
+      result.push(existing);
+    } else {
+      logger.debug(`[box-im] Creating binding for agent: ${agentId}`);
+      result.push({ agentId, match: { channel: CHANNEL_ID, accountId: agentId } });
+      created++;
+    }
+  }
+  if (created > 0) {
+    logger.debug(`[box-im] Created ${created} new binding(s), reused ${accountIds.length - created} existing`);
   }
   logger.debug(`[box-im] Total bindings after reconciliation: ${result.length}`);
   return result;
 }
 
-export async function saveBoxImAccounts(accounts: Record<string, BoxImAccount>): Promise<void> {
+export async function saveBoxImAccounts(accounts: Record<string, BoxImAccount>, botSyncFingerprint?: string): Promise<void> {
   const cfg = await readOpenClawConfig() as Record<string, unknown> & OpenClawConfig;
   const configuredProviderModels = getConfiguredProviderModelIds(cfg);
   const providerModelsModified = addConfiguredModelsForAccounts(cfg, accounts, configuredProviderModels);
@@ -1001,6 +1052,9 @@ export async function saveBoxImAccounts(accounts: Record<string, BoxImAccount>):
   const boxIm = (cfg.channels?.[CHANNEL_ID] ?? {}) as Record<string, unknown>;
   if (!cfg.channels) cfg.channels = {};
   cfg.channels[CHANNEL_ID] = { ...boxIm, accounts, enabled: true };
+  if (botSyncFingerprint) {
+    (cfg.channels[CHANNEL_ID] as Record<string, unknown>)._botSyncFingerprint = botSyncFingerprint;
+  }
 
   if (!cfg.plugins) cfg.plugins = {};
   if (!isBundledOpenClawExtension(CHANNEL_ID)) {
@@ -1122,10 +1176,13 @@ async function migrateAgentModels(): Promise<void> {
 let syncBotsInProgress = false;
 let syncBotsQueue: Array<{ resolve: (result: BoxImSyncResult) => void; reject: (error: Error) => void }> = [];
 
-export async function syncBots(): Promise<BoxImSyncResult> {
-  // 先执行迁移,修复缺失的 model 配置
-  await migrateAgentModels();
-  
+export async function syncBots(options: SyncBotsOptions = {}): Promise<BoxImSyncResult> {
+  // Run model migration first unless the caller explicitly opts out
+  // (e.g. syncBotsInternal already handles model assignment).
+  if (!options.skipMigration) {
+    await migrateAgentModels();
+  }
+
   // If sync is already in progress, queue this call and wait for the current sync to complete
   if (syncBotsInProgress) {
     logger.info('[box-im] Sync already in progress, queuing this request...');
@@ -1136,7 +1193,7 @@ export async function syncBots(): Promise<BoxImSyncResult> {
 
   syncBotsInProgress = true;
   try {
-    const result = await syncBotsInternal();
+    const result = await syncBotsInternal(options);
     
     // Resolve all queued requests with the same result
     while (syncBotsQueue.length > 0) {
@@ -1161,8 +1218,12 @@ export async function syncBots(): Promise<BoxImSyncResult> {
   }
 }
 
-async function syncBotsInternal(): Promise<BoxImSyncResult> {
+async function syncBotsInternal(options: SyncBotsOptions = {}): Promise<BoxImSyncResult> {
   const { tokenKey, apiUrl, accounts } = await getBoxImConfig();
+  const syncProfiles = options.syncProfiles !== false;
+  const syncFriends = options.syncFriends !== false;
+  const fetchMissingTokens = options.fetchMissingTokens !== false;
+  const validateModels = options.validateModels !== false;
 
   logger.debug(`[box-im-sync] syncBotsInternal start (tokenKey=${tokenKey ? 'exists' : 'missing'}, apiUrl=${apiUrl})`);
 
@@ -1173,74 +1234,137 @@ async function syncBotsInternal(): Promise<BoxImSyncResult> {
   try {
     logger.info('[box-im] Starting bot sync...');
     const bots = await fetchBotsFromApi(apiUrl, tokenKey);
-    const availableModelIds = await fetchAvailableOneApiModelIds(tokenKey);
+    const availableModelIds = validateModels ? await fetchAvailableOneApiModelIds(tokenKey) : null;
     logger.info(`[box-im] Fetched ${bots.length} bots from API`);
-    
+
+    // Compute fingerprint from API response to detect changes.
+    // If nothing changed since last sync and the caller didn't force a full
+    // sync, skip the expensive config-write + per-bot identity/auth I/O.
+    const fingerprint = computeBotFingerprint(bots);
+
     const cfg = await readOpenClawConfig() as Record<string, unknown>;
+    const boxImCfg = (cfg.channels?.[CHANNEL_ID] ?? {}) as Record<string, unknown>;
+    const lastFingerprint = typeof boxImCfg._botSyncFingerprint === 'string'
+      ? boxImCfg._botSyncFingerprint
+      : '';
+
+    if (fingerprint === lastFingerprint && !options.forceSync) {
+      logger.info(`[box-im] Bot fingerprint unchanged (${fingerprint}), skipping config/identity I/O`);
+      return { bots };
+    }
+
     const configuredProviderModels = getConfiguredProviderModelIds(cfg);
     const newAccounts = buildAccountsFromBots(bots, accounts, availableModelIds, configuredProviderModels);
     logger.debug(`[box-im] Built ${Object.keys(newAccounts).length} accounts: ${Object.keys(newAccounts).join(', ')}`);
 
-    for (const [agentId, acct] of Object.entries(newAccounts)) {
-      if (!acct.accessToken) {
-        try {
-          const resp = await fetch(`${apiUrl}/bot/token/${agentId}`, {
-            method: 'POST',
-            headers: { 'Token-Key': tokenKey },
-            signal: AbortSignal.timeout(5000),
-          });
-          if (resp.ok) {
-            const result = await resp.json() as any;
-            if (result.code === 200 && result.data?.accessToken) {
-              acct.accessToken = result.data.accessToken;
-              acct.userId = result.data.id;
+    if (fetchMissingTokens) {
+      for (const [agentId, acct] of Object.entries(newAccounts)) {
+        if (!acct.accessToken) {
+          try {
+            const resp = await fetch(`${apiUrl}/bot/token/${agentId}`, {
+              method: 'POST',
+              headers: { 'Token-Key': tokenKey },
+              signal: AbortSignal.timeout(5000),
+            });
+            if (resp.ok) {
+              const result = await resp.json() as any;
+              if (result.code === 200 && result.data?.accessToken) {
+                acct.accessToken = result.data.accessToken;
+                acct.userId = result.data.id;
+              }
             }
-          }
-        } catch { /* best-effort */ }
+          } catch { /* best-effort */ }
+        }
       }
     }
 
-    await saveBoxImAccounts(newAccounts);
+    // Pass fingerprint here so it's included in the single config write,
+    // avoiding a second 5s read+write just to persist the fingerprint.
+    await saveBoxImAccounts(newAccounts, fingerprint);
+
+    // Determine which bots are new or changed so we only do per-agent
+    // I/O (IDENTITY.md, auth-profiles, profile sync) for the ones that
+    // actually need it.  Creating one new agent should not re-process all
+    // 30 existing bots whose data hasn't changed.
+    const newOrChangedAgentIds = new Set<string>();
+    for (const bot of bots) {
+      const agentId = bot.openclawAgentId || bot.userName || `bot-${bot.id}`;
+      const existing = accounts[agentId];
+      const newModel = newAccounts[agentId]?.model;
+      if (!existing) {
+        // Brand-new bot — always process.
+        newOrChangedAgentIds.add(agentId);
+      } else if (newModel && existing.model !== newModel) {
+        // Model changed — need to update config and identity.
+        newOrChangedAgentIds.add(agentId);
+      } else if ((bot.nickName || agentId) !== (existing.botName || agentId)) {
+        // Nickname changed — need to update IDENTITY.md.
+        newOrChangedAgentIds.add(agentId);
+      }
+    }
+
+    if (newOrChangedAgentIds.size > 0) {
+      logger.info(
+        `[box-im] Processing ${newOrChangedAgentIds.size} new/changed bot(s) out of ${bots.length} total`,
+      );
+    }
 
     // Update IDENTITY.md and copy auth-profiles.json for each bot
     for (const bot of bots) {
       const agentId = bot.openclawAgentId || bot.userName || `bot-${bot.id}`;
-      const acct = newAccounts[agentId];
-      const nickName = bot.nickName || agentId;
-      const workspace = acct ? `${process.env.HOME || process.env.USERPROFILE || homedir()}/.openclaw/workspace-${agentId}` : undefined;
-      await updateAgentIdentityMd(agentId, nickName, workspace);
-      
-      // Copy auth-profiles.json from main agent
-      await copyAuthProfiles(agentId);
-      
-      // Sync Profile files (AGENTS.md, SOUL.md, TOOLS.md, etc.)
-      try {
-        const profileResult = await syncProfileFiles(agentId);
-        logger.info(`[box-im] Profile sync for ${agentId}: ${profileResult.synced} synced, ${profileResult.errors} errors`);
-      } catch (err) {
-        logger.warn(`[box-im] Profile sync failed for ${agentId}:`, err);
+      const isNewOrChanged = newOrChangedAgentIds.has(agentId);
+
+      if (isNewOrChanged) {
+        const acct = newAccounts[agentId];
+        const nickName = bot.nickName || agentId;
+        const workspace = acct ? `${process.env.HOME || process.env.USERPROFILE || homedir()}/.openclaw/workspace-${agentId}` : undefined;
+        await updateAgentIdentityMd(agentId, nickName, workspace);
+
+        // Copy auth-profiles.json from main agent
+        await copyAuthProfiles(agentId);
+      }
+
+      if (syncProfiles) {
+        // Only run expensive API-driven profile sync for new/changed bots.
+        // Existing bots already have up-to-date profile files from the last sync.
+        if (!isNewOrChanged) {
+          logger.debug(`[box-im] Skipping profile sync for unchanged bot: ${agentId}`);
+          continue;
+        }
+        // Sync Profile files (AGENTS.md, SOUL.md, TOOLS.md, etc.)
+        try {
+          const profileResult = await syncProfileFiles(agentId);
+          logger.info(`[box-im] Profile sync for ${agentId}: ${profileResult.synced} synced, ${profileResult.errors} errors`);
+        } catch (err) {
+          logger.warn(`[box-im] Profile sync failed for ${agentId}:`, err);
+        }
       }
     }
 
-    try {
-      const friendResp = await fetch(`${apiUrl}/friend/list`, {
-        headers: { 'Token-Key': tokenKey },
-        signal: AbortSignal.timeout(5000),
-      });
-      const friendData = friendResp.ok ? await friendResp.json() as any : null;
-      const friendIds = new Set((friendData?.data ?? []).map((f: any) => f.id));
-      for (const bot of bots) {
-        if (!friendIds.has(bot.id)) {
-          try {
-            await fetch(`${apiUrl}/friend/add?friendId=${bot.id}`, {
-              method: 'POST',
-              headers: { 'Token-Key': tokenKey },
-              signal: AbortSignal.timeout(3000),
-            });
-          } catch { /* ignore */ }
+    if (syncFriends) {
+      try {
+        const friendResp = await fetch(`${apiUrl}/friend/list`, {
+          headers: { 'Token-Key': tokenKey },
+          signal: AbortSignal.timeout(5000),
+        });
+        const friendData = friendResp.ok ? await friendResp.json() as any : null;
+        const friendIds = new Set((friendData?.data ?? []).map((f: any) => f.id));
+        for (const bot of bots) {
+          if (!friendIds.has(bot.id)) {
+            try {
+              await fetch(`${apiUrl}/friend/add?friendId=${bot.id}`, {
+                method: 'POST',
+                headers: { 'Token-Key': tokenKey },
+                signal: AbortSignal.timeout(3000),
+              });
+            } catch { /* ignore */ }
+          }
         }
-      }
-    } catch { /* ignore friend sync errors */ }
+      } catch { /* ignore friend sync errors */ }
+    }
+
+    // Fingerprint already persisted by saveBoxImAccounts above — no
+    // second config write needed.
 
     logger.info(`[box-im] Synced ${bots.length} bots from API`);
     return { bots };

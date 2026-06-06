@@ -52,64 +52,65 @@ const WINDOWS_APP_USER_MODEL_ID = 'app.clawx.desktop';
 const isE2EMode = process.env.CLAWX_E2E === '1';
 const requestedUserDataDir = process.env.CLAWX_USER_DATA_DIR?.trim();
 
-// Windows: 全局 patch child_process 以隐藏 CMD 窗口
-if (process.platform === 'win32') {
+// Windows: patch child_process to hide CMD windows for spawned processes.
+// Uses a module-level flag instead of a property on the (possibly frozen)
+// child_process object, avoiding "object is not extensible" errors on
+// newer Electron versions where the module is sealed.
+let _clawxWindowsHidePatched = false;
+
+if (process.platform === 'win32' && !_clawxWindowsHidePatched) {
   try {
-    const cp = childProcess as typeof childProcess & { __clawxWindowsHidePatched?: boolean } & Record<string, unknown>;
-    if (!cp.__clawxWindowsHidePatched) {
-      cp.__clawxWindowsHidePatched = true;
+    const cp = childProcess as Record<string, unknown>;
+    _clawxWindowsHidePatched = true;
 
-      const shouldShowChildWindow = (command: unknown): boolean => {
-        if (typeof command !== 'string') return false;
-        const normalized = command.replace(/\\/g, '/').toLowerCase();
-        const fileName = normalized.split('/').pop() ?? normalized;
-        return fileName === 'elevate.exe'
-          || /^openme-.*-win-(?:x64|arm64)\.exe$/.test(fileName);
-      };
-      
-      ['spawn', 'exec', 'execFile', 'fork', 'spawnSync', 'execSync', 'execFileSync'].forEach((method) => {
-        const original = cp[method];
-        if (typeof original !== 'function') return;
-        
-        cp[method] = function(this: unknown, ...args: unknown[]) {
-          // 查找 options 参数
-          let optIdx = -1;
-          for (let i = 1; i < args.length; i++) {
-            const a = args[i];
-            if (a && typeof a === 'object' && !Array.isArray(a) && typeof a !== 'function') {
-              optIdx = i;
-              break;
-            }
+    const shouldShowChildWindow = (command: unknown): boolean => {
+      if (typeof command !== 'string') return false;
+      const normalized = command.replace(/\\/g, '/').toLowerCase();
+      const fileName = normalized.split('/').pop() ?? normalized;
+      return fileName === 'elevate.exe'
+        || /^openme-.*-win-(?:x64|arm64)\.exe$/.test(fileName);
+    };
+
+    ['spawn', 'exec', 'execFile', 'fork', 'spawnSync', 'execSync', 'execFileSync'].forEach((method) => {
+      const original = cp[method];
+      if (typeof original !== 'function') return;
+
+      cp[method] = function(this: unknown, ...args: unknown[]) {
+        let optIdx = -1;
+        for (let i = 1; i < args.length; i++) {
+          const a = args[i];
+          if (a && typeof a === 'object' && !Array.isArray(a) && typeof a !== 'function') {
+            optIdx = i;
+            break;
           }
-          const showChildWindow = shouldShowChildWindow(args[0]);
+        }
+        const showChildWindow = shouldShowChildWindow(args[0]);
 
-          if (optIdx >= 0) {
-            const options = args[optIdx] as Record<string, unknown>;
-            // 已有 options，添加 windowsHide
-            args[optIdx] = {
-              ...options,
-              windowsHide: showChildWindow ? false : (options.windowsHide ?? true),
-            };
+        if (optIdx >= 0) {
+          const options = args[optIdx] as Record<string, unknown>;
+          args[optIdx] = {
+            ...options,
+            windowsHide: showChildWindow ? false : (options.windowsHide ?? true),
+          };
+        } else {
+          const opts = { windowsHide: !showChildWindow };
+          if (typeof args[args.length - 1] === 'function') {
+            args.splice(args.length - 1, 0, opts);
           } else {
-            // 没有 options，创建一个
-            const opts = { windowsHide: !showChildWindow };
-            if (typeof args[args.length - 1] === 'function') {
-              // 最后一个参数是回调函数，插入到回调之前
-              args.splice(args.length - 1, 0, opts);
-            } else {
-              // 直接添加到末尾
-              args.push(opts);
-            }
+            args.push(opts);
           }
-          
-          return original.apply(this, args);
-        };
-      });
-      
-      logger.info('Applied global windowsHide patch to child_process');
-    }
+        }
+
+        return original.apply(this, args);
+      };
+    });
+
+    logger.info('Applied global windowsHide patch to child_process');
   } catch (err) {
-    logger.warn('Failed to patch child_process:', err);
+    _clawxWindowsHidePatched = false;
+    // In newer Electron (40+), child_process methods may be getter-only
+    // and windowsHide defaults to true anyway — the patch is unneeded.
+    logger.debug('Skipped child_process windowsHide patch (module not writable, using defaults)');
   }
 }
 
@@ -132,6 +133,15 @@ if (isE2EMode && requestedUserDataDir) {
 // Users who want GPU acceleration can pass `--enable-gpu` on the CLI or
 // set `"disable-hardware-acceleration": false` in the app config (future).
 app.disableHardwareAcceleration();
+
+// Suppress Chromium GPU probing noise on Windows.
+// `disableHardwareAcceleration()` takes effect after GPU init, but
+// Chromium probes for DirectComposition overlay support earlier.
+// Appending --disable-gpu via commandLine applies at process start
+// to silence GetGpuDriverOverlayInfo errors before they fire.
+if (process.platform === 'win32') {
+  app.commandLine.appendSwitch('disable-gpu');
+}
 
 // On Linux, set CHROME_DESKTOP so Chromium can find the correct .desktop file.
 // On Wayland this maps the running window to clawx.desktop (→ icon + app grouping);
@@ -619,12 +629,18 @@ async function initialize(): Promise<void> {
     }, 30_000);
   }
 
-  // Restore Box-IM runtime side effects if user is already logged in:
-  // bot sync plus VPN tunnel startup. Login state persists across restarts,
-  // but the WireGuard tunnel may have been stopped during app quit.
+  // Restore Box-IM runtime side effects if user is already logged in.
+  // Login state persists across restarts, but the WireGuard tunnel may have
+  // been stopped during app quit so we ensure it early.
+  //
+  // Split into two phases to avoid bottlenecking the critical startup path:
+  // 1) VPN tunnel — short delay, needed for network connectivity.
+  // 2) Bot metadata sync — long delay, idempotent reconciliation that does
+  //    not need to compete with Gateway cold start I/O.
   if (!isE2EMode) {
+    // Phase 1: Ensure WireGuard VPN is up (needed for IM API connectivity).
     setTimeout(async () => {
-      const { getTokenKey, syncBots } = await import('../utils/box-im-sync');
+      const { getTokenKey } = await import('../utils/box-im-sync');
       try {
         const tokenKey = await getTokenKey();
         if (tokenKey) {
@@ -632,15 +648,11 @@ async function initialize(): Promise<void> {
           logger.debug('[box-im] User is logged in, ensuring WireGuard VPN is started...');
           await ensureLoggedInWireGuard('startup');
           logger.info('[box-im] WireGuard VPN startup ensure completed');
-
-          logger.debug('[box-im] User is logged in, background-syncing bot agents...');
-          await syncBots();
-          logger.info('[box-im] Bot agents background sync completed');
         }
       } catch (error) {
-        logger.warn('[box-im] Bot agents background sync failed (non-fatal):', error);
+        logger.warn('[box-im] WireGuard VPN ensure failed (non-fatal):', error);
       }
-    }, 60_000);
+    }, 15_000);
   }
 
   // Merge ClawX context snippets into the workspace bootstrap files.

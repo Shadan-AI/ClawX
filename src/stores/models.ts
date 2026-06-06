@@ -24,6 +24,10 @@ export interface DigitalEmployee {
   templateId?: number | null; // 模板ID
 }
 
+interface FetchDigitalEmployeesOptions {
+  force?: boolean;
+}
+
 export interface ModelState {
   models: OneApiModel[];
   currentModelId: string | null;
@@ -39,7 +43,7 @@ export interface ModelState {
   clearError: () => void;
   checkLoginStatus: () => Promise<boolean>;
   logout: () => Promise<void>;
-  fetchDigitalEmployees: () => Promise<void>;
+  fetchDigitalEmployees: (options?: FetchDigitalEmployeesOptions) => Promise<void>;
   createDigitalEmployee: (nickName: string, headImage?: string, model?: string) => Promise<DigitalEmployee>;
   updateEmployeeSkills: (employeeId: number, skills: string[]) => Promise<void>;
   updateEmployeeTemplate: (employeeId: number, templateId: number | null) => Promise<void>;
@@ -53,6 +57,10 @@ const SESSION_MODELS_KEY = 'clawx-session-models';
 const MODELS_CACHE_KEY = 'clawx-model-catalog-cache';
 const BANNED_MODEL_IDS = new Set(['step-3.5-flash']);
 const SAFE_FALLBACK_MODEL_ID = 'glm-5';
+const DIGITAL_EMPLOYEES_CACHE_TTL_MS = 30_000;
+const SESSION_PATCH_RPC_TIMEOUT_MS = 5_000;
+let fetchDigitalEmployeesInFlight: Promise<void> | null = null;
+let lastDigitalEmployeesFetchAt = 0;
 
 function modelIdFromRef(modelRef: string): string {
   const trimmed = modelRef.trim();
@@ -264,10 +272,13 @@ export const useModelsStore = create<ModelState>((set, get) => ({
         get().setSessionModel(sessionKey, modelId);
         
         // Update gateway session (只更新当前 session,不更新 main session)
-        await invokeIpc('gateway:rpc', 'sessions.patch', {
-          key: sessionKey,
-          model: `shadan/${modelId}`,
-        });
+        const { useGatewayStore } = await import('./gateway');
+        if (useGatewayStore.getState().status.state === 'running') {
+          await invokeIpc('gateway:rpc', 'sessions.patch', {
+            key: sessionKey,
+            model: `shadan/${modelId}`,
+          }, SESSION_PATCH_RPC_TIMEOUT_MS);
+        }
         
       }
     } catch (err) {
@@ -291,16 +302,17 @@ export const useModelsStore = create<ModelState>((set, get) => ({
     let modelRef = toSessionModelRef(sessionOverride);
 
     if (!modelRef) {
-      if (digitalEmployees.length === 0) {
-        await get().fetchDigitalEmployees();
-        digitalEmployees = get().digitalEmployees;
-      }
-
       modelRef = resolveEmployeeModelRef(agentId, digitalEmployees);
     }
 
     if (!modelRef) {
       modelRef = await resolveAgentModelRef(agentId);
+    }
+
+    if (!modelRef && digitalEmployees.length === 0) {
+      await get().fetchDigitalEmployees();
+      digitalEmployees = get().digitalEmployees;
+      modelRef = resolveEmployeeModelRef(agentId, digitalEmployees);
     }
 
     if (!modelRef) {
@@ -313,10 +325,12 @@ export const useModelsStore = create<ModelState>((set, get) => ({
 
     set({ currentModelId: toCurrentModelId(modelRef, models) });
     try {
+      const { useGatewayStore } = await import('./gateway');
+      if (useGatewayStore.getState().status.state !== 'running') return;
       await invokeIpc('gateway:rpc', 'sessions.patch', {
         key: sessionKey,
         model: modelRef,
-      });
+      }, SESSION_PATCH_RPC_TIMEOUT_MS);
     } catch (err) {
       console.error('Failed to ensure session model:', err);
     }
@@ -384,13 +398,28 @@ export const useModelsStore = create<ModelState>((set, get) => ({
     }
   },
 
-  fetchDigitalEmployees: async () => {
-    try {
-      
-      // 直接调用 im-platform API，绕过 Gateway
-      const tokenKey = await getTokenKey();
+  fetchDigitalEmployees: async (options = {}) => {
+    const now = Date.now();
+    if (
+      !options.force
+      && get().digitalEmployees.length > 0
+      && now - lastDigitalEmployeesFetchAt < DIGITAL_EMPLOYEES_CACHE_TTL_MS
+    ) {
+      return;
+    }
+
+    if (!options.force && fetchDigitalEmployeesInFlight) {
+      await fetchDigitalEmployeesInFlight;
+      return;
+    }
+
+    const currentFetch = (async () => {
+      try {
+        // 直接调用 im-platform API，绕过 Gateway
+        const tokenKey = await getTokenKey();
       if (!tokenKey) {
         set({ digitalEmployees: [] });
+        lastDigitalEmployeesFetchAt = Date.now();
         return;
       }
       
@@ -401,6 +430,7 @@ export const useModelsStore = create<ModelState>((set, get) => ({
           'Token-Key': tokenKey,
           'Content-Type': 'application/json',
         },
+        signal: AbortSignal.timeout(10_000),
       });
       
       if (!response.ok) {
@@ -442,6 +472,7 @@ export const useModelsStore = create<ModelState>((set, get) => ({
       }) as DigitalEmployee[];
       
       set({ digitalEmployees: employees });
+      lastDigitalEmployeesFetchAt = Date.now();
       
       // 同步技能和模板到 agents store
       const { useAgentsStore } = await import('./agents');
@@ -482,6 +513,16 @@ export const useModelsStore = create<ModelState>((set, get) => ({
       localStorage.setItem('clawx-agent-templates', JSON.stringify(currentTemplates));
     } catch (error) {
       console.error('[models] Failed to fetch digital employees:', error);
+    }
+    })();
+
+    fetchDigitalEmployeesInFlight = currentFetch;
+    try {
+      await currentFetch;
+    } finally {
+      if (fetchDigitalEmployeesInFlight === currentFetch) {
+        fetchDigitalEmployeesInFlight = null;
+      }
     }
   },
 

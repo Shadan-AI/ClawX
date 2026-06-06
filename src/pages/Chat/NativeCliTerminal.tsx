@@ -499,15 +499,30 @@ function savePersistedTerminalState(sessionKey: string, state: PersistedTerminal
   }
 }
 
-function resolveStoredCliSessionId(sessionKey: string, explicit?: string): string {
-  const fromProps = explicit?.trim();
-  if (fromProps) return fromProps;
+function resolveStoredCliSessionId(sessionKey: string, _explicit?: string): string {
+  // Only trust localStorage — it only contains session IDs from the
+  // CURRENT Gateway run.  The `explicit` prop carries stale cliSessionId
+  // from the previous run's persisted session indexes, which causes
+  // "No conversation found" errors and slow reconnect cycles on restart.
   try {
     const raw = localStorage.getItem(NATIVE_CLI_SESSIONS_KEY);
     const sessions = raw ? JSON.parse(raw) as PersistedNativeCliSession[] : [];
     return sessions.find((entry) => entry.key === sessionKey)?.cliSessionId?.trim() || '';
   } catch {
     return '';
+  }
+}
+
+function removeStoredCliSessionId(sessionKey: string): void {
+  try {
+    const raw = localStorage.getItem(NATIVE_CLI_SESSIONS_KEY);
+    const sessions = raw ? JSON.parse(raw) as PersistedNativeCliSession[] : [];
+    const filtered = sessions.filter((entry) => entry.key !== sessionKey);
+    if (filtered.length !== sessions.length) {
+      localStorage.setItem(NATIVE_CLI_SESSIONS_KEY, JSON.stringify(filtered));
+    }
+  } catch {
+    // Best effort.
   }
 }
 
@@ -700,7 +715,6 @@ function NativeCliTerminalStyles() {
         bottom: 132px;
         left: 0;
         width: 100%;
-        overflow: hidden;
         background: var(--native-cli-background);
       }
       .native-cli-terminal__loading {
@@ -1574,6 +1588,12 @@ export function NativeCliTerminal({
       return;
     }
     const port = typeof statusResult?.port === 'number' && statusResult.port > 0 ? statusResult.port : 18789;
+    // If there's no stored session in localStorage (cleared on Gateway
+    // restart), force-clear the ref too so a stale prop value can't
+    // sneak through on a retry.
+    if (!storedCliSessionId) {
+      cliSessionIdRef.current = '';
+    }
     const knownCliSessionId = storedCliSessionId;
     cliSessionIdRef.current = knownCliSessionId;
     if (knownCliSessionId) {
@@ -1687,14 +1707,37 @@ export function NativeCliTerminal({
         } else if (msg.type === 'session_id' && typeof msg.sessionId === 'string') {
           mountRef_cb.current.bindNativeCliSessionId(msg.sessionId);
         } else if (msg.type === 'exit') {
-          suppressReconnectRef.current = true;
-          traceNativeCliTerminal('terminal-process-exit-suppressing-reconnect', {
-            sessionKey,
-            code: msg.code,
-            cliSessionId: cliSessionIdRef.current,
-          });
-          if (userHasInteractedRef.current) {
-            termRef.current?.write(`\r\n\x1b[33m[process exited: ${String(msg.code ?? 0)}]\x1b[0m\r\n`);
+          // If we were resuming a stale session that the Gateway cleaned up
+          // during startup (e.g. "sidecars clean stale session locks"), the
+          // CLI process exits with "No conversation found".  Instead of
+          // showing a dead error screen, clear the stale session ID and
+          // reconnect fresh so the user never sees the failure.
+          const wasResuming = Boolean(cliSessionIdRef.current);
+          const userNeverInteracted = !userHasInteractedRef.current;
+
+          if (wasResuming && userNeverInteracted) {
+            traceNativeCliTerminal('terminal-stale-session-cleared-retrying-fresh', {
+              sessionKey,
+              staleCliSessionId: cliSessionIdRef.current,
+              code: msg.code,
+            });
+            // Wipe the stale session ID from memory and localStorage so the
+            // retry starts a brand-new session instead of re-resuming the dead one.
+            removeStoredCliSessionId(sessionKey);
+            cliSessionIdRef.current = '';
+            skipResumeResolveRef.current = true;
+            // Allow reconnect to fire — the fresh attempt won't pass resume params.
+            suppressReconnectRef.current = false;
+          } else {
+            suppressReconnectRef.current = true;
+            traceNativeCliTerminal('terminal-process-exit-suppressing-reconnect', {
+              sessionKey,
+              code: msg.code,
+              cliSessionId: cliSessionIdRef.current,
+            });
+            if (userHasInteractedRef.current) {
+              termRef.current?.write(`\r\n\x1b[33m[process exited: ${String(msg.code ?? 0)}]\x1b[0m\r\n`);
+            }
           }
         }
       } catch (error) {

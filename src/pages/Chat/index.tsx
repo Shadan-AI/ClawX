@@ -291,7 +291,7 @@ export function Chat() {
     if (currentSessionKey) {
       void useModelsStore.getState().ensureSessionModel(currentSessionKey);
     }
-  }, [currentAgentId, currentSessionKey, modelCount]);
+  }, [currentAgentId, currentSessionKey, modelCount, isGatewayRunning]);
   // Update timestamp when sending starts
   useEffect(() => {
     if (sending && streamingTimestamp === 0) {

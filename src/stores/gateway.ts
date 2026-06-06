@@ -328,6 +328,13 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
             } else if (payload.state === 'running') {
               set({ isGatewayHealthy: true });
               stopHealthPolling();
+              // Clear stale CLI session IDs from the previous Gateway run.
+              // After a restart, the Gateway cleans up old sessions, so any
+              // stored session IDs will just cause "No conversation found"
+              // errors and slow reconnect cycles.
+              try {
+                localStorage.removeItem('openclaw-native-cli-sessions');
+              } catch { /* ignore */ }
             } else if (payload.state === 'stopped' || payload.state === 'error') {
               set({ isGatewayHealthy: false });
               stopHealthPolling();

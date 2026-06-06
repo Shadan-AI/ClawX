@@ -74,7 +74,8 @@ const HISTORY_LOAD_MIN_INTERVAL_MS = 800;
 const HISTORY_POLL_SILENCE_WINDOW_MS = 2_500;
 const CHAT_EVENT_DEDUPE_TTL_MS = 30_000;
 const SESSION_SIDEBAR_META_CONCURRENCY = 2;
-const ACTIVE_HISTORY_RPC_TIMEOUT_MS = 60_000;
+const SESSION_LIST_RPC_TIMEOUT_MS = 5_000;
+const ACTIVE_HISTORY_RPC_TIMEOUT_MS = 10_000;
 const GATEWAY_HISTORY_RETRY_MS = 1_500;
 const NATIVE_CLI_SESSION_ID_REPAIR_RETRY_MS = 60_000;
 const RUNTIME_NATIVE_CLI_SESSION_PATH = '/api/runtime/sessions/native-cli';
@@ -2098,7 +2099,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           try {
             const data = await useGatewayStore.getState().rpc<SessionListPayload>('sessions.list', {
               includeDerivedTitles: true,
-            });
+            }, SESSION_LIST_RPC_TIMEOUT_MS);
             rpcSessions = mapRawSessionList(data?.sessions);
           } catch (rpcError) {
             console.warn('[loadSessions] sessions.list failed, keeping local session indexes:', rpcError);
@@ -2765,6 +2766,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
         if (!shouldSupplementWithRpc) {
           return;
         }
+      }
+
+      if (useGatewayStore.getState().status.state !== 'running') {
+        applyLoadFailure(null);
+        return;
       }
 
       try {

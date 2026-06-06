@@ -6,7 +6,7 @@
  */
 import { access, readFile, writeFile, readdir, mkdir, unlink } from 'fs/promises';
 import { constants } from 'fs';
-import { join } from 'path';
+import { basename, join } from 'path';
 import { homedir } from 'os';
 import { logger } from './logger';
 import { getResourcesDir } from './paths';
@@ -24,6 +24,10 @@ async function ensureDir(dir: string): Promise<void> {
   if (!(await fileExists(dir))) {
     await mkdir(dir, { recursive: true });
   }
+}
+
+function shouldRetryMissingBootstrapFile(workspaceDir: string): boolean {
+  return !basename(workspaceDir).startsWith('workspace-bot-');
 }
 
 // ── Pure helpers (no I/O) ────────────────────────────────────────
@@ -167,8 +171,10 @@ async function mergeClawXContextOnce(): Promise<number> {
       const targetPath = join(workspaceDir, targetName);
 
       if (!(await fileExists(targetPath))) {
-        logger.debug(`Skipping ${targetName} in ${workspaceDir} (file does not exist yet, will be seeded by gateway)`);
-        skipped++;
+        if (shouldRetryMissingBootstrapFile(workspaceDir)) {
+          logger.debug(`Skipping ${targetName} in ${workspaceDir} (file does not exist yet, will be seeded by gateway)`);
+          skipped++;
+        }
         continue;
       }
 

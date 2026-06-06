@@ -349,7 +349,7 @@ export function Agents() {
     await Promise.all([
       fetchAgents(),
       fetchChannelAccounts(), // 这会重新读取 openclaw.json，获取新的 bindings
-      fetchDigitalEmployees(),
+      fetchDigitalEmployees({ force: true }),
     ]);
     
     toast.success('已同步 IM 平台的员工');
@@ -687,7 +687,7 @@ export function Agents() {
             }
             
             // 3. 刷新列表（包括频道）
-            await Promise.all([fetchDigitalEmployees(), fetchChannelAccounts()]);
+            await Promise.all([fetchDigitalEmployees({ force: true }), fetchChannelAccounts()]);
             
             toast.success(t('toast.agentDeleted'));
           } catch (error) {
@@ -1385,7 +1385,7 @@ function AddAgentDialog({
 
       // 刷新列表（包括频道）
       await Promise.all([
-        remoteEmployeeCreated ? fetchDigitalEmployees() : Promise.resolve(),
+        remoteEmployeeCreated ? fetchDigitalEmployees({ force: true }) : Promise.resolve(),
         fetchAgents(),
       ]);
 

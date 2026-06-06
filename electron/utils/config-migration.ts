@@ -11,6 +11,9 @@ import { logger } from './logger';
 const DEPRECATED_MODEL_REF = 'shadan/step-3.5-flash';
 const SAFE_MODEL_REF = 'shadan/glm-5';
 
+/** Prevent duplicate migration runs within the same process lifetime. */
+let _migrationsRun = false;
+
 /**
  * Remove deprecated model references from local config.
  *
@@ -69,6 +72,12 @@ async function removeDeprecatedStepModel(): Promise<boolean> {
  * before the Gateway starts.
  */
 export async function runConfigMigrations(): Promise<void> {
+  if (_migrationsRun) {
+    logger.debug('[migration] Skipping (already run this session)');
+    return;
+  }
+  _migrationsRun = true;
+
   logger.info('[migration] Running configuration migrations...');
 
   try {

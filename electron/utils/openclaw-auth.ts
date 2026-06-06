@@ -8,7 +8,7 @@
  * equivalents could stall for 500 ms – 2 s+ per call, causing "Not
  * Responding" hangs.
  */
-import { access, mkdir, readFile, writeFile, rename, unlink } from 'fs/promises';
+import { access, mkdir, readFile, writeFile, rename, unlink, stat } from 'fs/promises';
 import { constants, readdirSync, readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir, networkInterfaces } from 'os';
@@ -1593,6 +1593,27 @@ export async function sanitizeOpenClawConfig(): Promise<void> {
       return;
     }
 
+    // Fast-path: skip sanitize if the config file hasn't changed since the
+    // last successful sanitization.  This avoids parsing and re-writing a
+    // ~60 KB config on every startup when no user- or Gateway-side change
+    // has introduced drift.
+    let pendingSanitizeSig: string | null = null;
+    try {
+      const sanitizeCachePath = join(homedir(), '.openclaw', '.sanitize-cache.json');
+      const fileStat = await stat(OPENCLAW_CONFIG_PATH).catch(() => null);
+      if (fileStat) {
+        const currentSig = `${fileStat.mtimeMs}:${fileStat.size}`;
+        const cached = await readJsonFile<{ sig?: string }>(sanitizeCachePath).catch(() => null);
+        if (cached?.sig === currentSig) {
+          console.log('[sanitize] Config fingerprint unchanged; skipping sanitization');
+          return;
+        }
+        pendingSanitizeSig = currentSig;
+      }
+    } catch {
+      // Cache read failed — proceed with full sanitize.
+    }
+
     // Read the raw file directly instead of going through readOpenClawJson()
     // which coalesces null → {}.  We need to distinguish a genuinely empty
     // file (valid, proceed normally) from a corrupt/unreadable file (null,
@@ -2060,6 +2081,17 @@ export async function sanitizeOpenClawConfig(): Promise<void> {
     if (modified) {
       await writeOpenClawJson(config);
       console.log('[sanitize] openclaw.json sanitized successfully');
+    }
+
+    // Persist sanitize fingerprint so the next startup can fast-path skip
+    // re-reading a ~60 KB config that hasn't changed.
+    if (pendingSanitizeSig) {
+      try {
+        const sanitizeCachePath = join(homedir(), '.openclaw', '.sanitize-cache.json');
+        await writeJsonFile(sanitizeCachePath, { sig: pendingSanitizeSig });
+      } catch {
+        // Cache write failed — non-fatal, just re-sanitize next time.
+      }
     }
   });
 }

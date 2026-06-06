@@ -927,7 +927,16 @@ function registerBoxImConfigHandlers(): void {
 
   ipcMain.handle('box-im:syncBots', async () => {
     try {
-      const result = await syncBots();
+      // Creating an agent only needs account sync — skip friends,
+      // tokens, and model validation which each hit the network and
+      // add 5s+ of latency.
+      const result = await syncBots({
+        syncProfiles: false,
+        syncFriends: false,
+        fetchMissingTokens: false,
+        validateModels: false,
+        skipMigration: true,
+      });
       return { success: true, ...result };
     } catch (err) {
       logger.error('[box-im] Sync bots failed:', err);

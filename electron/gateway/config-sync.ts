@@ -887,21 +887,21 @@ function ensureConfiguredPluginsUpgraded(configuredChannels: string[]): void {
 function ensureExtensionDepsResolvable(openclawDir: string): void {
   const packageVersion = readPluginVersion(join(openclawDir, 'package.json')) ?? 'unknown';
   const cacheFile = join(app.getPath('userData'), 'gateway-extension-deps-cache.json');
-  if (app.isPackaged) {
-    try {
-      if (existsSync(fsPath(cacheFile))) {
-        const cached = JSON.parse(readFileSync(fsPath(cacheFile), 'utf-8')) as {
-          openclawDir?: string;
-          packageVersion?: string;
-        };
-        if (cached.openclawDir === openclawDir && cached.packageVersion === packageVersion) {
-          logger.debug(`[extension-deps] Skipped dependency scan for OpenClaw ${packageVersion} (cached)`);
-          return;
-        }
+  // Cache applies to both dev and packaged modes — the extension deps
+  // don't change between runs unless the openclaw package is updated.
+  try {
+    if (existsSync(fsPath(cacheFile))) {
+      const cached = JSON.parse(readFileSync(fsPath(cacheFile), 'utf-8')) as {
+        openclawDir?: string;
+        packageVersion?: string;
+      };
+      if (cached.openclawDir === openclawDir && cached.packageVersion === packageVersion) {
+        logger.debug(`[extension-deps] Skipped dependency scan for OpenClaw ${packageVersion} (cached)`);
+        return;
       }
-    } catch {
-      // Corrupt cache should not block startup; just rebuild it below.
     }
+  } catch {
+    // Corrupt cache should not block startup; just rebuild it below.
   }
 
   const extDir = join(openclawDir, 'dist', 'extensions');
@@ -978,16 +978,15 @@ function ensureExtensionDepsResolvable(openclawDir: string): void {
     logger.info(`[extension-deps] Linked ${linkedCount} extension packages into ${topNM}`);
   }
 
-  if (app.isPackaged) {
-    try {
-      writeFileSync(
-        fsPath(cacheFile),
-        JSON.stringify({ openclawDir, packageVersion, updatedAt: new Date().toISOString() }, null, 2),
-        'utf-8',
-      );
-    } catch {
-      // Cache is an optimization only.
-    }
+  // Persist cache for both dev and packaged modes.
+  try {
+    writeFileSync(
+      fsPath(cacheFile),
+      JSON.stringify({ openclawDir, packageVersion, updatedAt: new Date().toISOString() }, null, 2),
+      'utf-8',
+    );
+  } catch {
+    // Cache is an optimization only.
   }
 }
 
