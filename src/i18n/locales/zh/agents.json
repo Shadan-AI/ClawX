@@ -10,6 +10,7 @@
     "modelLine": "Model: {{model}}{{suffix}}",
     "channelsLine": "频道: {{channels}}",
     "deleteAgent": "删除数字员工",
+    "newChat": "新建对话",
     "settings": "设置",
     "creating": "创建中...",
     "createDialog": {

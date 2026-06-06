@@ -631,7 +631,7 @@ export function Agents() {
         title={t('deleteDialog.title')}
         message={
           agentToDelete 
-            ? `${t('deleteDialog.message', { name: agentToDelete.name })}\n\n⚠️ 删除员工将会重启 Gateway 以清理资源，这可能需要几秒钟时间。` 
+            ? t('deleteDialog.message', { name: agentToDelete.name })
             : ''
         }
         confirmLabel={t('common:actions.delete')}
@@ -688,13 +688,6 @@ export function Agents() {
             
             // 3. 刷新列表（包括频道）
             await Promise.all([fetchDigitalEmployees(), fetchChannelAccounts()]);
-            
-            // 4. 同步 bots 到配置文件（更新频道绑定）
-            try {
-              await invokeIpc('box-im:syncBots');
-            } catch (syncErr) {
-              console.warn('[Agents] Failed to sync bots after deletion:', syncErr);
-            }
             
             toast.success(t('toast.agentDeleted'));
           } catch (error) {
@@ -855,59 +848,34 @@ function AgentCard({
 
       {/* 操作按钮 */}
       <div className="flex items-center gap-2 pt-3 border-t border-black/5 dark:border-white/5" onClick={(e) => e.stopPropagation()}>
-        {agent.isDigitalEmployee ? (
-          <>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="flex-1 h-8 text-[12px] rounded-full hover:bg-black/5 dark:hover:bg-white/10"
-              onClick={handleChatWithAgent}
-            >
-              <MessageCircle className="h-3.5 w-3.5 mr-1.5" />
-              新建对话
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="flex-1 h-8 text-[12px] rounded-full hover:bg-black/5 dark:hover:bg-white/10"
-              onClick={onOpenSettings}
-            >
-              <Settings2 className="h-3.5 w-3.5 mr-1.5" />
-              设置
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-full"
-              onClick={onDelete}
-              title="删除员工"
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-            </Button>
-          </>
-        ) : (
-          <>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="flex-1 h-8 text-[12px] rounded-full hover:bg-black/5 dark:hover:bg-white/10"
-              onClick={onOpenSettings}
-            >
-              <Settings2 className="h-3.5 w-3.5 mr-1.5" />
-              {t('settings')}
-            </Button>
-            {!agent.isDefault && (
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-full"
-                onClick={onDelete}
-                title={t('deleteAgent')}
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </Button>
-            )}
-          </>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="flex-1 h-8 text-[12px] rounded-full hover:bg-black/5 dark:hover:bg-white/10"
+          onClick={handleChatWithAgent}
+        >
+          <MessageCircle className="h-3.5 w-3.5 mr-1.5" />
+          {t('newChat')}
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="flex-1 h-8 text-[12px] rounded-full hover:bg-black/5 dark:hover:bg-white/10"
+          onClick={onOpenSettings}
+        >
+          <Settings2 className="h-3.5 w-3.5 mr-1.5" />
+          {t('settings')}
+        </Button>
+        {(agent.isDigitalEmployee || !agent.isDefault) && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-full"
+            onClick={onDelete}
+            title={t('deleteAgent')}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </Button>
         )}
       </div>
     </div>

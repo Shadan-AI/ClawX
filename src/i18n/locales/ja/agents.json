@@ -10,6 +10,7 @@
     "modelLine": "Model: {{model}}{{suffix}}",
     "channelsLine": "Channels: {{channels}}",
     "deleteAgent": "Agent を削除",
+    "newChat": "新しいチャット",
     "settings": "設定",
     "creating": "作成中...",
     "createDialog": {

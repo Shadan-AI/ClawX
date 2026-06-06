@@ -42,14 +42,9 @@ import { promisify } from 'util';
 const execAsync = promisify(exec);
 
 /**
- * Force a full Gateway process restart after agent deletion.
- *
- * A SIGUSR1 in-process reload is NOT sufficient here: channel plugins
- * (e.g. Feishu) maintain long-lived WebSocket connections to external
- * services and do not disconnect accounts that were removed from the
- * config during an in-process reload.  The only reliable way to drop
- * stale bot connections is to kill the Gateway process entirely and
- * spawn a fresh one that reads the updated openclaw.json from scratch.
+ * Legacy force-restart helper kept for tests and explicit maintenance paths.
+ * The normal agent delete route intentionally avoids this now: deleting one
+ * agent should not tear down every active Gateway session.
  */
 export async function restartGatewayForAgentDeletion(ctx: HostApiContext): Promise<void> {
   try {
@@ -239,11 +234,9 @@ export async function handleAgentRoutes(
       try {
         const agentId = decodeURIComponent(parts[0]);
         const { snapshot, removedEntry } = await deleteAgentConfig(agentId);
-        // Await reload synchronously BEFORE responding to the client.
-        // This ensures the Feishu plugin has disconnected the deleted bot
-        // before the UI shows "delete success" and the user tries chatting.
-        await restartGatewayForAgentDeletion(ctx);
-        // Delete workspace after reload so the new config is already live.
+        // Keep deletion scoped to the removed agent. The config, channel account,
+        // bindings, runtime dir, and managed workspace are removed here; Gateway
+        // keeps serving existing sessions instead of restarting globally.
         await removeAgentWorkspaceDirectory(removedEntry).catch((err) => {
           console.warn('[agents] Failed to remove workspace after agent deletion:', err);
         });

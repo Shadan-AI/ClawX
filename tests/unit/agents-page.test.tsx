@@ -10,8 +10,15 @@ const fetchAgentsMock = vi.fn();
 const updateAgentMock = vi.fn();
 const updateAgentModelMock = vi.fn();
 const refreshProviderSnapshotMock = vi.fn();
+const fetchDigitalEmployeesMock = vi.fn();
+const fetchModelsMock = vi.fn();
+const createDigitalEmployeeMock = vi.fn();
+const updateEmployeeSkillsMock = vi.fn();
+const updateEmployeeTemplateMock = vi.fn();
+const getTokenKeyMock = vi.fn();
+const newSessionForAgentMock = vi.fn();
 
-const { gatewayState, agentsState, providersState } = vi.hoisted(() => ({
+const { gatewayState, agentsState, providersState, modelsState } = vi.hoisted(() => ({
   gatewayState: {
     status: { state: 'running', port: 18789 },
   },
@@ -26,6 +33,15 @@ const { gatewayState, agentsState, providersState } = vi.hoisted(() => ({
     statuses: [] as Array<Record<string, unknown>>,
     vendors: [] as Array<Record<string, unknown>>,
     defaultAccountId: '' as string,
+  },
+  modelsState: {
+    models: [] as Array<Record<string, unknown>>,
+    digitalEmployees: [] as Array<Record<string, unknown>>,
+    loading: false,
+    error: null as string | null,
+    isLoggedIn: true as boolean | null,
+    currentModelId: null as string | null,
+    sessionModels: {} as Record<string, string>,
   },
 }));
 
@@ -83,6 +99,49 @@ vi.mock('@/stores/providers', () => ({
   },
 }));
 
+vi.mock('@/stores/models', () => ({
+  useModelsStore: Object.assign(
+    (selector?: (state: typeof modelsState & {
+      fetchModels: typeof fetchModelsMock;
+      fetchDigitalEmployees: typeof fetchDigitalEmployeesMock;
+      createDigitalEmployee: typeof createDigitalEmployeeMock;
+      updateEmployeeSkills: typeof updateEmployeeSkillsMock;
+      updateEmployeeTemplate: typeof updateEmployeeTemplateMock;
+      getTokenKey: typeof getTokenKeyMock;
+    }) => unknown) => {
+      const state = {
+        ...modelsState,
+        fetchModels: fetchModelsMock,
+        fetchDigitalEmployees: fetchDigitalEmployeesMock,
+        createDigitalEmployee: createDigitalEmployeeMock,
+        updateEmployeeSkills: updateEmployeeSkillsMock,
+        updateEmployeeTemplate: updateEmployeeTemplateMock,
+        getTokenKey: getTokenKeyMock,
+      };
+      return typeof selector === 'function' ? selector(state) : state;
+    },
+    {
+      getState: () => ({
+        ...modelsState,
+        fetchModels: fetchModelsMock,
+        fetchDigitalEmployees: fetchDigitalEmployeesMock,
+        createDigitalEmployee: createDigitalEmployeeMock,
+        updateEmployeeSkills: updateEmployeeSkillsMock,
+        updateEmployeeTemplate: updateEmployeeTemplateMock,
+        getTokenKey: getTokenKeyMock,
+      }),
+    },
+  ),
+}));
+
+vi.mock('@/stores/chat', () => ({
+  useChatStore: {
+    getState: () => ({
+      newSessionForAgent: newSessionForAgentMock,
+    }),
+  },
+}));
+
 vi.mock('@/lib/host-api', () => ({
   hostApiFetch: (...args: unknown[]) => hostApiFetchMock(...args),
 }));
@@ -115,14 +174,30 @@ describe('Agents page status refresh', () => {
     gatewayState.status = { state: 'running', port: 18789 };
     agentsState.agents = [];
     agentsState.defaultModelRef = null;
+    agentsState.loading = false;
+    agentsState.error = null;
     providersState.accounts = [];
     providersState.statuses = [];
     providersState.vendors = [];
     providersState.defaultAccountId = '';
+    modelsState.models = [];
+    modelsState.digitalEmployees = [];
+    modelsState.loading = false;
+    modelsState.error = null;
+    modelsState.isLoggedIn = true;
+    modelsState.currentModelId = null;
+    modelsState.sessionModels = {};
     fetchAgentsMock.mockResolvedValue(undefined);
     updateAgentMock.mockResolvedValue(undefined);
     updateAgentModelMock.mockResolvedValue(undefined);
     refreshProviderSnapshotMock.mockResolvedValue(undefined);
+    fetchDigitalEmployeesMock.mockResolvedValue(undefined);
+    fetchModelsMock.mockResolvedValue(undefined);
+    createDigitalEmployeeMock.mockResolvedValue(undefined);
+    updateEmployeeSkillsMock.mockResolvedValue(undefined);
+    updateEmployeeTemplateMock.mockResolvedValue(undefined);
+    getTokenKeyMock.mockResolvedValue('token');
+    newSessionForAgentMock.mockReturnValue('agent:main:main');
     hostApiFetchMock.mockResolvedValue({
       success: true,
       channels: [],
@@ -280,5 +355,53 @@ describe('Agents page status refresh', () => {
 
     expect(container.querySelector('svg.animate-spin')).toBeTruthy();
     expect(screen.queryByText('title')).not.toBeInTheDocument();
+  });
+
+  it('shows the chat action for a regular agent card', async () => {
+    agentsState.agents = [
+      {
+        id: 'main',
+        name: 'Main',
+        isDefault: true,
+        modelDisplay: 'gpt-5',
+        modelRef: 'openai/gpt-5',
+        overrideModelRef: null,
+        inheritedModel: true,
+        workspace: '~/.openclaw/workspace',
+        agentDir: '~/.openclaw/agents/main/agent',
+        mainSessionKey: 'agent:main:main',
+        channelTypes: [],
+      },
+    ];
+
+    renderAgents();
+
+    const chatButton = await screen.findByRole('button', { name: 'newChat' });
+    fireEvent.click(chatButton);
+
+    expect(newSessionForAgentMock).toHaveBeenCalledWith('main', { nativeCli: false });
+  });
+
+  it('keeps the chat action visible when digital employee metadata is unavailable', async () => {
+    agentsState.agents = [
+      {
+        id: 'bot-network-race',
+        name: 'Support Bot',
+        isDefault: false,
+        modelDisplay: 'glm-5',
+        modelRef: 'shadan/glm-5',
+        overrideModelRef: null,
+        inheritedModel: false,
+        workspace: '~/.openclaw/workspace-support',
+        agentDir: '~/.openclaw/agents/bot-network-race/agent',
+        mainSessionKey: 'agent:bot-network-race:main',
+        channelTypes: [],
+      },
+    ];
+    modelsState.digitalEmployees = [];
+
+    renderAgents();
+
+    expect(await screen.findByRole('button', { name: 'newChat' })).toBeInTheDocument();
   });
 });

@@ -482,7 +482,6 @@ export const useModelsStore = create<ModelState>((set, get) => ({
       localStorage.setItem('clawx-agent-templates', JSON.stringify(currentTemplates));
     } catch (error) {
       console.error('[models] Failed to fetch digital employees:', error);
-      set({ digitalEmployees: [] });
     }
   },
 

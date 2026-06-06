@@ -10,6 +10,7 @@
     "modelLine": "Model: {{model}}{{suffix}}",
     "channelsLine": "Channels: {{channels}}",
     "deleteAgent": "Delete Agent",
+    "newChat": "New Chat",
     "settings": "Settings",
     "creating": "Creating...",
     "createDialog": {
