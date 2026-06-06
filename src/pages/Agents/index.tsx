@@ -5,7 +5,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { AgentAvatar } from '@/components/common/AgentAvatar';
@@ -1427,9 +1427,9 @@ function AddAgentDialog({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
-      <Card className="w-full max-w-md rounded-3xl border-0 shadow-2xl bg-[#f3f1e9] dark:bg-card overflow-hidden">
-        <CardHeader className="pb-2">
+    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-3 sm:p-4">
+      <Card className="w-full max-w-md max-h-[calc(100vh-24px)] sm:max-h-[90vh] flex flex-col rounded-3xl border-0 shadow-2xl bg-[#f3f1e9] dark:bg-card overflow-hidden">
+        <CardHeader className="pb-2 shrink-0">
           <CardTitle className="text-2xl font-serif font-normal tracking-tight">
             {isEditMode ? '编辑数字员工' : t('createDialog.title')}
           </CardTitle>
@@ -1437,7 +1437,7 @@ function AddAgentDialog({
             {isEditMode ? `修改「${editAgent?.name}」的配置` : t('createDialog.description')}
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-6 pt-4 p-6">
+        <CardContent className="space-y-5 pt-4 px-6 pb-5 overflow-y-auto flex-1 min-h-0">
           <div className="space-y-2.5">
             <Label htmlFor="agent-name" className={labelClasses}>昵称</Label>
             <Input
@@ -1575,31 +1575,30 @@ function AddAgentDialog({
               </div>
             </div>
           )}
-
-          <div className="flex justify-end gap-2">
-            <Button
-              variant="outline"
-              onClick={onClose}
-              className="h-9 text-[13px] font-medium rounded-full px-4 border-black/10 dark:border-white/10 bg-transparent hover:bg-black/5 dark:hover:bg-white/5 shadow-none text-foreground/80 hover:text-foreground"
-            >
-              {t('common:actions.cancel')}
-            </Button>
-            <Button
-              onClick={() => void handleSubmit()}
-              disabled={saving || !name.trim() || (runtimePreset !== 'embedded' && !envCheckPassed)}
-              className="h-9 text-[13px] font-medium rounded-full px-4 shadow-none"
-            >
-              {saving ? (
-                <>
-                  <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
-                  {isEditMode ? '保存中...' : t('creating')}
-                </>
-              ) : (
-                t('common:actions.save')
-              )}
-            </Button>
-          </div>
         </CardContent>
+        <CardFooter className="shrink-0 justify-end gap-2 border-t border-black/5 dark:border-white/10 bg-[#f3f1e9]/95 px-6 py-4 dark:bg-card/95">
+          <Button
+            variant="outline"
+            onClick={onClose}
+            className="h-9 text-[13px] font-medium rounded-full px-4 border-black/10 dark:border-white/10 bg-transparent hover:bg-black/5 dark:hover:bg-white/5 shadow-none text-foreground/80 hover:text-foreground"
+          >
+            {t('common:actions.cancel')}
+          </Button>
+          <Button
+            onClick={() => void handleSubmit()}
+            disabled={saving || !name.trim() || (runtimePreset !== 'embedded' && !envCheckPassed)}
+            className="h-9 text-[13px] font-medium rounded-full px-4 shadow-none"
+          >
+            {saving ? (
+              <>
+                <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                {isEditMode ? '保存中...' : t('creating')}
+              </>
+            ) : (
+              t('common:actions.save')
+            )}
+          </Button>
+        </CardFooter>
       </Card>
     </div>
   );
