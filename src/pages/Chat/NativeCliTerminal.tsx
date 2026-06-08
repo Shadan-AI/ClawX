@@ -236,6 +236,12 @@ const CLAUDE_BANNER_LINE_SIGNATURES: RegExp[] = [
   /· FAQ · Feedback/iu,
   // Installation path line from the VS Code onboarding welcome.
   /installed in\b.*[/\\](?:claude-code|claude)[/\\]/iu,
+  // VS Code onboarding prompt lines (were previously only in chunk-level
+  // signatures; now needed at line level since chunk-level masking is gone).
+  /Welcome to Claude Code for VS Code/iu,
+  /Press Enter to continue/iu,
+  // Bare ❯ prompt without inverse-video cursor block (idle footer).
+  /^\s*❯\s*$/u,
 ];
 
 const CLAUDE_FOOTER_INPUT_PROMPT_RE = /^\s*[❯>]\s+\x1b\[30m\x1b\[47m\s\x1b\[m/u;
@@ -854,12 +860,14 @@ function NativeCliTerminalStyles() {
       .native-cli-terminal__mount .xterm-screen {
         background: var(--native-cli-background) !important;
         margin-left: var(--terminal-content-inset);
+        margin-top: -100px;
       }
       .native-cli-terminal__mount .xterm-screen canvas {
         background: var(--native-cli-background) !important;
       }
       .native-cli-terminal__mount .xterm-helpers {
         left: var(--terminal-content-inset);
+        margin-top: -100px;
       }
       .native-cli-terminal__mount .xterm-viewport {
         background: var(--native-cli-background) !important;
@@ -927,7 +935,6 @@ export function NativeCliTerminal({
   const suppressReconnectRef = useRef(false);
   const reconnectDelayRef = useRef(1000);
   const disposedRef = useRef(false);
-  const initialScrollDoneRef = useRef(false);
 
   const [terminalState, dispatchTerminalState] = useReducer(
     nativeCliTerminalReducer,
@@ -1306,12 +1313,7 @@ export function NativeCliTerminal({
       term.write(renderRaw);
       if (renderHasPrintable) {
         requestInitialOutputSettle();
-        if (!initialScrollDoneRef.current) {
-          initialScrollDoneRef.current = true;
-          // Scroll to show latest content — blank banner rows at the
-          // top get pushed above the viewport naturally.
-          term.scrollToBottom();
-        }
+        if (isTerminalNearBottom(term)) term.scrollToBottom();
       }
     } else {
       traceNativeCliTerminal('terminal-data-dropped-no-xterm', {
@@ -1946,7 +1948,6 @@ export function NativeCliTerminal({
     shellPassthroughRef.current = false;
     setCliRespondingState(false);
     suppressReconnectRef.current = false;
-    initialScrollDoneRef.current = false;
 
     const persisted = loadPersistedTerminalState(sessionKey);
     const initialCliSessionId = resolveStoredCliSessionId(sessionKey, cliSessionIdPropRef.current) || persisted.cliSessionId || '';
@@ -1981,10 +1982,7 @@ export function NativeCliTerminal({
         });
       }
       term.write(bufferRef.current);
-      if (!initialScrollDoneRef.current) {
-        initialScrollDoneRef.current = true;
-        term.scrollToBottom();
-      }
+      if (isTerminalNearBottom(term)) term.scrollToBottom();
     }
     term.onData((data) => {
       mountRef_cb.current.sendTerminalData(data);
