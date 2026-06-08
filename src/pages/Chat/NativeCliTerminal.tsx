@@ -98,7 +98,6 @@ const TERMINAL_SHELL_PASSTHROUGH_WRAPPER_SUBCOMMANDS = new Set(['dlx', 'exec', '
 const TERMINAL_MIN_COLS = 40;
 const TERMINAL_DEFAULT_ROWS = 24;
 const TERMINAL_MAX_REASONABLE_CELL_WIDTH = 32;
-const CLAUDE_TOP_CHROME_COMPACT_MAX_ROWS = 18;
 const TERMINAL_ESCAPE = String.fromCharCode(27);
 const TERMINAL_CTRL_U = String.fromCharCode(21);
 const TERMINAL_BELL = String.fromCharCode(7);
@@ -133,27 +132,6 @@ function coerceTerminalDimension(value: number | null | undefined, fallback: num
   const fallbackInteger = Number.isFinite(fallback) ? Math.floor(fallback) : minimum;
   const candidate = Number.isFinite(value) ? Math.floor(value as number) : fallbackInteger;
   return Math.max(minimum, Number.isFinite(candidate) ? candidate : minimum);
-}
-
-function measureTerminalLineHeight(term: Terminal, mount: HTMLElement): number {
-  const rowHeight = mount.querySelector<HTMLElement>('.xterm-rows > div')?.getBoundingClientRect().height ?? 0;
-  if (Number.isFinite(rowHeight) && rowHeight > 4) return rowHeight;
-  const fontSize = typeof term.options.fontSize === 'number' && Number.isFinite(term.options.fontSize)
-    ? term.options.fontSize
-    : 15;
-  return Math.max(12, fontSize * 1.2);
-}
-
-function countLeadingBlankTerminalRows(term: Terminal, maxRows = CLAUDE_TOP_CHROME_COMPACT_MAX_ROWS): number {
-  const buffer = term.buffer.active;
-  const start = Math.max(0, buffer.viewportY);
-  const end = Math.min(buffer.length, start + Math.min(term.rows, maxRows));
-  let blankRows = 0;
-  for (let lineIndex = start; lineIndex < end; lineIndex += 1) {
-    if (buffer.getLine(lineIndex)?.translateToString(true).trim()) break;
-    blankRows += 1;
-  }
-  return blankRows;
 }
 
 function previewNativeCliTerminalChunk(text: string, limit = NATIVE_CLI_TERMINAL_DEBUG_PREVIEW_LIMIT): string {
@@ -260,13 +238,6 @@ const CLAUDE_BANNER_LINE_SIGNATURES: RegExp[] = [
   /installed in\b.*[/\\](?:claude-code|claude)[/\\]/iu,
 ];
 
-const CLAUDE_CHROME_CHUNK_SIGNATURES: RegExp[] = [
-  /Claude Code v\d/iu,
-  /Claude Code v\d[\s\S]*(?:Welcome back!|Tips for getting started|Run \/init|What's new)/iu,
-  /Welcome to Claude Code for VS Code/iu,
-  /Tips for getting started[\s\S]*Run \/init to create/iu,
-];
-
 const CLAUDE_FOOTER_INPUT_PROMPT_RE = /^\s*[❯>]\s+\x1b\[30m\x1b\[47m\s\x1b\[m/u;
 
 function cleanTerminalControlText(text: string): string {
@@ -348,14 +319,11 @@ export function maskClaudeBannerInChunk(chunk: string): string {
     parts.push('\r\n');
     i = next + 2;
   }
-  const maskPrintableChunk = CLAUDE_CHROME_CHUNK_SIGNATURES.some((re) => (
-    re.test(cleanTerminalControlText(chunk))
-  ));
   let masked = false;
   for (let p = 0; p < parts.length; p += 1) {
     const part = parts[p];
     if (part === '\r\n') continue;
-    if ((maskPrintableChunk && hasPrintableTerminalContent(part)) || isClaudeChromeLine(part)) {
+    if (isClaudeChromeLine(part)) {
       parts[p] = blankPrintableInLine(part);
       masked = true;
     }
@@ -711,7 +679,6 @@ function NativeCliTerminalStyles() {
       }
       .native-cli-terminal__mount {
         --terminal-content-inset: max(24px, calc((100% - var(--terminal-screen-width)) / 2));
-        --terminal-top-compaction: 0px;
         position: absolute;
         top: 20px;
         bottom: 132px;
@@ -887,14 +854,12 @@ function NativeCliTerminalStyles() {
       .native-cli-terminal__mount .xterm-screen {
         background: var(--native-cli-background) !important;
         margin-left: var(--terminal-content-inset);
-        transform: translateY(var(--terminal-top-compaction));
       }
       .native-cli-terminal__mount .xterm-screen canvas {
         background: var(--native-cli-background) !important;
       }
       .native-cli-terminal__mount .xterm-helpers {
         left: var(--terminal-content-inset);
-        transform: translateY(var(--terminal-top-compaction));
       }
       .native-cli-terminal__mount .xterm-viewport {
         background: var(--native-cli-background) !important;
@@ -962,6 +927,7 @@ export function NativeCliTerminal({
   const suppressReconnectRef = useRef(false);
   const reconnectDelayRef = useRef(1000);
   const disposedRef = useRef(false);
+  const initialScrollDoneRef = useRef(false);
 
   const [terminalState, dispatchTerminalState] = useReducer(
     nativeCliTerminalReducer,
@@ -1280,26 +1246,6 @@ export function NativeCliTerminal({
     settleReadyWithoutInitialOutput();
   }, [awaitingInitialOutput, effectiveProvider, settleReadyWithoutInitialOutput]);
 
-  const updateClaudeTopCompaction = useCallback(() => {
-    const mount = mountRef.current;
-    if (!mount) return;
-    if (!isClaudeProvider) {
-      mount.style.setProperty('--terminal-top-compaction', '0px');
-      return;
-    }
-
-    const term = termRef.current;
-    if (!term) {
-      mount.style.setProperty('--terminal-top-compaction', '0px');
-      return;
-    }
-
-    const blankRows = countLeadingBlankTerminalRows(term);
-    const offsetPx = blankRows > 0
-      ? Math.round(blankRows * measureTerminalLineHeight(term, mount))
-      : 0;
-    mount.style.setProperty('--terminal-top-compaction', offsetPx > 0 ? `-${offsetPx}px` : '0px');
-  }, [isClaudeProvider]);
 
   const handleTerminalData = useCallback((raw: string) => {
     // Strip-in-place: ANSI control bytes pass through untouched; only the
@@ -1357,10 +1303,16 @@ export function NativeCliTerminal({
     persistState();
     const term = termRef.current;
     if (term) {
-      term.write(renderRaw, () => {
-        updateClaudeTopCompaction();
-        if (renderHasPrintable) requestInitialOutputSettle();
-      });
+      term.write(renderRaw);
+      if (renderHasPrintable) {
+        requestInitialOutputSettle();
+        if (!initialScrollDoneRef.current) {
+          initialScrollDoneRef.current = true;
+          // Scroll to show latest content — blank banner rows at the
+          // top get pushed above the viewport naturally.
+          term.scrollToBottom();
+        }
+      }
     } else {
       traceNativeCliTerminal('terminal-data-dropped-no-xterm', {
         sessionKey,
@@ -1368,7 +1320,7 @@ export function NativeCliTerminal({
         rawPreview: previewNativeCliTerminalChunk(raw),
       });
     }
-  }, [effectiveProvider, isClaudeProvider, persistState, requestInitialOutputSettle, sessionKey, settleClaudeReadyFromTerminalData, stripTerminalStreamMarkers, updateClaudeTopCompaction, updateCliRespondingFromTerminalData, updateShellPassthroughState]);
+  }, [effectiveProvider, isClaudeProvider, persistState, requestInitialOutputSettle, sessionKey, settleClaudeReadyFromTerminalData, stripTerminalStreamMarkers, updateCliRespondingFromTerminalData, updateShellPassthroughState]);
 
   const sendTerminalData = useCallback((data: string) => {
     const ws = wsRef.current;
@@ -1460,15 +1412,13 @@ export function NativeCliTerminal({
       resizeRafRef.current = 0;
       if (disposedRef.current) return;
       fitTerminalToContent();
-      updateClaudeTopCompaction();
       updateInputShellStateFromTerminalScroll();
       requestAnimationFrame(() => {
         if (disposedRef.current) return;
         fitTerminalToContent();
-        updateClaudeTopCompaction();
       });
     });
-  }, [fitTerminalToContent, updateClaudeTopCompaction, updateInputShellStateFromTerminalScroll]);
+  }, [fitTerminalToContent, updateInputShellStateFromTerminalScroll]);
 
   const connect = useCallback(async () => {
     if (disposedRef.current) return;
@@ -1969,7 +1919,7 @@ export function NativeCliTerminal({
     maybeSettleInitialOutput, persistState,
     handleTerminalData, bindNativeCliSessionId,
     settleReadyWithoutInitialOutput, resetVisibleTerminalForResume,
-    updateClaudeTopCompaction, updateInputShellStateFromTerminalScroll,
+    updateInputShellStateFromTerminalScroll,
     setCliRespondingState,
   });
   mountRef_cb.current = {
@@ -1977,7 +1927,7 @@ export function NativeCliTerminal({
     maybeSettleInitialOutput, persistState,
     handleTerminalData, bindNativeCliSessionId,
     settleReadyWithoutInitialOutput, resetVisibleTerminalForResume,
-    updateClaudeTopCompaction, updateInputShellStateFromTerminalScroll,
+    updateInputShellStateFromTerminalScroll,
     setCliRespondingState,
   };
 
@@ -1996,6 +1946,7 @@ export function NativeCliTerminal({
     shellPassthroughRef.current = false;
     setCliRespondingState(false);
     suppressReconnectRef.current = false;
+    initialScrollDoneRef.current = false;
 
     const persisted = loadPersistedTerminalState(sessionKey);
     const initialCliSessionId = resolveStoredCliSessionId(sessionKey, cliSessionIdPropRef.current) || persisted.cliSessionId || '';
@@ -2029,9 +1980,11 @@ export function NativeCliTerminal({
           preview: previewNativeCliTerminalChunk(bufferRef.current),
         });
       }
-      term.write(bufferRef.current, () => {
-        mountRef_cb.current.updateClaudeTopCompaction();
-      });
+      term.write(bufferRef.current);
+      if (!initialScrollDoneRef.current) {
+        initialScrollDoneRef.current = true;
+        term.scrollToBottom();
+      }
     }
     term.onData((data) => {
       mountRef_cb.current.sendTerminalData(data);

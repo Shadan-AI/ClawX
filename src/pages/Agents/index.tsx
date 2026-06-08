@@ -37,11 +37,6 @@ import qqIcon from '@/assets/channels/qq.svg';
 import { TemplateManagementDialog } from '@/components/agents/TemplateManagementDialog';
 import { SkillsConfigurationView } from './SkillsConfigurationView';
 import { OrganizationView } from './OrganizationView';
-import { ConfettiPhysics } from '@/components/agents/ConfettiPhysics';
-
-// 全局计数器，用于生成唯一的粒子 ID
-let globalParticleId = 0;
-
 interface ChannelAccountItem {
   accountId: string;
   name: string;
@@ -165,12 +160,12 @@ export function Agents() {
   const [editingAgent, setEditingAgent] = useState<AgentSummary | null>(null);
   const [activeAgentId, setActiveAgentId] = useState<string | null>(null);
   const [agentToDelete, setAgentToDelete] = useState<AgentSummary | null>(null);
+  const [selectedAgentIds, setSelectedAgentIds] = useState<Set<string>>(new Set());
+  const [bulkDeleteTargets, setBulkDeleteTargets] = useState<AgentSummary[] | null>(null);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
   const [showTemplateDialog, setShowTemplateDialog] = useState(false);
   const [viewMode, setViewMode] = useState<'list' | 'skills' | 'organization'>('list');
   const [skillsViewAgentId, setSkillsViewAgentId] = useState<string | null>(null);
-  const [globalConfetti, setGlobalConfetti] = useState<Array<{ id: number; x: number; y: number; explosionX: number; explosionY: number; color: string; size: number }>>([]);
-  const lastClickTimeRef = useRef<number>(0);
-  const pendingConfettiRef = useRef<Set<number>>(new Set());
 
   // Handle URL params: ?edit=agentId&tab=skills
   const [searchParams, setSearchParams] = useSearchParams();
@@ -355,60 +350,77 @@ export function Agents() {
     toast.success('已同步 IM 平台的员工');
   };
   
-  const handleDigitalEmployeeClick = (event: React.MouseEvent<HTMLDivElement>) => {
-    // 严格防抖：1000ms 内只能点击一次
-    const now = Date.now();
-    if (now - lastClickTimeRef.current < 1000) {
-      return;
-    }
-    lastClickTimeRef.current = now;
-    
-    // 严格限制最大方块数量（降低到 30）
-    if (globalConfetti.length >= 30) {
-      return;
-    }
-    
-    const timestamp = Date.now();
-    
-    // 检查是否已经在处理中
-    if (pendingConfettiRef.current.has(timestamp)) {
-      return;
-    }
-    pendingConfettiRef.current.add(timestamp);
-    
-    // 获取卡片在页面中的位置
-    const rect = event.currentTarget.getBoundingClientRect();
-    const cardCenterX = rect.left + rect.width / 2;
-    const cardCenterY = rect.top + rect.height / 2;
-    
-    // 生成彩色像素块 - 减少到 8 个
-    const colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8', '#F7DC6F', '#BB8FCE', '#85C1E2'];
-    const newConfetti = Array.from({ length: 8 }, () => {
-      const angle = (Math.random() * 360) * (Math.PI / 180);
-      const explosionDistance = 60 + Math.random() * 80; // 减小爆炸范围
-      
-      const explosionX = Math.cos(angle) * explosionDistance;
-      const explosionY = Math.sin(angle) * explosionDistance;
-      
-      return {
-        id: ++globalParticleId, // 使用全局计数器生成唯一 ID
-        x: cardCenterX,
-        y: cardCenterY,
-        explosionX,
-        explosionY,
-        color: colors[Math.floor(Math.random() * colors.length)],
-        size: 4 + Math.random() * 2, // 减小方块大小：4-6px
-      };
+  const toggleAgentSelection = useCallback((agentId: string) => {
+    setSelectedAgentIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(agentId)) {
+        next.delete(agentId);
+      } else {
+        next.add(agentId);
+      }
+      return next;
     });
-    
-    // 追加到现有的 confetti
-    setGlobalConfetti(prev => [...prev, ...newConfetti]);
-    
-    // 1秒后清理这个时间戳
-    setTimeout(() => {
-      pendingConfettiRef.current.delete(timestamp);
-    }, 1000);
-  };
+  }, []);
+
+  const clearSelection = useCallback(() => {
+    setSelectedAgentIds(new Set());
+  }, []);
+
+  const handleBulkDeleteRequest = useCallback(() => {
+    const targets = visibleAgents.filter((a) => selectedAgentIds.has(a.id) && !a.isDefault);
+    if (targets.length === 0) return;
+    setBulkDeleteTargets(targets);
+  }, [visibleAgents, selectedAgentIds]);
+
+  const executeBulkDelete = useCallback(async () => {
+    if (!bulkDeleteTargets) return;
+    setBulkDeleting(true);
+    const targets = [...bulkDeleteTargets];
+    const total = targets.length;
+    let failed = 0;
+    const failedNames: string[] = [];
+
+    for (const agent of targets) {
+      try {
+        await deleteAgent(agent.id);
+        const employee = digitalEmployees.find((e) => e.openclawAgentId === agent.id);
+        if (employee) {
+          try {
+            const tokenKey = await useModelsStore.getState().getTokenKey();
+            if (tokenKey) {
+              await fetch(`https://im.shadanai.com/api/bot/${employee.openclawAgentId}`, {
+                method: 'DELETE',
+                headers: { 'Token-Key': tokenKey, 'Content-Type': 'application/json' },
+              });
+            }
+          } catch { /* best effort */ }
+        }
+      } catch (err) {
+        failed++;
+        failedNames.push(agent.name);
+        console.error(`[bulk-delete] Failed to delete ${agent.name} (${agent.id}):`, err);
+      }
+      // Delay between deletes to prevent config-file write races (EPERM).
+      // 500ms gives the async file-write enough time to flush.
+      if (targets.indexOf(agent) < targets.length - 1) {
+        await new Promise((r) => setTimeout(r, 500));
+      }
+    }
+
+    setBulkDeleteTargets(null);
+    setSelectedAgentIds(new Set());
+    setBulkDeleting(false);
+    // Refresh channel + digital-employee lists (matches single-delete pattern).
+    // Do NOT call fetchAgents() — the store is already updated by each
+    // deleteAgent call via applySnapshot, and a full fetchAgents would
+    // trigger a gateway-side sync that could re-register deleted bots.
+    await Promise.all([fetchDigitalEmployees({ force: true }), fetchChannelAccounts()]);
+    if (failed === 0) {
+      toast.success(`已删除 ${total} 个 Agent`);
+    } else {
+      toast.error(`已删除 ${total - failed} 个，${failed} 个失败: ${failedNames.join(', ')}`);
+    }
+  }, [bulkDeleteTargets, deleteAgent, digitalEmployees, fetchChannelAccounts, fetchDigitalEmployees]);
 
   if (loading && !hasCompletedInitialLoad) {
     return (
@@ -420,14 +432,6 @@ export function Agents() {
 
   return (
     <div data-testid="agents-page" className="flex flex-col -m-6 dark:bg-background h-[calc(100vh-2.5rem)] overflow-hidden relative">
-      {/* 物理引擎驱动的彩色方块 */}
-      <ConfettiPhysics
-        particles={globalConfetti}
-        onComplete={(id) => {
-          setGlobalConfetti(prev => prev.filter(p => p.id !== id));
-        }}
-      />
-      
       <div className="w-full flex flex-col h-full p-6">
         <div className="flex flex-col md:flex-row md:items-start justify-between shrink-0 gap-4 mb-4">
           <div>
@@ -548,12 +552,40 @@ export function Agents() {
                     </div>
                   )}
 
+                  {selectedAgentIds.size > 0 && (
+                    <div className="flex items-center gap-3 mb-4 p-3 rounded-2xl bg-primary/10 border border-primary/20">
+                      <span className="text-sm font-medium text-foreground">
+                        已选择 {selectedAgentIds.size} 个 Agent
+                      </span>
+                      <div className="flex-1" />
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 text-xs rounded-full"
+                        onClick={clearSelection}
+                      >
+                        <X className="h-3.5 w-3.5 mr-1" />
+                        取消选择
+                      </Button>
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        className="h-8 text-xs rounded-full"
+                        onClick={handleBulkDeleteRequest}
+                      >
+                        <Trash2 className="h-3.5 w-3.5 mr-1" />
+                        删除 ({selectedAgentIds.size})
+                      </Button>
+                    </div>
+                  )}
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                     {visibleAgents.map((agent) => (
                       <AgentCard
                         key={agent.id}
                         agent={agent}
                         channelGroups={visibleChannelGroups}
+                        selected={selectedAgentIds.has(agent.id)}
+                        onToggleSelect={agent.isDefault ? undefined : () => toggleAgentSelection(agent.id)}
                         onOpenSettings={() => {
                           if (agent.isDigitalEmployee) {
                             setEditingAgent(agent);
@@ -562,7 +594,6 @@ export function Agents() {
                           }
                         }}
                         onDelete={() => setAgentToDelete(agent)}
-                        onDigitalEmployeeClick={handleDigitalEmployeeClick}
                         onNavigateToSkills={() => {
                           setSkillsViewAgentId(agent.id);
                           setViewMode('skills');
@@ -697,6 +728,21 @@ export function Agents() {
         onCancel={() => setAgentToDelete(null)}
       />
 
+      <ConfirmDialog
+        open={!!bulkDeleteTargets}
+        title="批量删除 Agent"
+        message={
+          bulkDeleteTargets
+            ? `确定要删除以下 ${bulkDeleteTargets.length} 个 Agent 吗？\n\n${bulkDeleteTargets.map((a) => `· ${a.name}`).join('\n')}\n\n此操作不可撤销。`
+            : ''
+        }
+        confirmLabel={t('common:actions.delete')}
+        cancelLabel={t('common:actions.cancel')}
+        variant="destructive"
+        onConfirm={executeBulkDelete}
+        onCancel={() => { if (!bulkDeleting) setBulkDeleteTargets(null); }}
+      />
+
       <TemplateManagementDialog
         isOpen={showTemplateDialog}
         onClose={() => setShowTemplateDialog(false)}
@@ -708,21 +754,22 @@ export function Agents() {
 function AgentCard({
   agent,
   channelGroups,
+  selected,
+  onToggleSelect,
   onOpenSettings,
   onDelete,
-  onDigitalEmployeeClick,
   onNavigateToSkills,
 }: {
   agent: AgentSummary;
   channelGroups: ChannelGroupItem[];
+  selected?: boolean;
+  onToggleSelect?: () => void;
   onOpenSettings: () => void;
   onDelete: () => void;
-  onDigitalEmployeeClick?: (event: React.MouseEvent<HTMLDivElement>) => void;
   onNavigateToSkills?: () => void;
 }) {
   const { t } = useTranslation('agents');
   const navigate = useNavigate();
-  const [isShaking, setIsShaking] = useState(false);
   
   const handleChatWithAgent = () => {
     useChatStore.getState().newSessionForAgent(agent.id, {
@@ -746,40 +793,31 @@ function AgentCard({
   const channelsText = boundChannelAccounts.length > 0
     ? boundChannelAccounts.join(', ')
     : t('none');
-  
-  const handleDigitalEmployeeClick = (event: React.MouseEvent<HTMLDivElement>) => {
-    if (!agent.isDigitalEmployee) return;
-    
-    // 如果正在抖动，直接返回，不触发任何操作
-    if (isShaking) return;
-    
-    // 触发全局彩色方块（会检查防抖）
-    if (onDigitalEmployeeClick) {
-      onDigitalEmployeeClick(event);
-    }
-    
-    // 触发抖动动画
-    setIsShaking(true);
-    setTimeout(() => setIsShaking(false), 600);
-  };
 
   return (
     <div
       className={cn(
         'group relative flex flex-col p-5 rounded-2xl transition-all border',
-        isShaking && 'animate-shake',
-        agent.isDigitalEmployee 
-          ? 'bg-[#f3f1e9] dark:bg-white/[0.06] border-blue-500/20 dark:border-blue-500/20 shadow-sm cursor-pointer' 
-          : agent.isDefault 
-            ? 'bg-[#f3f1e9] dark:bg-white/[0.06] border-black/10 dark:border-white/10 shadow-sm cursor-pointer' 
+        selected && !agent.isDefault && 'ring-2 ring-primary border-primary',
+        agent.isDigitalEmployee
+          ? 'bg-[#f3f1e9] dark:bg-white/[0.06] border-blue-500/20 dark:border-blue-500/20 shadow-sm cursor-pointer'
+          : agent.isDefault
+            ? 'bg-[#f3f1e9] dark:bg-white/[0.06] border-black/10 dark:border-white/10 shadow-sm cursor-default'
             : 'bg-[#f8f6f0] dark:bg-white/[0.02] border-black/5 dark:border-white/5 hover:border-black/10 dark:hover:border-white/10 hover:shadow-lg cursor-pointer'
       )}
-      onClick={agent.isDigitalEmployee ? handleDigitalEmployeeClick : onOpenSettings}
+      onClick={() => { if (!agent.isDefault) onToggleSelect?.(); }}
     >
-      {/* 状态指示点 */}
-      {agent.isDefault && (
-        <div className="absolute top-3 right-3 h-2 w-2 rounded-full bg-green-500 shadow-sm"></div>
-      )}
+      {/* 状态指示点 + 选择框 */}
+      <div className="absolute top-3 right-3 flex items-center gap-2">
+        {selected && !agent.isDefault && (
+          <div className="h-6 w-6 rounded-full bg-primary flex items-center justify-center shadow-sm">
+            <Check className="h-3.5 w-3.5 text-primary-foreground" />
+          </div>
+        )}
+        {agent.isDefault && (
+          <div className="h-2 w-2 rounded-full bg-green-500 shadow-sm"></div>
+        )}
+      </div>
 
       {/* 头像 */}
       <AgentAvatar
