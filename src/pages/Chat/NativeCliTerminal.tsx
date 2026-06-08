@@ -118,7 +118,10 @@ const NATIVE_CLI_RESPONDING_IDLE_CLEAR_MS = 2500;
 const NATIVE_CLI_RESPONDING_FALLBACK_IDLE_CLEAR_MS = 5000;
 const NATIVE_CLI_PROMPT_READY_BUFFER_CHARS = 4000;
 const CLAUDE_INTERRUPT_PRESERVE_MS = 2500;
-const CLAUDE_PROMPT_GLYPH = String.fromCodePoint(0x276f);
+// Claude uses ❯ (U+276F) as its prompt glyph in most terminals, but
+// some terminal configurations / older versions render it as > (U+003E).
+// Match either so the prompt row is masked regardless.
+const CLAUDE_PROMPT_GLYPH = '[\\u276f>]';
 
 function isNativeCliTerminalDebugEnabled(): boolean {
   if (import.meta.env.DEV) return true;
@@ -234,6 +237,7 @@ const CLAUDE_BANNER_LINE_SIGNATURES: RegExp[] = [
   /Tips for getting started/iu,
   /Run \/init to create/i,
   /CLAUDE\.md file/i,
+  /What's new/iu,
   /API Usage Billing/iu,
   /Subscription/iu,
   /· API Usage Billing/,          // billing line
@@ -241,8 +245,27 @@ const CLAUDE_BANNER_LINE_SIGNATURES: RegExp[] = [
   /\\workspace-[A-Za-z0-9_-]+$/,  // cwd row tail (Windows path inside banner)
   /(?:^|[~.\\\/])\.openclaw[\\\/]workspace-[A-Za-z0-9_-]+/i,
   /^\s*[\u2500\u2501]{12,}\s*$/u,
-  /^\s*(?:\u23f5\u23f5|\u25b8\u25b8)\s+(?:bypass permissions|accept edits|plan mode|default mode|read[- ]only)\b[\s\S]*shift\+tab to cycle[\s\S]*for agents[\s\S]*$/iu,
+  /^\s*(?:\u23f5\u23f5|\u25b8\u25b8|\u00bb)\s+(?:bypass permissions|accept edits|plan mode|default mode|read[- ]only)\b[\s\S]*shift\+tab to cycle[\s\S]*for agents[\s\S]*$/iu,
+  // Footer effort / model pill.  Claude renders this in several
+  // typographic flavours across versions \u2014 all share the same structure:
+  //   \u25cf high \u00b7 /effort   (U+25CF bullet, U+00B7 middle-dot)
+  //   \u2022 high / effort    (U+2022 bullet, forward-slash separator)
+  /[\u25cf\u2022]\s+\w+\s*[\u00b7/]\s*\/?effort/iu,
   /^\s*▎\s+.+\bis now available!\s*·\s*\/model to switch/iu,
+  // Box-drawing frame lines — Claude's banner/footer border uses
+  // │ (U+2502), ┌┐└┘ (U+250C–U+2518) standard corners, ╭╮╰╯
+  // (U+256D–U+2570) arc corners, and ─━ runs.  These glyphs are
+  // unique to Claude's own chrome layout and never appear in normal
+  // conversation output, so any line containing them is a chrome row.
+  /[┌┐└┘│╭╮╯╰]/,         // ┌ ┐ └ ┘ │ ╭ ╮ ╯ ╰
+  // Top-bar info row inside the banner frame (e.g. "· FAQ · Feedback").
+  /· FAQ · Feedback/iu,
+  // Installation path line from the VS Code onboarding welcome.
+  /installed in\b.*[/\\](?:claude-code|claude)[/\\]/iu,
+  // Bare ❯ prompt glyph — empty footer row with no input text / no cursor block.
+  // When the prompt is idle (nothing typed), the inverse-video cursor block
+  // may be absent; this catches the orphaned glyph so it doesn't leak through.
+  new RegExp(`^\\s*${CLAUDE_PROMPT_GLYPH}\\s*$`, 'u'),
 ];
 
 const CLAUDE_CHROME_CHUNK_SIGNATURES: RegExp[] = [
@@ -252,7 +275,7 @@ const CLAUDE_CHROME_CHUNK_SIGNATURES: RegExp[] = [
   /Tips for getting started[\s\S]*Run \/init to create/iu,
 ];
 
-const CLAUDE_FOOTER_INPUT_PROMPT_RE = /^\s*❯\s+\x1b\[30m\x1b\[47m\s\x1b\[m/u;
+const CLAUDE_FOOTER_INPUT_PROMPT_RE = /^\s*[❯>]\s+\x1b\[30m\x1b\[47m\s\x1b\[m/u;
 
 function cleanTerminalControlText(text: string): string {
   return text
