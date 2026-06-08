@@ -107,9 +107,6 @@ const TERMINAL_CSI_PATTERN = new RegExp(`${TERMINAL_ESCAPE}\\[[0-?]*[ -/]*[@-~]`
 const TERMINAL_CHARSET_PATTERN = new RegExp(`${TERMINAL_ESCAPE}[()][A-Za-z0-9]`, 'g');
 const NATIVE_CLI_SESSION_KEY_PATTERN = /^agent:[^:]+:cli:/i;
 const CLAUDE_NATIVE_PROXY_PORT = 13211;
-const CLAUDE_NATIVE_SONNET_ALIAS = 'claude-sonnet-4-6';
-const CLAUDE_NATIVE_OPUS_ALIAS = 'claude-opus-4-7';
-const CLAUDE_NATIVE_HAIKU_ALIAS = 'claude-haiku-4-5';
 const NATIVE_CLI_TERMINAL_DEBUG_STORAGE_KEY = 'openclaw-debug-native-cli';
 const NATIVE_CLI_TERMINAL_DEBUG_CHUNK_LIMIT = 80;
 const NATIVE_CLI_TERMINAL_DEBUG_PREVIEW_LIMIT = 1200;
@@ -1925,12 +1922,12 @@ export function NativeCliTerminal({
             env: {
               ...(nativeCli.env ?? {}),
               ANTHROPIC_BASE_URL: getClaudeProxyBaseUrl(upstreamModel),
-              ANTHROPIC_MODEL: CLAUDE_NATIVE_SONNET_ALIAS,
-              ANTHROPIC_DEFAULT_SONNET_MODEL: CLAUDE_NATIVE_SONNET_ALIAS,
+              ANTHROPIC_MODEL: upstreamModel,
+              ANTHROPIC_DEFAULT_SONNET_MODEL: upstreamModel,
               ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: upstreamModel,
-              ANTHROPIC_DEFAULT_OPUS_MODEL: CLAUDE_NATIVE_OPUS_ALIAS,
+              ANTHROPIC_DEFAULT_OPUS_MODEL: upstreamModel,
               ANTHROPIC_DEFAULT_OPUS_MODEL_NAME: upstreamModel,
-              ANTHROPIC_DEFAULT_HAIKU_MODEL: CLAUDE_NATIVE_HAIKU_ALIAS,
+              ANTHROPIC_DEFAULT_HAIKU_MODEL: upstreamModel,
               ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME: upstreamModel,
               CLAWX_NATIVE_CLAUDE_UPSTREAM_MODEL: upstreamModel,
             },
@@ -1940,8 +1937,30 @@ export function NativeCliTerminal({
     });
     void refreshAgents().catch((error) => console.warn('[native-cli-terminal] Failed to refresh agents after model switch:', error));
 
-    sendText(`/model ${CLAUDE_NATIVE_SONNET_ALIAS}`);
-  }, [agent, agentId, configuredClaudeProxyRouteModel, isClaudeProvider, refreshAgents, sendText]);
+    // Write model-switch info directly to the terminal display so the
+    // user sees it — but do NOT send it as stdin to the CLI process.
+    // Sending /model as stdin would trigger a full CLI screen redraw.
+    //
+    // Find the last visible content line and place the message right
+    // below it, skipping over the blanked-out footer rows.
+    const term = termRef.current;
+    if (term) {
+      const buffer = term.buffer.active;
+      const viewportStart = buffer.viewportY;
+      const viewportEnd = Math.min(buffer.length, viewportStart + term.rows);
+      let lastContentRow = viewportEnd - 1;
+      while (lastContentRow >= viewportStart) {
+        const lineText = buffer.getLine(lastContentRow)?.translateToString(true) ?? '';
+        // Strip ANSI codes — blanked footer lines still contain preserved
+        // control sequences that make .trim() alone ineffective.
+        if (cleanTerminalControlText(lineText).trim()) break;
+        lastContentRow--;
+      }
+      if (lastContentRow < viewportStart) lastContentRow = viewportEnd - 1;
+      const ansiRow = lastContentRow - viewportStart + 1; // 1-indexed within viewport
+      term.write(`\x1b[${ansiRow + 1};1H\x1b[K\r\n\x1b[K❯ /model ${upstreamModel}\r\n\x1b[K  ⎿  Model set to ${upstreamModel}\r\n`);
+    }
+  }, [agent, agentId, configuredClaudeProxyRouteModel, isClaudeProvider, refreshAgents]);
 
   // Stable ref for mount-effect callbacks so the terminal instance survives
   // callback identity changes (e.g. normalizedProvider undefined → 'claude').
