@@ -75,16 +75,6 @@ module.exports = {
           '80%': { transform: 'translate(calc(1px * var(--shake-intensity, 1)), calc(1px * var(--shake-intensity, 1)))' },
           '90%': { transform: 'translate(calc(-0.5px * var(--shake-intensity, 1)), 0)' },
         },
-        'particle': {
-          '0%': { 
-            transform: 'translateY(0) scale(1)',
-            opacity: '1',
-          },
-          '100%': { 
-            transform: 'translateY(-40px) scale(0)',
-            opacity: '0',
-          },
-        },
       },
       animation: {
         'accordion-down': 'accordion-down 0.2s ease-out',

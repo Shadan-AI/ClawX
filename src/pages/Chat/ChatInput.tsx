@@ -868,25 +868,6 @@ export function ChatInput({ onSend, onModelChange, onStop, disabled = false, sen
   );
 
   const inputBoxRef = useRef<HTMLDivElement>(null);
-  const [particles, setParticles] = useState<Array<{ id: number; x: number; y: number; color: string; size: number }>>([]);
-  const particleIdRef = useRef(0);
-
-  const spawnParticles = useCallback(() => {
-    if (!inputBoxRef.current) return;
-    const rect = inputBoxRef.current.getBoundingClientRect();
-    const colors = ['#f43f5e', '#8b5cf6', '#3b82f6', '#10b981', '#f59e0b', '#ec4899', '#06b6d4'];
-    const newParticles = Array.from({ length: 3 }, () => ({
-      id: particleIdRef.current++,
-      x: rect.left + Math.random() * rect.width,
-      y: rect.top + Math.random() * 20,
-      color: colors[Math.floor(Math.random() * colors.length)],
-      size: 4 + Math.random() * 6,
-    }));
-    setParticles(prev => [...prev.slice(-15), ...newParticles]);
-    setTimeout(() => {
-      setParticles(prev => prev.filter(p => !newParticles.some(np => np.id === p.id)));
-    }, 700);
-  }, []);
 
   const handleInputChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const prev = input;
@@ -909,11 +890,7 @@ export function ChatInput({ onSend, onModelChange, onStop, disabled = false, sen
       setSkillSearchQuery('');
     }
     
-    // Spawn particles on any content change
-    if (newValue.length !== prev.length) {
-      spawnParticles();
-    }
-  }, [input, spawnParticles]);
+  }, [input]);
 
   const revealTransition = {
     duration: 0.22,
@@ -1497,24 +1474,6 @@ export function ChatInput({ onSend, onModelChange, onStop, disabled = false, sen
         </div>
       </div>
 
-      {/* Typing particles */}
-      {particles.length > 0 && (
-        <div className="fixed inset-0 pointer-events-none z-[9999]">
-          {particles.map(p => (
-            <div
-              key={p.id}
-              className="absolute rounded-full animate-[particle_0.7s_ease-out_forwards]"
-              style={{
-                left: p.x,
-                top: p.y,
-                width: p.size,
-                height: p.size,
-                backgroundColor: p.color,
-              }}
-            />
-          ))}
-        </div>
-      )}
     </div>
   );
 }
