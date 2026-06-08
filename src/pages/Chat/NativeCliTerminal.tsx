@@ -203,32 +203,32 @@ function traceNativeCliTerminal(stage: string, payload: Record<string, unknown>)
   console.info(`[native-cli-terminal:trace] ${stage}`, payload);
 }
 
-// Blank Claude Code's startup-header AND persistent footer printable
-// characters in place, preserving every ANSI control byte and `\r\n`. This
-// only changes printable chars on rows that contain a Claude-unique
-// signature, so Claude's cursor coordinates (every absolute move, scroll
-// region, line-clear) stay byte-for-byte identical — no garbling, no
-// blank-band desync, no row hacks.
-//
-// Trade-off: the rows the banner/footer used to occupy stay visible but are
-// blank. Claude's own layout still anchors around them so the live region
-// (user echo, spinner, response output) behaves exactly as before; we simply
-// hide the chrome characters.
-//
-// Claude-unique signatures (none ever appear in normal conversation text):
-//   Banner rows:
-//     - mascot glyphs: U+2580–U+259F box-drawing characters mixed into the
-//       three "▐▛███▜▌" / "▝▜█████▛▘" / "▘▘ ▝▝" rows.
-//     - "Claude Code v" — appears only in the title row of the minimal logo.
-//     - " · API Usage Billing" / " · Subscription" — billing row only.
-//   Footer rows:
-//     - long runs of U+2500 / U+2501 — separator rows above and below the
-//       input prompt.
-//     - "⏵⏵ <permission>" status row.
-//     - "● <effort> · /effort" row tail.
-//     - release-note rows such as "▎ Opus 4.8 is now available! · /model to switch".
-//     - the empty input-prompt row identified by its inverse-video cursor
-//       SGR sequence (matched on the raw line, not the cleaned one).
+//// Blank Claude Code's startup-header AND persistent footer printable
+//// characters in place, preserving every ANSI control byte and `\r\n`. This
+//// only changes printable chars on rows that contain a Claude-unique
+//// signature, so Claude's cursor coordinates (every absolute move, scroll
+//// region, line-clear) stay byte-for-byte identical — no garbling, no
+//// blank-band desync, no row hacks.
+////
+//// Trade-off: the rows the banner/footer used to occupy stay visible but are
+//// blank. Claude's own layout still anchors around them so the live region
+//// (user echo, spinner, response output) behaves exactly as before; we simply
+//// hide the chrome characters.
+////
+//// Claude-unique signatures (none ever appear in normal conversation text):
+////   Banner rows:
+////     - mascot glyphs: U+2580–U+259F box-drawing characters mixed into the
+////       three "▐▛███▜▌" / "▝▜█████▛▘" / "▘▘ ▝▝" rows.
+////     - "Claude Code v" — appears only in the title row of the minimal logo.
+////     - " · API Usage Billing" / " · Subscription" — billing row only.
+////   Footer rows:
+////     - long runs of U+2500 / U+2501 — separator rows above and below the
+////       input prompt.
+////     - "⏵⏵ <permission>" status row.
+////     - "● <effort> · /effort" row tail.
+////     - release-note rows such as "▎ Opus 4.8 is now available! · /model to switch".
+////     - the empty input-prompt row identified by its inverse-video cursor
+////       SGR sequence (matched on the raw line, not the cleaned one).
 const CLAUDE_BANNER_LINE_SIGNATURES: RegExp[] = [
   /[\u2580-\u259f]{2,}/u,       // mascot row (any banner row)
   /[▀-▟]{2,}/,                    // mascot row (any banner row)
@@ -237,7 +237,6 @@ const CLAUDE_BANNER_LINE_SIGNATURES: RegExp[] = [
   /Tips for getting started/iu,
   /Run \/init to create/i,
   /CLAUDE\.md file/i,
-  /What's new/iu,
   /API Usage Billing/iu,
   /Subscription/iu,
   /· API Usage Billing/,          // billing line
@@ -262,10 +261,6 @@ const CLAUDE_BANNER_LINE_SIGNATURES: RegExp[] = [
   /· FAQ · Feedback/iu,
   // Installation path line from the VS Code onboarding welcome.
   /installed in\b.*[/\\](?:claude-code|claude)[/\\]/iu,
-  // Bare ❯ prompt glyph — empty footer row with no input text / no cursor block.
-  // When the prompt is idle (nothing typed), the inverse-video cursor block
-  // may be absent; this catches the orphaned glyph so it doesn't leak through.
-  new RegExp(`^\\s*${CLAUDE_PROMPT_GLYPH}\\s*$`, 'u'),
 ];
 
 const CLAUDE_CHROME_CHUNK_SIGNATURES: RegExp[] = [
@@ -326,40 +321,27 @@ function preserveClaudeInterruptChunk(chunk: string): string {
 }
 
 function blankPrintableInLine(rawLine: string): string {
-  // Walk the line, skipping ANSI sequences verbatim, and replace every
-  // printable codepoint with a space. Width-preserving: one input char (in
-  // logical "columns") -> one space. Wide-character handling is unnecessary
-  // here because the banner uses only single-cell glyphs.
   let i = 0;
   let out = '';
   while (i < rawLine.length) {
     const ch = rawLine[i];
     const code = ch.charCodeAt(0);
-    // ESC: copy the whole CSI/OSC/charset sequence as-is.
     if (code === 27) {
-      // Try CSI ESC [ ... letter
       const csi = rawLine.slice(i).match(/^\x1b\[[0-?]*[ -/]*[@-~]/);
       if (csi) { out += csi[0]; i += csi[0].length; continue; }
-      // OSC ESC ] ... BEL or ESC \
       const osc = rawLine.slice(i).match(/^\x1b\][^\x07]*(?:\x07|\x1b\\)/);
       if (osc) { out += osc[0]; i += osc[0].length; continue; }
-      // Charset ESC ( X / ESC ) X
       const charset = rawLine.slice(i).match(/^\x1b[()][A-Za-z0-9]/);
       if (charset) { out += charset[0]; i += charset[0].length; continue; }
-      // Lone ESC: keep it.
       out += ch; i += 1; continue;
     }
-    // Other C0/C1 controls (BS, BEL, etc.): keep verbatim.
     if (code < 32 || code === 127) { out += ch; i += 1; continue; }
-    // Printable: replace with a space (preserves cell width for the banner's
-    // single-cell glyphs).
     out += ' '; i += 1;
   }
   return out;
 }
 
 export function maskClaudeBannerInChunk(chunk: string): string {
-  // Split on `\r\n` while keeping the separators so reassembly is exact.
   const parts: string[] = [];
   let i = 0;
   while (i < chunk.length) {
