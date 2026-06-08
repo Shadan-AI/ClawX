@@ -1378,7 +1378,6 @@ export function ChatInput({ onSend, onModelChange, onStop, disabled = false, sen
                       <p>{showThinking ? t('toolbar.hideThinking') : t('toolbar.showThinking')}</p>
                     </TooltipContent>
                   </Tooltip>
-                  
                   {models.length > 0 && (
                     <div ref={modelMenuRef} className="relative">
                       <button
