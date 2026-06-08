@@ -242,6 +242,8 @@ const CLAUDE_BANNER_LINE_SIGNATURES: RegExp[] = [
   /Press Enter to continue/iu,
   // Bare ❯ prompt without inverse-video cursor block (idle footer).
   /^\s*❯\s*$/u,
+  // File context indicator (e.g. "⧉ In file.tsx", "⧉ 1 line selected").
+  /⧉\s/,
 ];
 
 const CLAUDE_FOOTER_INPUT_PROMPT_RE = /^\s*[❯>]\s+\x1b\[30m\x1b\[47m\s\x1b\[m/u;
@@ -325,11 +327,16 @@ export function maskClaudeBannerInChunk(chunk: string): string {
     parts.push('\r\n');
     i = next + 2;
   }
+  // If the chunk contains any box-drawing frame character, it's a banner
+  // redraw (e.g. after terminal resize where line wrapping changes).
+  // Blank all printable lines in the chunk — partial lines from split
+  // banner rows won't individually match signatures.
+  const hasFrameChar = /[┌┐└┘│╭╮╯╰]/.test(chunk);
   let masked = false;
   for (let p = 0; p < parts.length; p += 1) {
     const part = parts[p];
     if (part === '\r\n') continue;
-    if (isClaudeChromeLine(part)) {
+    if (hasFrameChar || isClaudeChromeLine(part)) {
       parts[p] = blankPrintableInLine(part);
       masked = true;
     }
@@ -1830,15 +1837,25 @@ export function NativeCliTerminal({
     persistState();
   }, [clearInterruptedInputBeforeSend, markCliRespondingStarted, onUserText, persistState, sendShellCompose, sessionKey, startCliSessionIdFallbackResolver]);
 
-  const handleChatInputSend = useCallback((text: string, attachments?: FileAttachment[]) => {
+  const handleChatInputSend = useCallback((text: string, attachments?: FileAttachment[], targetAgentId?: string | null) => {
     const trimmed = formatNativeCliTextWithAttachments(text, attachments);
     if (!trimmed) return;
+    // Route to another agent by prefixing @agent-name — the CLI will
+    // include that agent in the conversation context.  No session switch.
+    let finalText = trimmed;
+    if (targetAgentId && targetAgentId !== agentId) {
+      const agentStore = useAgentsStore.getState();
+      const targetAgent = agentStore.agents.find((a) => a.id === targetAgentId);
+      if (targetAgent) {
+        finalText = `@${targetAgent.name} ${trimmed}`;
+      }
+    }
     if (shellPassthroughRef.current) {
-      sendShellCompose(trimmed);
+      sendShellCompose(finalText);
       return;
     }
-    sendText(trimmed);
-  }, [sendShellCompose, sendText]);
+    sendText(finalText);
+  }, [agentId, sendShellCompose, sendText]);
 
   const handleChatInputStop = useCallback(() => {
     interruptPreserveUntilRef.current = Date.now() + CLAUDE_INTERRUPT_PRESERVE_MS;
