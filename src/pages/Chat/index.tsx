@@ -83,13 +83,11 @@ export function Chat() {
     if (targetAgentId && shouldCreateSession) {
       processedRouteActionRef.current = routeActionKey;
       const agentId = targetAgentId;
-      const newSessionKey = newSessionForAgent(agentId);
-      console.log('[Chat] Created quick-use session:', { agentId, newSessionKey });
+      newSessionForAgent(agentId);
     }
 
     let quickUseFrameId: number | null = null;
     if (nextQuickUseSkill) {
-      console.log('[Chat] Quick use skill:', nextQuickUseSkill);
       quickUseFrameId = window.requestAnimationFrame(() => {
         setQuickUseSkill(nextQuickUseSkill);
       });
@@ -181,18 +179,12 @@ export function Chat() {
 
   const [streamingTimestamp, setStreamingTimestamp] = useState<number>(0);
   const minLoading = useMinLoading(loading && messages.length > 0);
-  const { contentRef, scrollRef, isNearBottom, escapedFromLock } = useStickToBottomInstant(currentSessionKey);
+  const { contentRef, scrollRef, isNearBottom } = useStickToBottomInstant(currentSessionKey);
 
   const [inputShellState, setInputShellState] = useState<InputShellState>('collapsed');
   const inputShellStateRef = useRef<InputShellState>(inputShellState);
 
-  const isInputFocused = inputShellState === 'focused';
   const isInputExpanded = inputShellState !== 'collapsed';
-
-  // Debug: 监控状态变化
-  useEffect(() => {
-    console.log('[Chat] State:', { inputShellState, isInputFocused, isInputExpanded, isNearBottom, escapedFromLock });
-  }, [escapedFromLock, inputShellState, isInputFocused, isInputExpanded, isNearBottom]);
 
   useEffect(() => {
     inputShellStateRef.current = inputShellState;

@@ -156,7 +156,6 @@ export function handleRuntimeEventState(
             }
             const toolOnly = isToolOnlyMessage(finalMsg);
             const hasOutput = hasNonToolAssistantContent(finalMsg);
-            console.log('[DEBUG] Received final event, hasOutput:', hasOutput, 'toolOnly:', toolOnly, 'finalMsg:', finalMsg);
             const msgId = finalMsg.id || (toolOnly ? `run-${runId}-tool-${Date.now()}` : `run-${runId}`);
             set((s) => {
               const nextTools = updates.length > 0 ? upsertToolStatuses(s.streamingTools, updates) : s.streamingTools;
@@ -176,7 +175,6 @@ export function handleRuntimeEventState(
 
               // Check if message already exists (prevent duplicates)
               const alreadyExists = s.messages.some(m => m.id === msgId);
-              console.log('[DEBUG] Message processing - msgId:', msgId, 'alreadyExists:', alreadyExists, 'toolOnly:', toolOnly, 'hasOutput:', hasOutput);
               if (alreadyExists) {
                 return toolOnly ? {
                   streamingText: '',

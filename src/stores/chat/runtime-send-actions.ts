@@ -182,9 +182,6 @@ export function createRuntimeSendActions(set: ChatSet, get: ChatGet): Pick<Runti
       try {
         const idempotencyKey = crypto.randomUUID();
         const hasMedia = attachments && attachments.length > 0;
-        if (hasMedia) {
-          console.log('[sendMessage] Media paths:', attachments!.map(a => a.stagedPath));
-        }
 
         // Cache image attachments BEFORE the IPC call to avoid race condition:
         // history may reload (via Gateway event) before the RPC returns.
@@ -233,8 +230,6 @@ export function createRuntimeSendActions(set: ChatSet, get: ChatGet): Pick<Runti
             CHAT_SEND_TIMEOUT_MS,
           ) as { success: boolean; result?: { runId?: string }; error?: string };
         }
-
-        console.log(`[sendMessage] RPC result: success=${result.success}, runId=${result.result?.runId || 'none'}`);
 
         if (!result.success) {
           clearHistoryPoll();

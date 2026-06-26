@@ -5,7 +5,7 @@
 import { ipcMain, BrowserWindow, shell, dialog, app, nativeImage } from 'electron';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, extname, basename } from 'node:path';
+import { join, extname, basename, dirname } from 'node:path';
 import crypto from 'node:crypto';
 import { GatewayManager } from '../gateway/manager';
 import { ClawHubService, ClawHubSearchParams, ClawHubInstallParams, ClawHubUninstallParams } from '../gateway/clawhub';
@@ -775,16 +775,16 @@ function registerSkillConfigHandlers(): void {
     return await getAllSkillConfigs();
   });
 
-  // Install skill from local file/folder
+  // Install skill from local SKILL.md file
   ipcMain.handle('skill:installLocal', async () => {
     try {
-      // 打开文件选择对话框
+      // Select SKILL.md directly, then install the parent skill folder.
       const result = await dialog.showOpenDialog({
-        title: '选择技能文件或文件夹',
-        properties: ['openFile', 'openDirectory'],
+        title: '选择 SKILL.md 文件',
+        properties: ['openFile'],
         filters: [
-          { name: '技能文件夹', extensions: [] },
-          { name: '所有文件', extensions: ['*'] }
+          { name: 'SKILL.md', extensions: ['md'] },
+          { name: 'All files', extensions: ['*'] }
         ]
       });
 
@@ -792,30 +792,59 @@ function registerSkillConfigHandlers(): void {
         return { success: false };
       }
 
-      const sourcePath = result.filePaths[0];
+      let sourcePath = result.filePaths[0];
       const skillsDir = await getOpenClawSkillsDir();
       
       // 确保技能目录存在
       await ensureDir(skillsDir);
 
-      // 判断是否为文件夹
       const fs = await import('node:fs/promises');
       const stat = await fs.stat(sourcePath);
       
-      if (!stat.isDirectory()) {
+      if (stat.isDirectory()) {
         return {
           success: false,
-          error: '请选择技能文件夹（不支持压缩文件）'
+          error: '请选择技能文件夹中的 SKILL.md 文件'
         };
       }
 
-      // 检查是否有 SKILL.md 文件
-      const skillMdPath = join(sourcePath, 'SKILL.md');
-      if (!existsSync(skillMdPath)) {
+      if (basename(sourcePath).toLowerCase() !== 'skill.md') {
         return {
           success: false,
-          error: '所选文件夹不是有效的技能（缺少 SKILL.md 文件）'
+          error: '请选择名为 SKILL.md 的技能入口文件'
         };
+      }
+
+      sourcePath = dirname(sourcePath);
+
+      // 检查是否有 SKILL.md 文件；如果用户选中了父目录且只有一个子技能目录，则自动使用该子目录。
+      let skillMdPath = join(sourcePath, 'SKILL.md');
+      if (!existsSync(skillMdPath)) {
+        const childSkillDirs: string[] = [];
+        for (const entry of await fs.readdir(sourcePath, { withFileTypes: true })) {
+          if (!entry.isDirectory()) {
+            continue;
+          }
+          const childPath = join(sourcePath, entry.name);
+          if (existsSync(join(childPath, 'SKILL.md'))) {
+            childSkillDirs.push(childPath);
+          }
+        }
+
+        if (childSkillDirs.length === 1) {
+          sourcePath = childSkillDirs[0];
+          skillMdPath = join(sourcePath, 'SKILL.md');
+        } else if (childSkillDirs.length > 1) {
+          return {
+            success: false,
+            error: `所选文件夹包含多个技能文件夹，请直接选择其中一个：${childSkillDirs.map((dir) => basename(dir)).join(', ')}`
+          };
+        } else {
+          return {
+            success: false,
+            error: '所选文件夹不是有效的技能（缺少 SKILL.md 文件）。请直接选择包含 SKILL.md 的技能文件夹。'
+          };
+        }
       }
 
       // 读取 SKILL.md 获取技能名称

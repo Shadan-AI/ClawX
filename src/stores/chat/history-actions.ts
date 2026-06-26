@@ -57,6 +57,62 @@ export function createHistoryActions(
       const getPreviewMergeKey = (message: RawMessage): string => (
         `${message.id ?? ''}|${message.role}|${message.timestamp ?? ''}|${getMessageText(message.content)}`
       );
+      const normalizeComparableText = (message: RawMessage): string => (
+        getMessageText(message.content)
+          .replace(/\[media attached:[^\]]+\]/g, '')
+          .replace(/\s+/g, ' ')
+          .trim()
+      );
+      const isSameUserMessage = (a: RawMessage, b: RawMessage, options: { allowTextOnly?: boolean } = {}): boolean => {
+        if (a.role !== 'user' || b.role !== 'user') return false;
+        if (a.id && b.id && a.id === b.id) return true;
+        const aText = normalizeComparableText(a);
+        const bText = normalizeComparableText(b);
+        if (options.allowTextOnly && aText && bText && aText === bText) return true;
+        if (a.timestamp && b.timestamp && Math.abs(toMs(a.timestamp) - toMs(b.timestamp)) < 5000) {
+          return true;
+        }
+        return false;
+      };
+      const mergeUserAttachmentPreview = (gatewayMessage: RawMessage, localMessage: RawMessage): RawMessage => {
+        if (gatewayMessage._attachedFiles?.length || !localMessage._attachedFiles?.length) {
+          return gatewayMessage;
+        }
+        return { ...gatewayMessage, _attachedFiles: localMessage._attachedFiles.map((file) => ({ ...file })) };
+      };
+      const insertMessageByTimestamp = (sourceMessages: RawMessage[], message: RawMessage): RawMessage[] => {
+        if (!message.timestamp) return [...sourceMessages, message];
+        const messageMs = toMs(message.timestamp);
+        const insertAt = sourceMessages.findIndex((candidate) => (
+          candidate.timestamp ? toMs(candidate.timestamp) > messageMs : false
+        ));
+        if (insertAt === -1) return [...sourceMessages, message];
+        return [
+          ...sourceMessages.slice(0, insertAt),
+          message,
+          ...sourceMessages.slice(insertAt),
+        ];
+      };
+      const dedupeMessages = (sourceMessages: RawMessage[]): RawMessage[] => {
+        const result: RawMessage[] = [];
+        for (const message of sourceMessages) {
+          const duplicateIndex = result.findIndex((existing) => {
+            if (message.id && existing.id && message.id === existing.id) return true;
+            return isSameUserMessage(existing, message);
+          });
+          if (duplicateIndex === -1) {
+            result.push(message);
+            continue;
+          }
+          const existing = result[duplicateIndex];
+          if (existing.role === 'user' && message.role === 'user') {
+            result[duplicateIndex] = message.id
+              ? mergeUserAttachmentPreview(message, existing)
+              : mergeUserAttachmentPreview(existing, message);
+          }
+        }
+        return result;
+      };
       const mergeHydratedMessages = (
         currentMessages: RawMessage[],
         hydratedMessages: RawMessage[],
@@ -105,20 +161,25 @@ export function createHistoryActions(
         const userMsgAt = get().lastUserMessageAt;
         if (get().sending && userMsgAt) {
           const userMsMs = toMs(userMsgAt);
-          const hasRecentUser = enrichedMessages.some(
+          const currentMsgs = get().messages;
+          const optimistic = [...currentMsgs].reverse().find(
             (m) => m.role === 'user' && m.timestamp && Math.abs(toMs(m.timestamp) - userMsMs) < 5000,
           );
-          if (!hasRecentUser) {
-            const currentMsgs = get().messages;
-            const optimistic = [...currentMsgs].reverse().find(
-              (m) => m.role === 'user' && m.timestamp && Math.abs(toMs(m.timestamp) - userMsMs) < 5000,
-            );
-            if (optimistic) {
-              finalMessages = [...enrichedMessages, optimistic];
+          if (optimistic) {
+            const matchingHistoryIndex = enrichedMessages.findIndex((m) => isSameUserMessage(m, optimistic, { allowTextOnly: true }));
+            if (matchingHistoryIndex >= 0) {
+              finalMessages = enrichedMessages.map((message, index) => (
+                index === matchingHistoryIndex
+                  ? mergeUserAttachmentPreview(message, optimistic)
+                  : message
+              ));
+            } else {
+              finalMessages = insertMessageByTimestamp(enrichedMessages, optimistic);
             }
           }
         }
 
+        finalMessages = dedupeMessages(finalMessages);
         set({ messages: finalMessages, thinkingLevel, loading: false });
 
         // Extract first user message text as a session label for display in the toolbar.
@@ -236,7 +297,6 @@ export function createHistoryActions(
             applyLoadedMessages(fallbackMessages, null);
           } else {
             // 新会话超时：直接显示空会话，不报错
-            console.log('New session timeout - treating as empty session');
             applyLoadedMessages([], null);
           }
         } else {
